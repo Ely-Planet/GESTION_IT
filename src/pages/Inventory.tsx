@@ -1,7 +1,6 @@
 import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { Laptop, Plus, X, Filter, RotateCcw, RefreshCw, Trash2, Upload, FileSpreadsheet, CheckCircle2 } from 'lucide-react';
 import { useData } from '../hooks/useData';
-import { supabase } from '../lib/supabase';
 import { logAudit } from '../lib/audit';
 import { useAuth } from '../context/AuthContext';
 import { formatFrDate, HARDWARE_STATUS, statusLabel } from '../lib/format';
@@ -31,20 +30,45 @@ export default function Inventory() {
     return m;
   }, [data.hardwareCategories]);
 
-  async function changeStatus(h: HardwareItem, status: HardwareItem['status']) {
-    const { error } = await supabase.from('hardware_items').update({ status }).eq('id', h.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('update', 'hardware', h.id, { status, from: h.status }, profile?.display_name);
-    data.reload();
+async function changeStatus(h: HardwareItem, status: HardwareItem['status']) {
+  const res = await fetch(`/api/hardware-items/${h.id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ status }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erreur de mise à jour' }));
+    alert(err.error ?? 'Erreur de mise à jour');
+    return;
   }
 
-  async function removeItem(h: HardwareItem) {
-    if (!confirm(`Supprimer définitivement cet équipement (${h.serial_number || h.reference || h.id}) ?`)) return;
-    const { error } = await supabase.from('hardware_items').delete().eq('id', h.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('delete', 'hardware', h.id, { serial: h.serial_number }, profile?.display_name);
-    data.reload();
+  await logAudit('update', 'hardware', h.id, { status, from: h.status }, profile?.display_name).catch(console.error);
+
+  data.reload();
+}
+
+
+async function removeItem(h: HardwareItem) {
+  if (!confirm(`Supprimer définitivement cet équipement (${h.serial_number || h.reference || h.id}) ?`)) return;
+
+  const res = await fetch(`/api/hardware-items/${h.id}`, {
+    method: 'DELETE',
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erreur de suppression' }));
+    alert(err.error ?? 'Erreur de suppression');
+    return;
   }
+
+  await logAudit('delete', 'hardware', h.id, { serial: h.serial_number }, profile?.display_name).catch(console.error);
+
+  data.reload();
+}
+
 
   return (
     <div className="p-6 lg:p-8 max-w-7xl mx-auto">
@@ -268,16 +292,41 @@ function ImportModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
           notes: mapping.notes ? r[mapping.notes] || null : null,
         });
         if (batch.length >= batchSize) {
-          const { error } = await supabase.from('hardware_items').insert(batch);
-          if (error) throw error;
-          ok += batch.length;
-          batch.length = 0;
+const res = await fetch('/api/hardware-items', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(batch),
+});
+
+if (!res.ok) {
+  const err = await res.json().catch(() => ({ error: 'Erreur import matériel' }));
+  throw new Error(err.error ?? 'Erreur import matériel');
+}
+
+ok += batch.length;
+batch.length = 0;
+
         }
       }
       if (batch.length > 0) {
-        const { error } = await supabase.from('hardware_items').insert(batch);
-        if (error) throw error;
-        ok += batch.length;
+const res = await fetch('/api/hardware-items', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(batch),
+});
+
+if (!res.ok) {
+  const err = await res.json().catch(() => ({ error: 'Erreur import matériel' }));
+  throw new Error(err.error ?? 'Erreur import matériel');
+}
+
+ok += batch.length;
+
+
       }
       await logAudit('import', 'hardware', null, { ok, skipped }, profile?.display_name);
       setResult({ ok, skipped });
@@ -411,12 +460,26 @@ function HardwareForm({ onClose, onSaved }: { onClose: () => void; onSaved: () =
         purchase_date: purchaseDate || null,
         notes: notes || null,
       }));
-      const { data: inserted, error: insErr } = await supabase.from('hardware_items').insert(rows).select('id');
-      if (insErr) throw insErr;
-      for (const r of inserted ?? []) {
-        await logAudit('create', 'hardware', r.id, { category_id: categoryId, quantity }, profile?.display_name);
-      }
-      onSaved();
+const res = await fetch('/api/hardware-items', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(rows),
+});
+
+if (!res.ok) {
+  const err = await res.json().catch(() => ({ error: 'Erreur création matériel' }));
+  throw new Error(err.error ?? 'Erreur création matériel');
+}
+
+const inserted = await res.json();
+
+for (const r of inserted ?? []) {
+  await logAudit('create', 'hardware', r.id, { category_id: categoryId, quantity }, profile?.display_name).catch(console.error);
+}
+
+onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erreur');
     } finally {

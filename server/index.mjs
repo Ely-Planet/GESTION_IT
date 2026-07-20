@@ -306,6 +306,151 @@ app.get('/api/hardware-items', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+app.post('/api/hardware-items', async (req, res) => {
+  try {
+    const inputRows = Array.isArray(req.body) ? req.body : [req.body];
+
+    if (inputRows.length === 0) {
+      return res.status(400).json({
+        error: 'Aucun matériel à créer.'
+      });
+    }
+
+    const allowedColumns = [
+      'category_id',
+      'reference',
+      'serial_number',
+      'brand',
+      'model',
+      'status',
+      'intune_device_id',
+      'atera_ticket_id',
+      'purchase_date',
+      'notes'
+    ];
+
+    const insertedRows = [];
+
+    for (const row of inputRows) {
+      const columns = allowedColumns.filter((column) => row[column] !== undefined);
+
+      if (!columns.includes('category_id')) {
+        return res.status(400).json({
+          error: 'category_id est obligatoire pour créer un matériel.'
+        });
+      }
+
+      const values = columns.map((column) => row[column]);
+      const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+      const result = await pool.query(
+        `
+        INSERT INTO hardware_items (${columns.join(', ')})
+        VALUES (${placeholders.join(', ')})
+        RETURNING *
+        `,
+        values
+      );
+
+      insertedRows.push(result.rows[0]);
+    }
+
+    res.status(201).json(insertedRows);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.patch('/api/hardware-items/:id', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'category_id',
+      'reference',
+      'serial_number',
+      'brand',
+      'model',
+      'status',
+      'intune_device_id',
+      'atera_ticket_id',
+      'purchase_date',
+      'notes'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (columns.length === 0) {
+      return res.status(400).json({
+        error: 'Aucune donnée à mettre à jour.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    values.push(req.params.id);
+
+    const setClause = columns
+      .map((column, index) => `${column} = $${index + 1}`)
+      .join(', ');
+
+    const result = await pool.query(
+      `
+      UPDATE hardware_items
+      SET ${setClause},
+          updated_at = now()
+      WHERE id = $${values.length}
+      RETURNING *
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Matériel introuvable.'
+      });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.delete('/api/hardware-items/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      DELETE FROM hardware_items
+      WHERE id = $1
+      RETURNING id
+      `,
+      [req.params.id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Matériel introuvable.'
+      });
+    }
+
+    res.json({
+      ok: true,
+      id: result.rows[0].id
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
 
 app.get('/api/license-types', async (req, res) => {
   try {
@@ -425,7 +570,92 @@ app.get('/api/movement-actions', async (req, res) => {
   }
 });
 
+app.get('/api/movement-items', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM movement_items
+    `);
 
+    res.json(result.rows);
+
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/movement-licenses', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM movement_licenses
+    `);
+
+    res.json(result.rows);
+
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/signed-documents', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM signed_documents
+      ORDER BY created_at DESC
+    `);
+
+    res.json(result.rows);
+
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/subscribed-skus', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM subscribed_skus
+      ORDER BY display_name
+    `);
+
+    res.json(result.rows);
+
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/dashboard-widgets/:userId', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM dashboard_widgets
+      WHERE user_id = $1
+      ORDER BY sort_order
+      `,
+      [req.params.userId]
+    );
+
+    res.json(result.rows);
+
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
 
 
 app.get('/api/health/db', async (req, res) => {

@@ -134,15 +134,24 @@ fetch('/api/movement-actions')
   .then(r => r.json())
   .catch(() => []),
 
-        supabase.from('subscribed_skus')
-          .select('*')
-          .order('display_name')
-          .then((r) => r.data ?? []),
+fetch('/api/subscribed-skus')
+  .then(r => r.json())
+  .catch(() => []),
+
       ]);
       const [movementItems, movementLicenses, signedDocuments] = await Promise.all([
-        supabase.from('movement_items').select('*').then((r) => r.data ?? []),
-        supabase.from('movement_licenses').select('*').then((r) => r.data ?? []),
-        supabase.from('signed_documents').select('*').order('created_at', { ascending: false }).then((r) => r.data ?? []),
+fetch('/api/movement-items')
+  .then(r => r.json())
+  .catch(() => []),
+
+fetch('/api/movement-licenses')
+  .then(r => r.json())
+  .catch(() => []),
+
+fetch('/api/signed-documents')
+  .then(r => r.json())
+  .catch(() => []),
+
       ]);
 
       let widgets: DashboardWidget[] = [];
