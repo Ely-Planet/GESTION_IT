@@ -1,97 +1,95 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import type { Session, User } from '@supabase/supabase-js';
-import { supabase, type Profile } from '../lib/supabase';
+
+type MicrosoftUser = {
+  id: string;
+  displayName: string;
+  email: string;
+  userPrincipalName: string;
+};
+
+type Profile = {
+  id: string;
+  email: string;
+  display_name: string;
+  role: string;
+};
 
 type AuthContextValue = {
-  session: Session | null;
-  user: User | null;
+  session: boolean;
+  user: MicrosoftUser | null;
   profile: Profile | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<{ error: string | null }>;
-  signUp: (email: string, password: string, displayName: string) => Promise<{ error: string | null }>;
+  signInWithMicrosoft: () => void;
   signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
+  const [user, setUser] = useState<MicrosoftUser | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
-  async function loadProfile(uid: string) {
-    const { data } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', uid)
-      .maybeSingle();
-    setProfile(data as Profile | null);
+  async function loadMe() {
+    try {
+      const res = await fetch('/api/me', {
+        credentials: 'include'
+      });
+
+      if (!res.ok) {
+        setUser(null);
+        setProfile(null);
+        return;
+      }
+
+      const data = await res.json();
+
+      if (data.authenticated && data.user) {
+        setUser(data.user);
+        setProfile({
+          id: data.user.id,
+          email: data.user.email,
+          display_name: data.user.displayName,
+          role: 'service_informatique'
+        });
+      } else {
+        setUser(null);
+        setProfile(null);
+      }
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      if (data.session?.user) {
-        loadProfile(data.session.user.id).finally(() => setLoading(false));
-      } else {
-        setLoading(false);
-      }
-    });
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
-      (async () => {
-        setSession(sess);
-        if (sess?.user) {
-          await loadProfile(sess.user.id);
-        } else {
-          setProfile(null);
-        }
-        setLoading(false);
-      })();
-    });
-
-    return () => sub.subscription.unsubscribe();
+    void loadMe();
   }, []);
 
-  async function ensureProfile(user: User, displayName: string) {
-    const { data: existing } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('id', user.id)
-      .maybeSingle();
-    if (!existing) {
-      await supabase.from('profiles').insert({
-        id: user.id,
-        email: user.email ?? '',
-        display_name: displayName,
-        role: 'agent',
-      });
-      await loadProfile(user.id);
-    }
-  }
-
-  async function signIn(email: string, password: string) {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error: error ? error.message : null };
-  }
-
-  async function signUp(email: string, password: string, displayName: string) {
-    const { data, error } = await supabase.auth.signUp({ email, password });
-    if (error) return { error: error.message };
-    if (data.user) {
-      await ensureProfile(data.user, displayName);
-    }
-    return { error: null };
+  function signInWithMicrosoft() {
+    window.location.href = '/auth/login';
   }
 
   async function signOut() {
-    await supabase.auth.signOut();
+    await fetch('/auth/logout', {
+      method: 'POST',
+      credentials: 'include'
+    });
+
+    setUser(null);
     setProfile(null);
+    window.location.href = '/';
   }
 
   return (
     <AuthContext.Provider
-      value={{ session, user: session?.user ?? null, profile, loading, signIn, signUp, signOut }}
+      value={{
+        session: Boolean(user),
+        user,
+        profile,
+        loading,
+        signInWithMicrosoft,
+        signOut
+      }}
     >
       {children}
     </AuthContext.Provider>

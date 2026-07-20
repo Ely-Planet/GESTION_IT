@@ -10,12 +10,20 @@ COPY . .
 
 RUN npm run build
 
-FROM nginx:alpine
+FROM node:22-alpine
 
-COPY --from=builder /app/dist /usr/share/nginx/html
+WORKDIR /app
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+ENV NODE_ENV=production
 
-EXPOSE 80
+COPY package*.json ./
 
-CMD ["nginx","-g","daemon off;"]
+RUN npm install --omit=dev
+
+COPY --from=builder /app/dist ./dist
+
+COPY server ./server
+
+EXPOSE 3001
+
+CMD ["node", "server/index.mjs"]

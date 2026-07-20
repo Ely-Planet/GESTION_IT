@@ -8,5 +8,8 @@ services:
 
     restart: unless-stopped
 
+    env_file:
+      - .env
+
     ports:
-      - "8090:80"
+      - "8090:3001"
