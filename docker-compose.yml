@@ -1,0 +1,12 @@
+services:
+
+  gestion_it:
+
+    container_name: gestion_it
+
+    build: .
+
+    restart: unless-stopped
+
+    ports:
+      - "8090:80"
