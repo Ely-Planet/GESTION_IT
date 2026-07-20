@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { testDb } from './db.mjs';
 import express from 'express';
 import session from 'express-session';
 import helmet from 'helmet';
@@ -221,7 +222,24 @@ app.get('/api/me', (req, res) => {
       authenticated: false
     });
   }
+app.get('/api/health/db', async (req, res) => {
+  try {
+    const result = await testDb();
 
+    res.json({
+      status: 'ok',
+      database: result.database,
+      user: result.username
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+});
   res.json({
     authenticated: true,
     user: req.session.user
