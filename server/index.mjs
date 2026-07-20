@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { testDb } from './db.mjs';
+import { pool } from './db.mjs';
 import express from 'express';
 import session from 'express-session';
 import helmet from 'helmet';
@@ -217,11 +217,44 @@ app.post('/auth/logout', (req, res) => {
 });
 
 app.get('/api/me', (req, res) => {
+
   if (!isAuthenticated(req)) {
     return res.status(401).json({
       authenticated: false
     });
   }
+
+  res.json({
+    authenticated: true,
+    user: req.session.user
+  });
+
+});
+
+app.get('/api/services', async (req, res) => {
+
+  try {
+
+    const result = await pool.query(`
+      SELECT *
+      FROM services
+      ORDER BY name
+    `);
+
+    res.json(result.rows);
+
+  } catch (error) {
+
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+
+  }
+
+});
+
 app.get('/api/health/db', async (req, res) => {
   try {
     const result = await testDb();
@@ -240,11 +273,6 @@ app.get('/api/health/db', async (req, res) => {
     });
   }
 });
-  res.json({
-    authenticated: true,
-    user: req.session.user
-  });
-});
 
 app.use(express.static(path.join(__dirname, '../dist')));
 
@@ -255,3 +283,4 @@ app.use((req, res) => {
 app.listen(port, () => {
   console.log(`GESTION_IT backend listening on port ${port}`);
 });
+

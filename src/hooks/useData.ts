@@ -86,7 +86,10 @@ export function useData(): DataState {
         movementActions,
         subscribedSkus,
       ] = await Promise.all([
-        supabase.from('services').select('*').then((r) => r.data ?? []),
+fetch('/api/services')
+  .then((r) => r.json())
+  .catch(() => []),
+
         supabase.from('contract_types').select('*').order('sort_order').then((r) => r.data ?? []),
         supabase.from('employees').select('*').order('last_name').then((r) => r.data ?? []),
         supabase.from('movements').select('*').order('effective_date', { ascending: false }).then((r) => r.data ?? []),
