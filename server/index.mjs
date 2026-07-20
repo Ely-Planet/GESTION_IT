@@ -346,6 +346,85 @@ app.get('/api/movements', async (req, res) => {
   }
 });
 
+app.get('/api/service-peripherals', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM service_peripherals
+    `);
+
+    res.json(result.rows);
+
+  } catch (error) {
+
+    res.status(500).json({
+      error: error.message
+    });
+
+  }
+});
+
+app.get('/api/assignments', async (req, res) => {
+  try {
+
+    const result = await pool.query(`
+      SELECT *
+      FROM assignments
+      ORDER BY assigned_at DESC
+    `);
+
+    res.json(result.rows);
+
+  } catch (error) {
+
+    res.status(500).json({
+      error: error.message
+    });
+
+  }
+});
+
+app.get('/api/audit-log', async (req, res) => {
+  try {
+
+    const result = await pool.query(`
+      SELECT *
+      FROM audit_log
+      ORDER BY created_at DESC
+      LIMIT 200
+    `);
+
+    res.json(result.rows);
+
+  } catch (error) {
+
+    res.status(500).json({
+      error: error.message
+    });
+
+  }
+});
+
+app.get('/api/movement-actions', async (req, res) => {
+  try {
+
+    const result = await pool.query(`
+      SELECT *
+      FROM movement_actions
+      ORDER BY sort_order
+    `);
+
+    res.json(result.rows);
+
+  } catch (error) {
+
+    res.status(500).json({
+      error: error.message
+    });
+
+  }
+});
+
 
 
 

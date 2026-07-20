@@ -110,9 +110,9 @@ export function useData(): DataState {
           .then(r => r.json())
           .catch(() => []),
 
-        supabase.from('service_peripherals')
-          .select('*')
-          .then((r) => r.data ?? []),
+fetch('/api/service-peripherals')
+  .then(r => r.json())
+  .catch(() => []),
 
         fetch('/api/license-types')
           .then(r => r.json())
@@ -122,21 +122,17 @@ export function useData(): DataState {
           .then(r => r.json())
           .catch(() => []),
 
-        supabase.from('assignments')
-          .select('*')
-          .order('assigned_at', { ascending: false })
-          .then((r) => r.data ?? []),
+fetch('/api/assignments')
+  .then(r => r.json())
+  .catch(() => []),
 
-        supabase.from('audit_log')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(200)
-          .then((r) => r.data ?? []),
+fetch('/api/audit-log')
+  .then(r => r.json())
+  .catch(() => []),
 
-        supabase.from('movement_actions')
-          .select('*')
-          .order('sort_order')
-          .then((r) => r.data ?? []),
+fetch('/api/movement-actions')
+  .then(r => r.json())
+  .catch(() => []),
 
         supabase.from('subscribed_skus')
           .select('*')
