@@ -255,6 +255,100 @@ app.get('/api/services', async (req, res) => {
 
 });
 
+app.get('/api/contract-types', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM contract_types
+      ORDER BY sort_order
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/employees', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM employees
+      ORDER BY last_name
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/hardware-categories', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM hardware_categories
+      ORDER BY sort_order
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/hardware-items', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM hardware_items
+      ORDER BY created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/license-types', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM license_types
+      ORDER BY label
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/licenses', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM licenses
+      ORDER BY created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/movements', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM movements
+      ORDER BY effective_date DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+
+
 app.get('/api/health/db', async (req, res) => {
   try {
     const result = await testDb();

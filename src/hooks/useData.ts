@@ -86,24 +86,63 @@ export function useData(): DataState {
         movementActions,
         subscribedSkus,
       ] = await Promise.all([
-fetch('/api/services')
-  .then((r) => r.json())
-  .catch(() => []),
+        fetch('/api/services')
+          .then(r => r.json())
+          .catch(() => []),
 
-        supabase.from('contract_types').select('*').order('sort_order').then((r) => r.data ?? []),
-        supabase.from('employees').select('*').order('last_name').then((r) => r.data ?? []),
-        supabase.from('movements').select('*').order('effective_date', { ascending: false }).then((r) => r.data ?? []),
-        supabase.from('hardware_categories').select('*').order('sort_order').then((r) => r.data ?? []),
-        supabase.from('hardware_items').select('*').order('created_at', { ascending: false }).then((r) => r.data ?? []),
-        supabase.from('service_peripherals').select('*').then((r) => r.data ?? []),
-        supabase.from('license_types').select('*').order('label').then((r) => r.data ?? []),
-        supabase.from('licenses').select('*').order('created_at', { ascending: false }).then((r) => r.data ?? []),
-        supabase.from('assignments').select('*').order('assigned_at', { ascending: false }).then((r) => r.data ?? []),
-        supabase.from('audit_log').select('*').order('created_at', { ascending: false }).limit(200).then((r) => r.data ?? []),
-        supabase.from('movement_actions').select('*').order('sort_order').then((r) => r.data ?? []),
-        supabase.from('subscribed_skus').select('*').order('display_name').then((r) => r.data ?? []),
+        fetch('/api/contract-types')
+          .then(r => r.json())
+          .catch(() => []),
+
+        fetch('/api/employees')
+          .then(r => r.json())
+          .catch(() => []),
+
+        fetch('/api/movements')
+          .then(r => r.json())
+          .catch(() => []),
+
+        fetch('/api/hardware-categories')
+          .then(r => r.json())
+          .catch(() => []),
+
+        fetch('/api/hardware-items')
+          .then(r => r.json())
+          .catch(() => []),
+
+        supabase.from('service_peripherals')
+          .select('*')
+          .then((r) => r.data ?? []),
+
+        fetch('/api/license-types')
+          .then(r => r.json())
+          .catch(() => []),
+
+        fetch('/api/licenses')
+          .then(r => r.json())
+          .catch(() => []),
+
+        supabase.from('assignments')
+          .select('*')
+          .order('assigned_at', { ascending: false })
+          .then((r) => r.data ?? []),
+
+        supabase.from('audit_log')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(200)
+          .then((r) => r.data ?? []),
+
+        supabase.from('movement_actions')
+          .select('*')
+          .order('sort_order')
+          .then((r) => r.data ?? []),
+
+        supabase.from('subscribed_skus')
+          .select('*')
+          .order('display_name')
+          .then((r) => r.data ?? []),
       ]);
-
       const [movementItems, movementLicenses, signedDocuments] = await Promise.all([
         supabase.from('movement_items').select('*').then((r) => r.data ?? []),
         supabase.from('movement_licenses').select('*').then((r) => r.data ?? []),
