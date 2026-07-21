@@ -896,6 +896,102 @@ app.get('/api/dashboard-widgets/:userId', async (req, res) => {
   }
 });
 
+app.post('/api/dashboard-widgets', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'user_id',
+      'widget_key',
+      'label',
+      'visible',
+      'sort_order',
+      'config'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (!columns.includes('user_id') || !columns.includes('widget_key') || !columns.includes('label')) {
+      return res.status(400).json({
+        error: 'user_id, widget_key et label sont obligatoires.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+    const result = await pool.query(
+      `
+      INSERT INTO dashboard_widgets (${columns.join(', ')})
+      VALUES (${placeholders.join(', ')})
+      ON CONFLICT (user_id, widget_key)
+      DO UPDATE SET
+        label = EXCLUDED.label,
+        visible = EXCLUDED.visible,
+        sort_order = EXCLUDED.sort_order,
+        config = EXCLUDED.config
+      RETURNING *
+      `,
+      values
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.patch('/api/dashboard-widgets/:id', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'label',
+      'visible',
+      'sort_order',
+      'config'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (columns.length === 0) {
+      return res.status(400).json({
+        error: 'Aucune donnée à mettre à jour.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    values.push(req.params.id);
+
+    const setClause = columns
+      .map((column, index) => `${column} = $${index + 1}`)
+      .join(', ');
+
+    const result = await pool.query(
+      `
+      UPDATE dashboard_widgets
+      SET ${setClause}
+      WHERE id = $${values.length}
+      RETURNING *
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Widget introuvable.'
+      });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
 
 app.get('/api/health/db', async (req, res) => {
   try {

@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import { useData } from '../hooks/useData';
 import { useAuth } from '../context/AuthContext';
-import { supabase } from '../lib/supabase';
 import { logAudit } from '../lib/audit';
 import {
   computeForecast,
@@ -120,46 +119,115 @@ export default function Dashboard() {
       .slice(0, 12);
   }, [data.movementActions, data.movements, data.employees]);
 
-  async function toggleWidget(key: string, visible: boolean) {
-    if (!user) return;
-    const existing = data.widgets.find((w) => w.widget_key === key);
-    if (existing) {
-      await supabase.from('dashboard_widgets').update({ visible }).eq('id', existing.id);
-    } else {
-      const def = ALL_WIDGETS.find((w) => w.key === key);
-      await supabase.from('dashboard_widgets').insert({
+async function toggleWidget(key: string, visible: boolean) {
+  if (!user) return;
+
+  const existing = data.widgets.find((w) => w.widget_key === key);
+
+  if (existing) {
+    const res = await fetch(`/api/dashboard-widgets/${existing.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ visible }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur mise à jour widget' }));
+      alert(err.error ?? 'Erreur mise à jour widget');
+      return;
+    }
+  } else {
+    const def = ALL_WIDGETS.find((w) => w.key === key);
+
+    const res = await fetch('/api/dashboard-widgets', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         user_id: user.id,
         widget_key: key,
         label: def?.label ?? key,
         visible,
         sort_order: ALL_WIDGETS.findIndex((w) => w.key === key) + 1,
-      });
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur création widget' }));
+      alert(err.error ?? 'Erreur création widget');
+      return;
     }
-    await logAudit('update', 'dashboard_widget', null, { key, visible }, profile?.display_name);
-    data.reload();
   }
 
-  async function saveOrder(orderedKeys: string[]) {
-    if (!user) return;
-    for (let i = 0; i < orderedKeys.length; i++) {
-      const key = orderedKeys[i];
-      const existing = data.widgets.find((w) => w.widget_key === key);
-      if (existing) {
-        await supabase.from('dashboard_widgets').update({ sort_order: i + 1 }).eq('id', existing.id);
-      } else {
-        const def = ALL_WIDGETS.find((w) => w.key === key);
-        await supabase.from('dashboard_widgets').insert({
+  await logAudit('update', 'dashboard_widget', null, { key, visible }, profile?.display_name).catch(console.error);
+
+  data.reload();
+}
+
+
+async function saveOrder(orderedKeys: string[]) {
+  if (!user) return;
+
+  for (let i = 0; i < orderedKeys.length; i++) {
+    const key = orderedKeys[i];
+    const existing = data.widgets.find((w) => w.widget_key === key);
+    const def = ALL_WIDGETS.find((w) => w.key === key);
+
+    if (existing) {
+      const res = await fetch(`/api/dashboard-widgets/${existing.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sort_order: i + 1,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Erreur mise à jour ordre widget' }));
+        alert(err.error ?? 'Erreur mise à jour ordre widget');
+        return;
+      }
+    } else {
+      const res = await fetch('/api/dashboard-widgets', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           user_id: user.id,
           widget_key: key,
           label: def?.label ?? key,
           visible: true,
           sort_order: i + 1,
-        });
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Erreur création widget' }));
+        alert(err.error ?? 'Erreur création widget');
+        return;
       }
     }
-    await logAudit('reorder', 'dashboard_widgets', null, { order: orderedKeys }, profile?.display_name);
-    data.reload();
   }
+
+  await logAudit(
+    'update',
+    'dashboard_widgets',
+    null,
+    { orderedKeys },
+    profile?.display_name
+  ).catch(console.error);
+
+  data.reload();
+}
+
+
+
 
   function onDragStart(key: string) {
     setDragKey(key);
