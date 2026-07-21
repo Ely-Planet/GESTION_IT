@@ -1,5 +1,3 @@
-import { supabase } from './supabase';
-
 export async function logAudit(
   action: string,
   entityType: string,
@@ -8,12 +6,18 @@ export async function logAudit(
   actorName?: string,
 ) {
   try {
-    await supabase.rpc('log_audit', {
-      p_action: action,
-      p_entity_type: entityType,
-      p_entity_id: entityId ?? null,
-      p_details: details ?? null,
-      p_actor_name: actorName ?? null,
+    await fetch('/api/audit-log', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        action,
+        entity_type: entityType,
+        entity_id: entityId ?? null,
+        details: details ?? null,
+        actor_name: actorName ?? null,
+      }),
     });
   } catch (e) {
     console.warn('Audit log failed', e);

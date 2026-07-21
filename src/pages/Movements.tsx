@@ -32,7 +32,6 @@ import type { Movement, MovementAction, MovementItem, MovementLicense } from '..
 export default function Movements() {
   const data = useData();
   const { profile } = useAuth();
-  const [filter, setFilter] = useState<'all' | 'onboarding' | 'offboarding'>('all');
   const [showForm, setShowForm] = useState(false);
   const [formType, setFormType] = useState<'onboarding' | 'offboarding'>('onboarding');
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -986,11 +985,16 @@ function MovementForm({
     setError(null);
 
     try {
+
       let employeeId: string | null = null;
+
       if (firstName && lastName) {
-        const { data: emp, error: empErr } = await supabase
-          .from('employees')
-          .insert({
+        const empRes = await fetch('/api/employees', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
             first_name: firstName,
             last_name: lastName,
             email: email || null,
@@ -1000,12 +1004,18 @@ function MovementForm({
             manager_name: managerName || null,
             job_title: jobTitle || null,
             is_active: type === 'onboarding',
-          })
-          .select('id')
-          .single();
-        if (empErr) throw empErr;
+          }),
+        });
+
+        if (!empRes.ok) {
+          const err = await empRes.json().catch(() => ({ error: 'Erreur création salarié' }));
+          throw new Error(err.error ?? 'Erreur création salarié');
+        }
+
+        const emp = await empRes.json();
         employeeId = emp.id;
       }
+
 
       const payload = {
         type,

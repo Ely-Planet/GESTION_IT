@@ -281,6 +281,53 @@ app.get('/api/employees', async (req, res) => {
   }
 });
 
+
+app.post('/api/employees', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'first_name',
+      'last_name',
+      'email',
+      'service_id',
+      'contract_type_id',
+      'contract_end_date',
+      'manager_name',
+      'job_title',
+      'is_active'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (!columns.includes('first_name') || !columns.includes('last_name')) {
+      return res.status(400).json({
+        error: 'first_name et last_name sont obligatoires.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+    const result = await pool.query(
+      `
+      INSERT INTO employees (${columns.join(', ')})
+      VALUES (${placeholders.join(', ')})
+      RETURNING *
+      `,
+      values
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+
 app.get('/api/hardware-categories', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -788,6 +835,56 @@ app.get('/api/audit-log', async (req, res) => {
 
   }
 });
+
+
+app.post('/api/audit-log', async (req, res) => {
+  try {
+    const {
+      actor_name,
+      action,
+      entity_type,
+      entity_id,
+      details
+    } = req.body;
+
+    if (!action || !entity_type) {
+      return res.status(400).json({
+        error: 'action et entity_type sont obligatoires.'
+      });
+    }
+
+    const result = await pool.query(
+      `
+      INSERT INTO audit_log (
+        actor_name,
+        action,
+        entity_type,
+        entity_id,
+        details
+      )
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+      `,
+      [
+        actor_name ?? null,
+        action,
+        entity_type,
+        entity_id ?? null,
+        details ?? null
+      ]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
 
 app.get('/api/movement-actions', async (req, res) => {
   try {

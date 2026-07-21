@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import type {
   Service,
@@ -155,14 +154,14 @@ fetch('/api/signed-documents')
       ]);
 
       let widgets: DashboardWidget[] = [];
+
       if (user) {
-        const { data } = await supabase
-          .from('dashboard_widgets')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('sort_order');
-        widgets = (data as DashboardWidget[]) ?? [];
+        widgets = await fetch(`/api/dashboard-widgets/${user.id}`)
+          .then(r => r.json())
+          .catch(() => []);
       }
+
+
 
       setState({
         services: services as Service[],
