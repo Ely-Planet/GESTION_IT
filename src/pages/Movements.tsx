@@ -45,77 +45,244 @@ export default function Movements() {
   );
 
   async function changeStatus(m: Movement, status: Movement['status']) {
-    const { error } = await supabase.from('movements').update({ status }).eq('id', m.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('update', 'movement', m.id, { status }, profile?.display_name);
+    const res = await fetch(`/api/movements/${m.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ status }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur mise à jour mouvement' }));
+      alert(err.error ?? 'Erreur mise à jour mouvement');
+      return;
+    }
+
+    await logAudit(
+      'update',
+      'movement',
+      m.id,
+      { status },
+      profile?.display_name
+    ).catch(console.error);
+
     data.reload();
   }
 
   async function toggleAction(a: MovementAction) {
     const patch = a.done_at
-      ? { done_at: null, done_by: null }
-      : { done_at: new Date().toISOString(), done_by: profile?.id ?? null };
-    const { error } = await supabase.from('movement_actions').update(patch).eq('id', a.id);
-    if (error) { alert(error.message); return; }
-    await logAudit(a.done_at ? 'uncomplete' : 'complete', 'movement_action', a.id, patch, profile?.display_name);
+      ? { done_at: null }
+      : { done_at: new Date().toISOString() };
+
+    const res = await fetch(`/api/movement-actions/${a.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(patch),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur mise à jour action' }));
+      alert(err.error ?? 'Erreur mise à jour action');
+      return;
+    }
+
+    await logAudit(
+      a.done_at ? 'uncomplete' : 'complete',
+      'movement_action',
+      a.id,
+      patch,
+      profile?.display_name
+    ).catch(console.error);
+
     data.reload();
   }
 
   async function addAction(movementId: string) {
-    const label = prompt('Libellé de l\'action :');
+    const label = prompt('Libellé de l’action :');
     if (!label) return;
-    const due = prompt('Date d\'échéance (AAAA-MM-JJ, optionnel) :');
-    const { error } = await supabase.from('movement_actions').insert({
+
+    const due = prompt('Date d’échéance (AAAA-MM-JJ, optionnel) :');
+
+    const payload = {
       movement_id: movementId,
       action_type: 'other',
       label,
       due_date: due || null,
       sort_order: 99,
+    };
+
+    const res = await fetch('/api/movement-actions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
     });
-    if (error) { alert(error.message); return; }
-    await logAudit('create', 'movement_action', null, { movement_id: movementId, label }, profile?.display_name);
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur création action' }));
+      alert(err.error ?? 'Erreur création action');
+      return;
+    }
+
+    await logAudit(
+      'create',
+      'movement_action',
+      null,
+      { movement_id: movementId, label },
+      profile?.display_name
+    ).catch(console.error);
+
     data.reload();
   }
 
   async function assignHardwareItem(mi: MovementItem, hardwareItemId: string) {
-    const { error } = await supabase.from('movement_items').update({
-      hardware_item_id: hardwareItemId,
-      status: 'assigned',
-    }).eq('id', mi.id);
-    if (error) { alert(error.message); return; }
-    await supabase.from('hardware_items').update({ status: 'assigned' }).eq('id', hardwareItemId);
-    await logAudit('assign', 'movement_item', mi.id, { hardware_item_id: hardwareItemId }, profile?.display_name);
+    const res = await fetch(`/api/movement-items/${mi.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        hardware_item_id: hardwareItemId,
+        status: 'assigned',
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur attribution matériel au mouvement' }));
+      alert(err.error ?? 'Erreur attribution matériel au mouvement');
+      return;
+    }
+
+    const hwRes = await fetch(`/api/hardware-items/${hardwareItemId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'assigned' }),
+    });
+
+    if (!hwRes.ok) {
+      const err = await hwRes.json().catch(() => ({ error: 'Erreur mise à jour matériel' }));
+      alert(err.error ?? 'Erreur mise à jour matériel');
+      return;
+    }
+
+    await logAudit(
+      'assign',
+      'movement_item',
+      mi.id,
+      { hardware_item_id: hardwareItemId },
+      profile?.display_name
+    ).catch(console.error);
+
     data.reload();
   }
 
   async function skipMovementItem(mi: MovementItem) {
-    const { error } = await supabase.from('movement_items').update({ status: 'skipped' }).eq('id', mi.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('skip', 'movement_item', mi.id, {}, profile?.display_name);
+    const res = await fetch(`/api/movement-items/${mi.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'skipped' }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur ignore matériel' }));
+      alert(err.error ?? 'Erreur ignore matériel');
+      return;
+    }
+
+    await logAudit(
+      'skip',
+      'movement_item',
+      mi.id,
+      {},
+      profile?.display_name
+    ).catch(console.error);
+
     data.reload();
   }
 
   async function assignLicense(ml: MovementLicense, licenseId: string) {
-    const { error } = await supabase.from('movement_licenses').update({
-      license_id: licenseId,
-      status: 'assigned',
-    }).eq('id', ml.id);
-    if (error) { alert(error.message); return; }
-    await supabase.from('licenses').update({
-      status: 'assigned',
-      assigned_employee_id: data.movements.find((m) => m.id === ml.movement_id)?.employee_id ?? null,
-      assigned_at: new Date().toISOString().slice(0, 10),
-    }).eq('id', licenseId);
-    await logAudit('assign', 'movement_license', ml.id, { license_id: licenseId }, profile?.display_name);
+    const res = await fetch(`/api/movement-licenses/${ml.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        license_id: licenseId,
+        status: 'assigned',
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur attribution licence au mouvement' }));
+      alert(err.error ?? 'Erreur attribution licence au mouvement');
+      return;
+    }
+
+    const employeeId = data.movements.find((m) => m.id === ml.movement_id)?.employee_id ?? null;
+
+    const licRes = await fetch(`/api/licenses/${licenseId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: 'assigned',
+        assigned_employee_id: employeeId,
+        assigned_at: new Date().toISOString().slice(0, 10),
+      }),
+    });
+
+    if (!licRes.ok) {
+      const err = await licRes.json().catch(() => ({ error: 'Erreur mise à jour licence' }));
+      alert(err.error ?? 'Erreur mise à jour licence');
+      return;
+    }
+
+    await logAudit(
+      'assign',
+      'movement_license',
+      ml.id,
+      { license_id: licenseId },
+      profile?.display_name
+    ).catch(console.error);
+
     data.reload();
   }
 
   async function skipMovementLicense(ml: MovementLicense) {
-    const { error } = await supabase.from('movement_licenses').update({ status: 'skipped' }).eq('id', ml.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('skip', 'movement_license', ml.id, {}, profile?.display_name);
+    const res = await fetch(`/api/movement-licenses/${ml.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ status: 'skipped' }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur ignore licence' }));
+      alert(err.error ?? 'Erreur ignore licence');
+      return;
+    }
+
+    await logAudit(
+      'skip',
+      'movement_license',
+      ml.id,
+      {},
+      profile?.display_name
+    ).catch(console.error);
+
     data.reload();
   }
+
 
   return (
     <div className="p-6 lg:p-8 max-w-7xl mx-auto">

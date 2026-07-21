@@ -1012,6 +1012,413 @@ app.get('/api/health/db', async (req, res) => {
   }
 });
 
+app.patch('/api/movements/:id', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'type',
+      'employee_id',
+      'service_id',
+      'contract_type_id',
+      'contract_end_date',
+      'effective_date',
+      'source',
+      'manager_name',
+      'job_title',
+      'notes',
+      'status',
+      'calendar_event_ids'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (columns.length === 0) {
+      return res.status(400).json({ error: 'Aucune donnée à mettre à jour.' });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    values.push(req.params.id);
+
+    const setClause = columns
+      .map((column, index) => `${column} = $${index + 1}`)
+      .join(', ');
+
+    const result = await pool.query(
+      `
+      UPDATE movements
+      SET ${setClause},
+          updated_at = now()
+      WHERE id = $${values.length}
+      RETURNING *
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Mouvement introuvable.' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/movements', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'type',
+      'employee_id',
+      'service_id',
+      'contract_type_id',
+      'contract_end_date',
+      'effective_date',
+      'source',
+      'manager_name',
+      'job_title',
+      'notes',
+      'status',
+      'calendar_event_ids'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (!columns.includes('type') || !columns.includes('effective_date')) {
+      return res.status(400).json({
+        error: 'type et effective_date sont obligatoires.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+    const result = await pool.query(
+      `
+      INSERT INTO movements (${columns.join(', ')})
+      VALUES (${placeholders.join(', ')})
+      RETURNING *
+      `,
+      values
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/movement-actions', async (req, res) => {
+  try {
+    const inputRows = Array.isArray(req.body) ? req.body : [req.body];
+
+    const allowedColumns = [
+      'movement_id',
+      'action_type',
+      'label',
+      'due_date',
+      'done_at',
+      'notes',
+      'sort_order'
+    ];
+
+    const insertedRows = [];
+
+    for (const row of inputRows) {
+      const columns = allowedColumns.filter((column) => row[column] !== undefined);
+
+      if (!columns.includes('movement_id') || !columns.includes('action_type') || !columns.includes('label')) {
+        return res.status(400).json({
+          error: 'movement_id, action_type et label sont obligatoires.'
+        });
+      }
+
+      const values = columns.map((column) => row[column]);
+      const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+      const result = await pool.query(
+        `
+        INSERT INTO movement_actions (${columns.join(', ')})
+        VALUES (${placeholders.join(', ')})
+        RETURNING *
+        `,
+        values
+      );
+
+      insertedRows.push(result.rows[0]);
+    }
+
+    res.status(201).json(insertedRows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/movement-actions/:id', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'action_type',
+      'label',
+      'due_date',
+      'done_at',
+      'notes',
+      'sort_order'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (columns.length === 0) {
+      return res.status(400).json({ error: 'Aucune donnée à mettre à jour.' });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    values.push(req.params.id);
+
+    const setClause = columns
+      .map((column, index) => `${column} = $${index + 1}`)
+      .join(', ');
+
+    const result = await pool.query(
+      `
+      UPDATE movement_actions
+      SET ${setClause}
+      WHERE id = $${values.length}
+      RETURNING *
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Action introuvable.' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/movement-items', async (req, res) => {
+  try {
+    const inputRows = Array.isArray(req.body) ? req.body : [req.body];
+
+    const allowedColumns = [
+      'movement_id',
+      'category_id',
+      'hardware_item_id',
+      'status',
+      'notes'
+    ];
+
+    const insertedRows = [];
+
+    for (const row of inputRows) {
+      const columns = allowedColumns.filter((column) => row[column] !== undefined);
+
+      if (!columns.includes('movement_id')) {
+        return res.status(400).json({
+          error: 'movement_id est obligatoire.'
+        });
+      }
+
+      const values = columns.map((column) => row[column]);
+      const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+      const result = await pool.query(
+        `
+        INSERT INTO movement_items (${columns.join(', ')})
+        VALUES (${placeholders.join(', ')})
+        RETURNING *
+        `,
+        values
+      );
+
+      insertedRows.push(result.rows[0]);
+    }
+
+    res.status(201).json(insertedRows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/movement-items/:id', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'category_id',
+      'hardware_item_id',
+      'status',
+      'notes'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (columns.length === 0) {
+      return res.status(400).json({ error: 'Aucune donnée à mettre à jour.' });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    values.push(req.params.id);
+
+    const setClause = columns
+      .map((column, index) => `${column} = $${index + 1}`)
+      .join(', ');
+
+    const result = await pool.query(
+      `
+      UPDATE movement_items
+      SET ${setClause}
+      WHERE id = $${values.length}
+      RETURNING *
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Ligne matériel mouvement introuvable.' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/movement-licenses', async (req, res) => {
+  try {
+    const inputRows = Array.isArray(req.body) ? req.body : [req.body];
+
+    const allowedColumns = [
+      'movement_id',
+      'license_type_id',
+      'license_id',
+      'status',
+      'notes'
+    ];
+
+    const insertedRows = [];
+
+    for (const row of inputRows) {
+      const columns = allowedColumns.filter((column) => row[column] !== undefined);
+
+      if (!columns.includes('movement_id') || !columns.includes('license_type_id')) {
+        return res.status(400).json({
+          error: 'movement_id et license_type_id sont obligatoires.'
+        });
+      }
+
+      const values = columns.map((column) => row[column]);
+      const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+      const result = await pool.query(
+        `
+        INSERT INTO movement_licenses (${columns.join(', ')})
+        VALUES (${placeholders.join(', ')})
+        RETURNING *
+        `,
+        values
+      );
+
+      insertedRows.push(result.rows[0]);
+    }
+
+    res.status(201).json(insertedRows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/movement-licenses/:id', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'license_type_id',
+      'license_id',
+      'status',
+      'notes'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (columns.length === 0) {
+      return res.status(400).json({ error: 'Aucune donnée à mettre à jour.' });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    values.push(req.params.id);
+
+    const setClause = columns
+      .map((column, index) => `${column} = $${index + 1}`)
+      .join(', ');
+
+    const result = await pool.query(
+      `
+      UPDATE movement_licenses
+      SET ${setClause}
+      WHERE id = $${values.length}
+      RETURNING *
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Ligne licence mouvement introuvable.' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/signed-documents', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'movement_id',
+      'doc_type',
+      'signer_name',
+      'signer_email',
+      'signed_at',
+      'status',
+      'content_snapshot'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (!columns.includes('movement_id') || !columns.includes('doc_type')) {
+      return res.status(400).json({
+        error: 'movement_id et doc_type sont obligatoires.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+    const result = await pool.query(
+      `
+      INSERT INTO signed_documents (${columns.join(', ')})
+      VALUES (${placeholders.join(', ')})
+      RETURNING *
+      `,
+      values
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+
+
+
 app.use(express.static(path.join(__dirname, '../dist')));
 
 app.use((req, res) => {
