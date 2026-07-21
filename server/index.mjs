@@ -1384,6 +1384,7 @@ app.post('/api/signed-documents', async (req, res) => {
       'signer_name',
       'signer_email',
       'signed_at',
+      'signature_data',
       'status',
       'content_snapshot'
     ];

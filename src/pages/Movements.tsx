@@ -20,7 +20,6 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useData } from '../hooks/useData';
-import { supabase } from '../lib/supabase';
 import { logAudit } from '../lib/audit';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -799,17 +798,29 @@ function SignatureModal({
         }),
       };
 
-      const { error } = await supabase.from('signed_documents').insert({
-        movement_id: movementId,
-        doc_type: docType,
-        signer_name: signerName,
-        signer_email: signerEmail || null,
-        signature_data: signatureData,
-        signed_at: new Date().toISOString(),
-        status: 'signed',
-        content_snapshot: snapshot,
+      const res = await fetch('/api/signed-documents', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          movement_id: movementId,
+          doc_type: docType,
+          signer_name: signerName,
+          signer_email: signerEmail || null,
+          signature_data: signatureData,
+          signed_at: new Date().toISOString(),
+          status: 'signed',
+          content_snapshot: snapshot,
+        }),
       });
-      if (error) throw error;
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Erreur signature document' }));
+        throw new Error(err.error ?? 'Erreur signature document');
+      }
+
+
 
       await logAudit('sign', 'signed_document', null, { movement_id: movementId, doc_type: docType, signer: signerName }, profile?.display_name);
       onSigned();
@@ -1010,12 +1021,25 @@ function MovementForm({
         status: 'pending',
         created_by: user?.id ?? null,
       };
-      const { data: mov, error: movErr } = await supabase
-        .from('movements')
-        .insert(payload)
-        .select('id')
-        .single();
-      if (movErr) throw movErr;
+
+      const movRes = await fetch('/api/movements', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!movRes.ok) {
+        const err = await movRes.json().catch(() => ({ error: 'Erreur création mouvement' }));
+        throw new Error(err.error ?? 'Erreur création mouvement');
+      }
+
+      const mov = await movRes.json();
+
+
+
+
 
       // Seed default action checklist
       const defaultActions = type === 'onboarding'
@@ -1031,39 +1055,93 @@ function MovementForm({
             { action_type: 'pc_delivery' as const, label: 'Réinstallation PC', sort_order: 2 },
             { action_type: 'license_assignment' as const, label: 'Libération licences', sort_order: 3 },
           ];
-      for (const a of defaultActions) {
-        await supabase.from('movement_actions').insert({
-          movement_id: mov.id,
-          action_type: a.action_type,
-          label: a.label,
-          due_date: effectiveDate,
-          sort_order: a.sort_order,
-        });
-      }
+
+      await fetch('/api/movement-actions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(
+          defaultActions.map((a) => ({
+            movement_id: mov.id,
+            action_type: a.action_type,
+            label: a.label,
+            due_date: effectiveDate,
+            sort_order: a.sort_order,
+          }))
+        ),
+      });
+
+
+
 
       // Create requested hardware items
-      for (const code of requestedHardware) {
-        const cat = data.hardwareCategories.find((c) => c.code === code);
-        if (cat) {
-          await supabase.from('movement_items').insert({
+
+
+      const requestedHardwareRows = requestedHardware
+        .map((code) => {
+          const cat = data.hardwareCategories.find((c) => c.code === code);
+
+          if (!cat) return null;
+
+          return {
             movement_id: mov.id,
             category_id: cat.id,
             status: 'requested',
-          });
+          };
+        })
+        .filter(Boolean);
+
+      if (requestedHardwareRows.length > 0) {
+        const hwReqRes = await fetch('/api/movement-items', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestedHardwareRows),
+        });
+
+        if (!hwReqRes.ok) {
+          const err = await hwReqRes.json().catch(() => ({ error: 'Erreur création matériels mouvement' }));
+          throw new Error(err.error ?? 'Erreur création matériels mouvement');
         }
       }
 
+
+
       // Create requested licenses
-      for (const code of requestedLicenses) {
-        const lt = data.licenseTypes.find((t) => t.code === code);
-        if (lt) {
-          await supabase.from('movement_licenses').insert({
+
+      const requestedLicenseRows = requestedLicenses
+        .map((code) => {
+          const lt = data.licenseTypes.find((t) => t.code === code);
+
+          if (!lt) return null;
+
+          return {
             movement_id: mov.id,
             license_type_id: lt.id,
             status: 'requested',
-          });
+          };
+        })
+        .filter(Boolean);
+
+      if (requestedLicenseRows.length > 0) {
+        const licReqRes = await fetch('/api/movement-licenses', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestedLicenseRows),
+        });
+
+        if (!licReqRes.ok) {
+          const err = await licReqRes.json().catch(() => ({ error: 'Erreur création licences mouvement' }));
+          throw new Error(err.error ?? 'Erreur création licences mouvement');
         }
       }
+
+
+
 
       await logAudit('create', 'movement', mov.id, payload, profile?.display_name);
       onSaved();
