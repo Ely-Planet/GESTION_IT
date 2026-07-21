@@ -32,7 +32,8 @@ import type { Movement, MovementAction, MovementItem, MovementLicense } from '..
 export default function Movements() {
   const data = useData();
   const { profile } = useAuth();
-  const [showForm, setShowForm] = useState(false);
+const [filter, setFilter] = useState<'all' | 'onboarding' | 'offboarding'>('all');  
+const [showForm, setShowForm] = useState(false);
   const [formType, setFormType] = useState<'onboarding' | 'offboarding'>('onboarding');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [signModal, setSignModal] = useState<{ movementId: string; docType: 'assignment' | 'restitution' } | null>(null);
