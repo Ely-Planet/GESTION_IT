@@ -13,7 +13,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { useData } from '../hooks/useData';
-import { supabase } from '../lib/supabase';
+
 import { logAudit } from '../lib/audit';
 import { useAuth } from '../context/AuthContext';
 import { LICENSE_STATUS, statusLabel, formatFrDate } from '../lib/format';
@@ -36,51 +36,153 @@ export default function Licenses() {
     return Array.from(map.values());
   }, [data.licenseTypes, data.licenses]);
 
-  async function setTotalSeats(lt: LicenseType, total: number) {
-    const { error } = await supabase.from('license_types').update({ total_seats: total }).eq('id', lt.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('update', 'license_type', lt.id, { total_seats: total }, profile?.display_name);
-    data.reload();
+async function setTotalSeats(lt: LicenseType, total: number) {
+  const res = await fetch(`/api/license-types/${lt.id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ total_seats: total }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erreur mise à jour du total' }));
+    alert(err.error ?? 'Erreur mise à jour du total');
+    return;
   }
 
-  async function assignSeat(lic: License, employeeId: string) {
-    const { error } = await supabase
-      .from('licenses')
-      .update({ status: 'assigned', assigned_employee_id: employeeId, assigned_at: new Date().toISOString().slice(0, 10) })
-      .eq('id', lic.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('assign', 'license', lic.id, { employee_id: employeeId }, profile?.display_name);
-    data.reload();
+  await logAudit(
+    'update',
+    'license_type',
+    lt.id,
+    { total_seats: total, from: lt.total_seats },
+    profile?.display_name
+  ).catch(console.error);
+
+  data.reload();
+}
+
+
+async function assignSeat(lic: License, employeeId: string) {
+  const res = await fetch(`/api/licenses/${lic.id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      status: 'assigned',
+      assigned_employee_id: employeeId,
+      assigned_at: new Date().toISOString().slice(0, 10),
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erreur attribution licence' }));
+    alert(err.error ?? 'Erreur attribution licence');
+    return;
   }
 
-  async function releaseSeat(lic: License) {
-    const { error } = await supabase
-      .from('licenses')
-      .update({ status: 'available', assigned_employee_id: null, assigned_at: null })
-      .eq('id', lic.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('release', 'license', lic.id, {}, profile?.display_name);
-    data.reload();
+  await logAudit(
+    'assign',
+    'license',
+    lic.id,
+    { employee_id: employeeId },
+    profile?.display_name
+  ).catch(console.error);
+
+  data.reload();
+}
+
+
+async function releaseSeat(lic: License) {
+  const res = await fetch(`/api/licenses/${lic.id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      status: 'available',
+      assigned_employee_id: null,
+      assigned_at: null,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erreur libération licence' }));
+    alert(err.error ?? 'Erreur libération licence');
+    return;
   }
 
-  async function resiliateSeat(lic: License) {
-    if (!confirm('Résilier cette licence ?')) return;
-    const { error } = await supabase
-      .from('licenses')
-      .update({ status: 'resiliated', assigned_employee_id: null, assigned_at: null })
-      .eq('id', lic.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('resiliate', 'license', lic.id, {}, profile?.display_name);
-    data.reload();
+  await logAudit(
+    'release',
+    'license',
+    lic.id,
+    {},
+    profile?.display_name
+  ).catch(console.error);
+
+  data.reload();
+}
+
+
+async function resiliateSeat(lic: License) {
+  if (!confirm('Résilier cette licence ?')) return;
+
+  const res = await fetch(`/api/licenses/${lic.id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      status: 'resiliated',
+      assigned_employee_id: null,
+      assigned_at: null,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erreur résiliation licence' }));
+    alert(err.error ?? 'Erreur résiliation licence');
+    return;
   }
 
-  async function deleteSeat(lic: License) {
-    if (!confirm('Supprimer ce siège de licence ?')) return;
-    const { error } = await supabase.from('licenses').delete().eq('id', lic.id);
-    if (error) { alert(error.message); return; }
-    await logAudit('delete', 'license', lic.id, {}, profile?.display_name);
-    data.reload();
+  await logAudit(
+    'resiliate',
+    'license',
+    lic.id,
+    {},
+    profile?.display_name
+  ).catch(console.error);
+
+  data.reload();
+}
+
+
+async function deleteSeat(lic: License) {
+  if (!confirm('Supprimer ce siège de licence ?')) return;
+
+  const res = await fetch(`/api/licenses/${lic.id}`, {
+    method: 'DELETE',
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Erreur suppression licence' }));
+    alert(err.error ?? 'Erreur suppression licence');
+    return;
   }
+
+  await logAudit(
+    'delete',
+    'license',
+    lic.id,
+    { seat_key: lic.seat_key },
+    profile?.display_name
+  ).catch(console.error);
+
+  data.reload();
+}
+
+
 
   async function syncMicrosoft() {
     setSyncing(true);
@@ -358,10 +460,32 @@ function LicenseTypeForm({ onClose, onSaved }: { onClose: () => void; onSaved: (
         default_renewal_notice_days: noticeDays,
         notes: notes || null,
       };
-      const { data: created, error: insErr } = await supabase.from('license_types').insert(payload).select('id').single();
-      if (insErr) throw insErr;
-      await logAudit('create', 'license_type', created.id, payload, profile?.display_name);
-      onSaved();
+
+const res = await fetch('/api/license-types', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(payload),
+});
+
+if (!res.ok) {
+  const err = await res.json().catch(() => ({ error: 'Erreur création type de licence' }));
+  throw new Error(err.error ?? 'Erreur création type de licence');
+}
+
+const created = await res.json();
+
+await logAudit(
+  'create',
+  'license_type',
+  created.id,
+  payload,
+  profile?.display_name
+).catch(console.error);
+
+onSaved();
+
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erreur');
     } finally {
@@ -438,10 +562,34 @@ function SeatForm({ types, onClose, onSaved }: { types: LicenseType[]; onClose: 
         expiration_date: hasExpiration ? (expirationDate || null) : null,
         renewal_notice_days: noticeDays === '' ? null : noticeDays,
       }));
-      const { data: inserted, error: insErr } = await supabase.from('licenses').insert(rows).select('id');
-      if (insErr) throw insErr;
-      for (const r of inserted ?? []) await logAudit('create', 'license', r.id, { type_id: typeId, count, expiration_date: expirationDate || null }, profile?.display_name);
-      onSaved();
+
+const res = await fetch('/api/licenses', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(rows),
+});
+
+if (!res.ok) {
+  const err = await res.json().catch(() => ({ error: 'Erreur création sièges de licence' }));
+  throw new Error(err.error ?? 'Erreur création sièges de licence');
+}
+
+const inserted = await res.json();
+
+for (const r of inserted ?? []) {
+  await logAudit(
+    'create',
+    'license',
+    r.id,
+    { license_type_id: typeId, count },
+    profile?.display_name
+  ).catch(console.error);
+}
+
+onSaved();
+
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erreur');
     } finally {

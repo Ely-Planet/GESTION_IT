@@ -478,6 +478,245 @@ app.get('/api/licenses', async (req, res) => {
   }
 });
 
+
+
+app.post('/api/license-types', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'code',
+      'label',
+      'total_seats',
+      'has_expiration',
+      'default_renewal_notice_days',
+      'notes'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (!columns.includes('code') || !columns.includes('label')) {
+      return res.status(400).json({
+        error: 'code et label sont obligatoires.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+    const result = await pool.query(
+      `
+      INSERT INTO license_types (${columns.join(', ')})
+      VALUES (${placeholders.join(', ')})
+      RETURNING *
+      `,
+      values
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.patch('/api/license-types/:id', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'code',
+      'label',
+      'total_seats',
+      'has_expiration',
+      'default_renewal_notice_days',
+      'notes'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (columns.length === 0) {
+      return res.status(400).json({
+        error: 'Aucune donnée à mettre à jour.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    values.push(req.params.id);
+
+    const setClause = columns
+      .map((column, index) => `${column} = $${index + 1}`)
+      .join(', ');
+
+    const result = await pool.query(
+      `
+      UPDATE license_types
+      SET ${setClause},
+          updated_at = now()
+      WHERE id = $${values.length}
+      RETURNING *
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Type de licence introuvable.'
+      });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/licenses', async (req, res) => {
+  try {
+    const inputRows = Array.isArray(req.body) ? req.body : [req.body];
+
+    if (inputRows.length === 0) {
+      return res.status(400).json({
+        error: 'Aucune licence à créer.'
+      });
+    }
+
+    const allowedColumns = [
+      'license_type_id',
+      'seat_key',
+      'status',
+      'assigned_employee_id',
+      'assigned_at',
+      'expiration_date',
+      'renewal_notice_days',
+      'notes'
+    ];
+
+    const insertedRows = [];
+
+    for (const row of inputRows) {
+      const columns = allowedColumns.filter((column) => row[column] !== undefined);
+
+      if (!columns.includes('license_type_id')) {
+        return res.status(400).json({
+          error: 'license_type_id est obligatoire.'
+        });
+      }
+
+      const values = columns.map((column) => row[column]);
+      const placeholders = columns.map((_, index) => `$${index + 1}`);
+
+      const result = await pool.query(
+        `
+        INSERT INTO licenses (${columns.join(', ')})
+        VALUES (${placeholders.join(', ')})
+        RETURNING *
+        `,
+        values
+      );
+
+      insertedRows.push(result.rows[0]);
+    }
+
+    res.status(201).json(insertedRows);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.patch('/api/licenses/:id', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'license_type_id',
+      'seat_key',
+      'status',
+      'assigned_employee_id',
+      'assigned_at',
+      'expiration_date',
+      'renewal_notice_days',
+      'notes'
+    ];
+
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
+
+    if (columns.length === 0) {
+      return res.status(400).json({
+        error: 'Aucune donnée à mettre à jour.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    values.push(req.params.id);
+
+    const setClause = columns
+      .map((column, index) => `${column} = $${index + 1}`)
+      .join(', ');
+
+    const result = await pool.query(
+      `
+      UPDATE licenses
+      SET ${setClause},
+          updated_at = now()
+      WHERE id = $${values.length}
+      RETURNING *
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Licence introuvable.'
+      });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+app.delete('/api/licenses/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      DELETE FROM licenses
+      WHERE id = $1
+      RETURNING id
+      `,
+      [req.params.id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Licence introuvable.'
+      });
+    }
+
+    res.json({
+      ok: true,
+      id: result.rows[0].id
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
 app.get('/api/movements', async (req, res) => {
   try {
     const result = await pool.query(`
