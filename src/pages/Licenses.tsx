@@ -187,14 +187,13 @@ async function deleteSeat(lic: License) {
   async function syncMicrosoft() {
     setSyncing(true);
     try {
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-microsoft-licenses`;
-      const res = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json',
-        },
-      });
+
+
+const res = await fetch('/api/sync-microsoft-licenses', {
+  method: 'POST',
+});
+
+
       const json = await res.json();
       if (!res.ok) {
         alert(`Erreur de synchronisation: ${json.error ?? res.status}`);
@@ -232,28 +231,11 @@ async function deleteSeat(lic: License) {
         </div>
       </div>
 
-      {/* Microsoft tenant SKUs */}
-      {data.subscribedSkus.length > 0 && (
-        <section className="card p-5 mb-6">
-          <h2 className="text-base font-semibold text-ink-900 mb-4 flex items-center gap-2">
-            <RefreshCw className="w-4.5 h-4.5 text-blue-600" />
-            Licences Microsoft (tenant — synchronisé)
-          </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {data.subscribedSkus.map((sku) => {
-              const available = sku.enabled_units - sku.consumed_units;
-              return (
-                <div key={sku.id} className="p-3 rounded-lg border border-ink-100 bg-ink-50/40">
-                  <p className="text-sm font-medium text-ink-800 truncate">{sku.display_name ?? sku.sku_id}</p>
-                  <p className="text-xs text-ink-500 mt-1">{sku.consumed_units}/{sku.enabled_units} consommées</p>
-                  <p className={`text-xs mt-0.5 ${available === 0 ? 'text-red-600' : 'text-green-600'}`}>{available} disponible(s)</p>
-                  <p className="text-xs text-ink-400 mt-0.5">Sync: {formatFrDate(sku.synced_at)}</p>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
+
+
+
+
+
 
       <div className="space-y-6">
         {grouped.length === 0 && !data.loading && (
