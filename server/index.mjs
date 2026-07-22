@@ -290,6 +290,23 @@ app.get('/api/employees', async (req, res) => {
   }
 });
 
+app.get('/api/movement-service-groups', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM movement_service_groups
+      ORDER BY created_at
+    `);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
 
 app.post('/api/employees', async (req, res) => {
   try {

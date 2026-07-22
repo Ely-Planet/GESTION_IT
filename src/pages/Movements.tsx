@@ -32,16 +32,32 @@ import type { Movement, MovementAction, MovementItem, MovementLicense } from '..
 export default function Movements() {
   const data = useData();
   const { profile } = useAuth();
-const [filter, setFilter] = useState<'all' | 'onboarding' | 'offboarding'>('all');  
+
+const [filter, setFilter] = useState<
+  'all' |
+  'onboarding' |
+  'offboarding' |
+  'manager_requests'
+>('all');
+
+
 const [showForm, setShowForm] = useState(false);
   const [formType, setFormType] = useState<'onboarding' | 'offboarding'>('onboarding');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [signModal, setSignModal] = useState<{ movementId: string; docType: 'assignment' | 'restitution' } | null>(null);
 
-  const filtered = useMemo(
-    () => data.movements.filter((m) => filter === 'all' || m.type === filter),
-    [data.movements, filter],
+const filtered = useMemo(() => {
+  if (filter === 'manager_requests') {
+    return data.movements.filter(
+      (m) => m.source === 'manager_form'
+    );
+  }
+
+  return data.movements.filter(
+    (m) => filter === 'all' || m.type === filter
   );
+}, [data.movements, filter]);
+
 
   async function changeStatus(m: Movement, status: Movement['status']) {
     const res = await fetch(`/api/movements/${m.id}`, {
@@ -306,7 +322,15 @@ const [showForm, setShowForm] = useState(false);
 
       <div className="flex items-center gap-2 mb-4">
         <Filter className="w-4 h-4 text-ink-400" />
-        {(['all', 'onboarding', 'offboarding'] as const).map((f) => (
+{(
+  [
+    'all',
+    'onboarding',
+    'offboarding',
+    'manager_requests'
+  ] as const
+).map((f) => (
+
           <button
             key={f}
             onClick={() => setFilter(f)}
@@ -314,7 +338,18 @@ const [showForm, setShowForm] = useState(false);
               filter === f ? 'bg-elyade-600 text-white' : 'bg-white text-ink-600 border border-ink-200 hover:bg-ink-50'
             }`}
           >
-            {f === 'all' ? 'Tous' : f === 'onboarding' ? 'Arrivées' : 'Départs'}
+
+{
+  f === 'all'
+    ? 'Tous'
+    : f === 'onboarding'
+      ? 'Arrivées'
+      : f === 'offboarding'
+        ? 'Départs'
+        : 'Demandes managers'
+}
+
+
           </button>
         ))}
       </div>
@@ -449,7 +484,14 @@ const [showForm, setShowForm] = useState(false);
                                   onAssign={assignHardwareItem}
                                   onSkip={skipMovementItem}
                                 />
-                                <LicensesPanel
+                                <MicrosoftGroupsPanel
+				movement={m}
+				data={data}
+				/>
+
+
+
+				<LicensesPanel
                                   movement={m}
                                   licenses={lics}
                                   data={data}
@@ -607,6 +649,54 @@ function ItemsPanel({
     </div>
   );
 }
+
+function MicrosoftGroupsPanel({
+  movement,
+  data,
+}: {
+  movement: Movement;
+  data: ReturnType<typeof useData>;
+}) {
+  const groups = data.movementServiceGroups.filter(
+    (g) => g.movement_id === movement.id
+  );
+
+  return (
+    <div className="card p-4">
+      <h4 className="text-sm font-semibold text-ink-800 mb-3">
+        🏢 Groupes Microsoft demandés
+      </h4>
+
+      {groups.length === 0 ? (
+        <p className="text-sm text-ink-400">
+          Aucun groupe Microsoft.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {groups.map((group) => (
+            <div
+              key={group.id}
+              className="p-2.5 bg-white rounded-lg border border-ink-100"
+            >
+              <div className="font-medium text-sm text-ink-800">
+                {group.group_name}
+              </div>
+
+              {group.group_mail && (
+                <div className="text-xs text-ink-500">
+                  {group.group_mail}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+
 
 function LicensesPanel({
   movement, licenses, data, onAssign, onSkip,

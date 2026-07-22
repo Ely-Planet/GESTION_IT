@@ -22,10 +22,13 @@ import { useAuth } from '../context/AuthContext';
 import { logAudit } from '../lib/audit';
 import {
   computeForecast,
+  computeOnboardingNeedsForecast,
   computeLicenseStock,
   computeStockByCategory,
   type ForecastAlert,
 } from '../lib/forecast';
+
+
 import { formatFrDate, statusLabel, MOVEMENT_STATUS } from '../lib/format';
 
 const ALL_WIDGETS: { key: string; label: string; defaultVisible: boolean }[] = [
@@ -69,18 +72,33 @@ export default function Dashboard() {
     () => computeLicenseStock(data.licenses, data.licenseTypes),
     [data.licenses, data.licenseTypes],
   );
-  const alerts = useMemo<ForecastAlert[]>(
-    () =>
-      computeForecast(
-        data.hardware,
-        data.licenses,
-        data.licenseTypes,
-        data.movements,
-        data.hardwareCategories,
-        asOf,
-      ),
-    [data, asOf],
+
+const alerts = useMemo<ForecastAlert[]>(() => {
+  const legacyAlerts = computeForecast(
+    data.hardware,
+    data.licenses,
+    data.licenseTypes,
+    data.movements,
+    data.hardwareCategories,
+    asOf,
   );
+
+  const onboardingAlerts = computeOnboardingNeedsForecast(
+    data.hardware,
+    data.licenses,
+    data.licenseTypes,
+    data.movements,
+    data.movementItems,
+    data.movementLicenses,
+    data.hardwareCategories,
+    asOf,
+  );
+
+  return [
+    ...legacyAlerts,
+    ...onboardingAlerts,
+  ];
+}, [data, asOf]);
 
   const renewalAlerts = alerts.filter((a) => a.id.startsWith('renew-'));
   const forecastAlerts = alerts.filter((a) => !a.id.startsWith('renew-'));

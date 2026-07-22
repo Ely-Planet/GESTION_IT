@@ -3,6 +3,8 @@ import type {
   License,
   LicenseType,
   Movement,
+  MovementItem,
+  MovementLicense,
 } from './supabase';
 
 export type CategoryStock = {
@@ -398,4 +400,198 @@ export function computeStockTimeSeries(
   }
 
   return alerts;
+}
+export function computeOnboardingNeedsForecast(
+  hardware: HardwareItem[],
+  licenses: License[],
+  licenseTypes: LicenseType[],
+  movements: Movement[],
+  movementItems: MovementItem[],
+  movementLicenses: MovementLicense[],
+  hardwareCategories: HardwareCategoryLite[],
+  asOf: string,
+): ForecastAlert[] {
+  const alerts: ForecastAlert[] = [];
+  const asOfDate = new Date(asOf);
+
+  const upcomingOnboardings = movements
+    .filter(
+      (m) =>
+        m.type === 'onboarding' &&
+        m.status !== 'done' &&
+        m.status !== 'cancelled' &&
+        new Date(m.effective_date) <= asOfDate,
+    )
+    .sort((a, b) => a.effective_date.localeCompare(b.effective_date));
+
+  const movementById = new Map(
+    upcomingOnboardings.map((m) => [m.id, m]),
+  );
+
+  const categoryById = new Map(
+    hardwareCategories.map((c) => [c.id, c]),
+  );
+
+  const licenseTypeById = new Map(
+    licenseTypes.map((lt) => [lt.id, lt]),
+  );
+
+  const hardwareStock = new Map<string, number>();
+
+  for (const item of hardware) {
+    if (item.status === 'in_stock' || item.status === 'being_reinstalled') {
+      hardwareStock.set(
+        item.category_id,
+        (hardwareStock.get(item.category_id) ?? 0) + 1,
+      );
+    }
+  }
+
+  const licenseStock = new Map<string, number>();
+
+  for (const lt of licenseTypes) {
+    const assigned = licenses.filter(
+      (l) =>
+        l.license_type_id === lt.id &&
+        (l.status === 'assigned' ||
+          l.status === 'reserved' ||
+          l.status === 'resiliated'),
+    ).length;
+
+    licenseStock.set(
+      lt.id,
+      Math.max(0, lt.total_seats - assigned),
+    );
+  }
+
+  const hardwareNeedsByDate = new Map<
+    string,
+    Map<string, number>
+  >();
+
+  for (const item of movementItems) {
+    const movement = movementById.get(item.movement_id);
+    if (!movement || !item.category_id) continue;
+
+    const byCategory =
+      hardwareNeedsByDate.get(movement.effective_date) ??
+      new Map<string, number>();
+
+    byCategory.set(
+      item.category_id,
+      (byCategory.get(item.category_id) ?? 0) + 1,
+    );
+
+    hardwareNeedsByDate.set(movement.effective_date, byCategory);
+  }
+
+  const licenseNeedsByDate = new Map<
+    string,
+    Map<string, number>
+  >();
+
+  for (const item of movementLicenses) {
+    const movement = movementById.get(item.movement_id);
+    if (!movement || !item.license_type_id) continue;
+
+    const byLicense =
+      licenseNeedsByDate.get(movement.effective_date) ??
+      new Map<string, number>();
+
+    byLicense.set(
+      item.license_type_id,
+      (byLicense.get(item.license_type_id) ?? 0) + 1,
+    );
+
+    licenseNeedsByDate.set(movement.effective_date, byLicense);
+  }
+
+  const dates = Array.from(
+    new Set([
+      ...hardwareNeedsByDate.keys(),
+      ...licenseNeedsByDate.keys(),
+    ]),
+  ).sort();
+
+  for (const date of dates) {
+    const hardwareNeeds = hardwareNeedsByDate.get(date);
+
+    if (hardwareNeeds) {
+      for (const [categoryId, needed] of hardwareNeeds) {
+        const remaining =
+          (hardwareStock.get(categoryId) ?? 0) - needed;
+
+        hardwareStock.set(categoryId, remaining);
+
+        const category = categoryById.get(categoryId);
+        const label = category?.label ?? 'matériel';
+
+        if (remaining < 0) {
+          alerts.push({
+            id: `manager-hw-${categoryId}-${date}`,
+            severity: 'critical',
+            message: `${formatForecastDate(date)} : il manquera ${Math.abs(
+              remaining,
+            )} ${label}`,
+            category: category?.code,
+            date,
+          });
+        } else if (remaining === 0) {
+          alerts.push({
+            id: `manager-hw-zero-${categoryId}-${date}`,
+            severity: 'warning',
+            message: `${formatForecastDate(date)} : il ne restera plus aucun ${label}`,
+            category: category?.code,
+            date,
+          });
+        }
+      }
+    }
+
+    const licenseNeeds = licenseNeedsByDate.get(date);
+
+    if (licenseNeeds) {
+      for (const [licenseTypeId, needed] of licenseNeeds) {
+        const remaining =
+          (licenseStock.get(licenseTypeId) ?? 0) - needed;
+
+        licenseStock.set(licenseTypeId, remaining);
+
+        const licenseType = licenseTypeById.get(licenseTypeId);
+        const label = licenseType?.label ?? 'licence';
+
+        if (remaining < 0) {
+          alerts.push({
+            id: `manager-lic-${licenseTypeId}-${date}`,
+            severity: 'critical',
+            message: `${formatForecastDate(date)} : il manquera ${Math.abs(
+              remaining,
+            )} licence(s) ${label}`,
+            category: licenseType?.code,
+            date,
+          });
+        } else if (remaining === 0) {
+          alerts.push({
+            id: `manager-lic-zero-${licenseTypeId}-${date}`,
+            severity: 'warning',
+            message: `${formatForecastDate(date)} : il ne restera plus aucune licence ${label}`,
+            category: licenseType?.code,
+            date,
+          });
+        }
+      }
+    }
+  }
+
+  return alerts;
+}
+
+function formatForecastDate(date: string) {
+  const [year, month, day] = date.split('-');
+
+  if (!year || !month || !day) {
+    return date;
+  }
+
+  return `${day}/${month}/${year}`;
 }

@@ -36,6 +36,7 @@ type DataState = {
   widgets: DashboardWidget[];
   movementItems: MovementItem[];
   movementLicenses: MovementLicense[];
+  movementServiceGroups: any[];  
   signedDocuments: SignedDocument[];
   loading: boolean;
   error: string | null;
@@ -61,6 +62,7 @@ export function useData(): DataState {
     widgets: [],
     movementItems: [],
     movementLicenses: [],
+    movementServiceGroups: [],  
     signedDocuments: [],
   });
   const [loading, setLoading] = useState(true);
@@ -138,7 +140,15 @@ fetch('/api/subscribed-skus')
   .catch(() => []),
 
       ]);
-      const [movementItems, movementLicenses, signedDocuments] = await Promise.all([
+
+const [
+  movementItems,
+  movementLicenses,
+  movementServiceGroups,
+  signedDocuments
+] = await Promise.all([
+
+
 fetch('/api/movement-items')
   .then(r => r.json())
   .catch(() => []),
@@ -146,6 +156,11 @@ fetch('/api/movement-items')
 fetch('/api/movement-licenses')
   .then(r => r.json())
   .catch(() => []),
+
+fetch('/api/movement-service-groups')
+  .then(r => r.json())
+  .catch(() => []),
+
 
 fetch('/api/signed-documents')
   .then(r => r.json())
@@ -180,7 +195,8 @@ fetch('/api/signed-documents')
         widgets,
         movementItems: movementItems as MovementItem[],
         movementLicenses: movementLicenses as MovementLicense[],
-        signedDocuments: signedDocuments as SignedDocument[],
+        movementServiceGroups: movementServiceGroups as any[],
+	signedDocuments: signedDocuments as SignedDocument[],
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erreur de chargement');
