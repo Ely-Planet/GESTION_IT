@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import Movements from './pages/Movements';
 import Inventory from './pages/Inventory';
 import Licenses from './pages/Licenses';
+import MicrosoftLicenses from './pages/MicrosoftLicenses';
 import Audit from './pages/Audit';
 import { Building2 } from 'lucide-react';
 
@@ -30,11 +31,13 @@ function Shell() {
 
   return (
     <Layout current={page} onNavigate={setPage}>
-      {page === 'dashboard' && <Dashboard />}
-      {page === 'movements' && <Movements />}
-      {page === 'inventory' && <Inventory />}
-      {page === 'licenses' && <Licenses />}
-      {page === 'audit' && <Audit />}
+{page === 'dashboard' && <Dashboard />}
+{page === 'movements' && <Movements />}
+{page === 'inventory' && <Inventory />}
+{page === 'licenses' && <Licenses />}
+{page === 'microsoftlicenses' && <MicrosoftLicenses />}
+{page === 'audit' && <Audit />}
+
     </Layout>
   );
 }

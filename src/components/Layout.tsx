@@ -16,6 +16,7 @@ export type PageKey =
   | 'movements'
   | 'inventory'
   | 'licenses'
+  | 'microsoftlicenses'
   | 'audit';
 
 const NAV: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = [
@@ -23,6 +24,7 @@ const NAV: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'movements', label: 'Arrivées & Départs', icon: ArrowRightLeft },
   { key: 'inventory', label: 'Inventaire', icon: Laptop },
   { key: 'licenses', label: 'Licences', icon: KeyRound },
+{ key: 'microsoftlicenses', label: 'Licences Microsoft', icon: KeyRound },
   { key: 'audit', label: "Journal d'audit", icon: ScrollText },
 ];
 

@@ -8,6 +8,7 @@ import axios from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { ConfidentialClientApplication } from '@azure/msal-node';
+import { syncMicrosoftLicenses } from './syncMicrosoftLicenses.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,6 +43,8 @@ app.use(
 
 app.use(cookieParser());
 app.use(express.json());
+
+app.post('/api/sync-microsoft-licenses', syncMicrosoftLicenses);
 
 app.use(
   session({
@@ -615,6 +618,50 @@ app.patch('/api/license-types/:id', async (req, res) => {
   } catch (error) {
     console.error(error);
 
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+app.get('/api/microsoft-license-filters', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM microsoft_license_filters
+      ORDER BY sku_part_number
+    `);
+
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.patch('/api/microsoft-license-filters/:sku', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      UPDATE microsoft_license_filters
+      SET enabled = $1
+      WHERE sku_part_number = $2
+      RETURNING *
+      `,
+      [
+        req.body.enabled,
+        req.params.sku
+      ]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Licence introuvable'
+      });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
     res.status(500).json({
       error: error.message
     });
