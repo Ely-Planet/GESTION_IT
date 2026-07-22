@@ -218,9 +218,13 @@ const res = await fetch('/api/sync-microsoft-licenses', {
           <p className="text-sm text-ink-500 mt-1">Seiitra, Office 365, et autres abonnements — avec renouvellements</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={syncMicrosoft} className="btn-secondary" disabled={syncing}>
+<button
+  className="btn-secondary"
+  disabled
+  title="Synchronisation Microsoft temporairement désactivée"
+>
             <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
-            {syncing ? 'Sync…' : 'Sync Microsoft'}
+            {syncing ? 'Sync…' : 'Sync Microsoft (à finaliser)'}
           </button>
           <button onClick={() => setShowTypeForm(true)} className="btn-secondary">
             <Plus className="w-4 h-4" /> Type
