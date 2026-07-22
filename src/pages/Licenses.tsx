@@ -264,10 +264,11 @@ const res = await fetch('/api/sync-microsoft-licenses', {
                   </span>
                   <div>
                     <h2 className="text-base font-semibold text-ink-900">{type.label}</h2>
-                    <p className="text-xs text-ink-500">
-                      {type.code}
-                      {type.has_expiration && ` · expiration activée · préavis ${type.default_renewal_notice_days}j`}
-                    </p>
+<p className="text-xs text-ink-500">
+  {type.has_expiration && `expiration activée · préavis ${type.default_renewal_notice_days}j`}
+</p>
+
+
                   </div>
                 </div>
                 <div className="flex items-center gap-4">
