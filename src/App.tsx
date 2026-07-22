@@ -7,6 +7,8 @@ import Movements from './pages/Movements';
 import Inventory from './pages/Inventory';
 import Licenses from './pages/Licenses';
 import MicrosoftLicenses from './pages/MicrosoftLicenses';
+import Settings from './pages/Settings';
+import OnboardingRequest from './pages/OnboardingRequest';
 import Audit from './pages/Audit';
 import { Building2 } from 'lucide-react';
 
@@ -36,6 +38,8 @@ function Shell() {
 {page === 'inventory' && <Inventory />}
 {page === 'licenses' && <Licenses />}
 {page === 'microsoftlicenses' && <MicrosoftLicenses />}
+{page === 'settings' && <Settings />}
+{page === 'onboardingrequest' && <OnboardingRequest />}
 {page === 'audit' && <Audit />}
 
     </Layout>

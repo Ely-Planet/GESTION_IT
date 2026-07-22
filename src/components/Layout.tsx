@@ -8,6 +8,7 @@ import {
   ScrollText,
   Building2,
   LogOut,
+  Settings2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -17,6 +18,8 @@ export type PageKey =
   | 'inventory'
   | 'licenses'
   | 'microsoftlicenses'
+  | 'settings'
+  | 'onboardingrequest'
   | 'audit';
 
 const NAV: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = [
@@ -25,7 +28,9 @@ const NAV: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'inventory', label: 'Inventaire', icon: Laptop },
   { key: 'licenses', label: 'Licences', icon: KeyRound },
 { key: 'microsoftlicenses', label: 'Licences Microsoft', icon: KeyRound },
-  { key: 'audit', label: "Journal d'audit", icon: ScrollText },
+{ key: 'settings', label: 'Paramètres', icon: Settings2 },
+{ key: 'onboardingrequest', label: "Demande d'onboarding", icon: FileSignature },  
+{ key: 'audit', label: "Journal d'audit", icon: ScrollText },
 ];
 
 export default function Layout({

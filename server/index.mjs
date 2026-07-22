@@ -9,6 +9,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { ConfidentialClientApplication } from '@azure/msal-node';
 import { syncMicrosoftLicenses } from './syncMicrosoftLicenses.mjs';
+import { getMicrosoftOnboardingServices } from './microsoftOnboardingServices.mjs';
+import { createOnboardingRequest } from './onboardingRequest.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -233,6 +235,10 @@ app.get('/api/me', (req, res) => {
   });
 
 });
+
+app.get('/api/microsoft-onboarding-services', getMicrosoftOnboardingServices);
+
+app.post('/api/onboarding-request', createOnboardingRequest);
 
 app.get('/api/services', async (req, res) => {
 
@@ -515,6 +521,77 @@ app.get('/api/license-types', async (req, res) => {
   }
 });
 
+app.get('/api/onboarding-license-types', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        id,
+        code,
+        label
+      FROM license_types
+      WHERE requestable_for_onboarding = true
+      ORDER BY label
+    `);
+
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/onboarding-hardware-categories', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        id,
+        code,
+        label,
+        requestable_for_onboarding
+      FROM hardware_categories
+      ORDER BY label
+    `);
+
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.patch('/api/onboarding-hardware-categories/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      UPDATE hardware_categories
+      SET requestable_for_onboarding = $1
+      WHERE id = $2
+      RETURNING *
+      `,
+      [
+        req.body.requestable_for_onboarding,
+        req.params.id
+      ]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Catégorie introuvable'
+      });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+
 app.get('/api/licenses', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -661,6 +738,28 @@ app.patch('/api/microsoft-license-filters/:sku', async (req, res) => {
     }
 
     res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/microsoft-license-stats', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        f.sku_part_number,
+        f.enabled,
+        s.enabled_units,
+        s.consumed_units
+      FROM microsoft_license_filters f
+      LEFT JOIN subscribed_skus s
+        ON s.display_name = f.sku_part_number
+      ORDER BY f.sku_part_number
+    `);
+
+    res.json(result.rows);
   } catch (error) {
     res.status(500).json({
       error: error.message
