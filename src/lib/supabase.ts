@@ -38,6 +38,12 @@ export type Employee = {
   first_name: string;
   last_name: string;
   email: string | null;
+
+  microsoft_upn: string | null;
+  microsoft_object_id: string | null;
+  account_enabled: boolean | null;
+  microsoft_synced_at: string | null;
+
   service_id: string | null;
   contract_type_id: string | null;
   contract_end_date: string | null;

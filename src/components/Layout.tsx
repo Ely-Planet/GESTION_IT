@@ -20,6 +20,7 @@ export type PageKey =
   | 'microsoftlicenses'
   | 'settings'
   | 'onboardingrequest'
+  | 'documents'
   | 'audit';
 
 const NAV: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = [
@@ -27,9 +28,9 @@ const NAV: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'movements', label: 'Arrivées & Départs', icon: ArrowRightLeft },
   { key: 'inventory', label: 'Inventaire', icon: Laptop },
   { key: 'licenses', label: 'Licences', icon: KeyRound },
-{ key: 'microsoftlicenses', label: 'Licences Microsoft', icon: KeyRound },
 { key: 'settings', label: 'Paramètres', icon: Settings2 },
 { key: 'onboardingrequest', label: "Demande d'onboarding", icon: FileSignature },  
+{ key: 'documents', label: 'Documents signés', icon: FileSignature },
 { key: 'audit', label: "Journal d'audit", icon: ScrollText },
 ];
 

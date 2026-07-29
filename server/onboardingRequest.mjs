@@ -166,43 +166,40 @@ for (const group of selectedGroups) {
       );
     }
 
-    const businessPremiumResult = await client.query(
-      `
-      SELECT id
-      FROM license_types
-      WHERE code = 'SPB'
-      LIMIT 1
-      `
-    );
+const licenseIds = new Set();
 
-    if (businessPremiumResult.rowCount === 0) {
-      throw new Error('Licence automatique Microsoft 365 Business Premium introuvable.');
-    }
+const businessPremiumLicenseTypeId =
+  businessPremiumResult.rows[0].id;
 
-    const licenseIds = new Set();
+licenseIds.add(businessPremiumLicenseTypeId);
 
-    licenseIds.add(businessPremiumResult.rows[0].id);
+for (const licenseTypeId of selectedLicenseIds) {
+  licenseIds.add(licenseTypeId);
+}
 
-    for (const licenseTypeId of selectedLicenseIds) {
-      licenseIds.add(licenseTypeId);
-    }
+for (const licenseTypeId of licenseIds) {
+  const status =
+    licenseTypeId === businessPremiumLicenseTypeId
+      ? 'assigned'
+      : 'requested';
 
-    for (const licenseTypeId of licenseIds) {
-      await client.query(
-        `
-        INSERT INTO movement_licenses (
-          movement_id,
-          license_type_id,
-          status
-        )
-        VALUES ($1, $2, 'requested')
-        `,
-        [
-          movement.id,
-          licenseTypeId
-        ]
-      );
-    }
+  await client.query(
+    `
+    INSERT INTO movement_licenses (
+      movement_id,
+      license_type_id,
+      status
+    )
+    VALUES ($1, $2, $3)
+    `,
+    [
+      movement.id,
+      licenseTypeId,
+      status
+    ]
+  );
+}
+
 
     await client.query(
       `
@@ -231,7 +228,40 @@ for (const group of selectedGroups) {
       ]
     );
 
-    await client.query('COMMIT');
+const templatesResult = await client.query(`
+  SELECT
+    action_type,
+    label,
+    sort_order
+  FROM onboarding_action_templates
+  WHERE is_active = true
+  ORDER BY sort_order
+`);
+
+for (const action of templatesResult.rows) {
+  await client.query(
+    `
+    INSERT INTO movement_actions (
+      movement_id,
+      action_type,
+      label,
+      sort_order
+    )
+    VALUES ($1, $2, $3, $4)
+    `,
+    [
+      movement.id,
+      action.action_type,
+      action.label,
+      action.sort_order
+    ]
+  );
+}
+
+
+
+
+await client.query('COMMIT');
 
     return res.status(201).json({
       ok: true,

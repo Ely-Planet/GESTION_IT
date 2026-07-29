@@ -7,10 +7,16 @@ import cookieParser from 'cookie-parser';
 import axios from 'axios';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
+import fsp from 'fs/promises';
+import PDFDocument from 'pdfkit';
 import { ConfidentialClientApplication } from '@azure/msal-node';
 import { syncMicrosoftLicenses } from './syncMicrosoftLicenses.mjs';
 import { getMicrosoftOnboardingServices } from './microsoftOnboardingServices.mjs';
 import { createOnboardingRequest } from './onboardingRequest.mjs';
+import { syncMicrosoftUsers } from './syncMicrosoftUsers.mjs';
+import { syncLuccaOffboardings } from './luccaOffboardingSync.mjs';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -34,6 +40,344 @@ for (const key of requiredEnv) {
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
+const DOCUMENTS_DIR = path.join(process.cwd(), 'storage', 'documents');
+
+async function ensureDocumentsDir() {
+  await fsp.mkdir(DOCUMENTS_DIR, { recursive: true });
+}
+
+function safeFilePart(value) {
+  return String(value || 'document')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+}
+
+function formatDateFr(value) {
+  if (!value) return '-';
+
+  try {
+    return new Date(value).toLocaleDateString('fr-FR');
+  } catch {
+    return String(value);
+  }
+}
+
+async function getGraphAppToken() {
+  const tenantId = process.env.MICROSOFT_TENANT_ID;
+  const clientId = process.env.MICROSOFT_CLIENT_ID;
+  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
+
+  const tokenRes = await fetch(
+    `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        scope: 'https://graph.microsoft.com/.default',
+        grant_type: 'client_credentials'
+      })
+    }
+  );
+
+  if (!tokenRes.ok) {
+    const detail = await tokenRes.text();
+    throw new Error(`Erreur token Microsoft Graph : ${detail}`);
+  }
+
+  const tokenJson = await tokenRes.json();
+  return tokenJson.access_token;
+}
+
+async function generateSignedDocumentPdf(row) {
+  await ensureDocumentsDir();
+
+  const snapshot = row.content_snapshot || {};
+  const employeeName = snapshot.employee || row.signer_name || 'Collaborateur';
+  const docLabel = row.doc_type === 'restitution'
+    ? 'Restitution'
+    : 'Attribution';
+
+  const datePart = new Date(row.signed_at || row.created_at || Date.now())
+    .toISOString()
+    .slice(0, 10)
+    .replace(/-/g, '');
+
+  const fileName =
+    `${docLabel}_${safeFilePart(employeeName)}_${datePart}_${row.id.slice(0, 8)}.pdf`;
+
+  const absolutePath = path.join(DOCUMENTS_DIR, fileName);
+  const relativePath = path.join('storage', 'documents', fileName);
+
+  await new Promise((resolve, reject) => {
+    const pdf = new PDFDocument({
+      size: 'A4',
+      margin: 50
+    });
+
+    const stream = fs.createWriteStream(absolutePath);
+
+    pdf.pipe(stream);
+
+    pdf
+      .fontSize(20)
+      .text('ELYADE', { align: 'left' });
+
+    pdf
+      .moveDown(0.5)
+      .fontSize(16)
+      .text(`Document de ${docLabel.toLowerCase()}`, {
+        align: 'left'
+      });
+
+    pdf.moveDown();
+
+    pdf
+      .fontSize(11)
+      .text(`Collaborateur : ${employeeName}`);
+
+    pdf.text(`Date d'effet : ${formatDateFr(snapshot.effective_date)}`);
+
+    pdf.text(
+      `Date de signature : ${
+        row.signed_at
+          ? new Date(row.signed_at).toLocaleString('fr-FR')
+          : '-'
+      }`
+    );
+
+    pdf.moveDown();
+
+    pdf
+      .fontSize(14)
+      .text('Matériel attribué', { underline: true });
+
+    pdf.moveDown(0.5);
+
+    const items = Array.isArray(snapshot.items) ? snapshot.items : [];
+
+    if (items.length === 0) {
+      pdf.fontSize(11).text('Aucun matériel attribué.');
+    } else {
+      for (const item of items) {
+        pdf
+          .fontSize(11)
+          .text(
+            `- ${item.category || '-'} | Réf. ${item.reference || '-'} | Série ${item.serial || '-'}`
+          );
+      }
+    }
+
+    pdf.moveDown();
+
+    pdf
+      .fontSize(14)
+      .text('Licences attribuées', { underline: true });
+
+    pdf.moveDown(0.5);
+
+    const licenses = Array.isArray(snapshot.licenses)
+      ? snapshot.licenses
+      : [];
+
+    if (licenses.length === 0) {
+      pdf.fontSize(11).text('Aucune licence attribuée.');
+    } else {
+      for (const license of licenses) {
+        pdf
+          .fontSize(11)
+          .text(
+            `- ${license.type || '-'}${license.seat ? ` (${license.seat})` : ''}`
+          );
+      }
+    }
+
+    pdf.moveDown(2);
+
+    pdf
+      .fontSize(14)
+      .text('Signature', { underline: true });
+
+    pdf.moveDown(0.5);
+
+    if (row.signature_data && row.signature_data.includes(',')) {
+      try {
+        const base64 = row.signature_data.split(',')[1];
+        const buffer = Buffer.from(base64, 'base64');
+
+        pdf.image(buffer, {
+          fit: [250, 120]
+        });
+      } catch {
+        pdf.fontSize(10).text('Signature non exploitable.');
+      }
+    } else {
+      pdf.fontSize(10).text('Signature non disponible.');
+    }
+
+    pdf.moveDown();
+
+    pdf
+      .fontSize(9)
+      .fillColor('#666666')
+      .text(
+        'Document généré automatiquement par GESTION_IT.',
+        { align: 'center' }
+      );
+
+    pdf.end();
+
+    stream.on('finish', resolve);
+    stream.on('error', reject);
+  });
+
+  await pool.query(
+    `
+    UPDATE signed_documents
+    SET
+      pdf_path = $1,
+      pdf_generated_at = now()
+    WHERE id = $2
+    `,
+    [
+      relativePath,
+      row.id
+    ]
+  );
+
+  return {
+    absolutePath,
+    relativePath,
+    fileName
+  };
+}
+
+async function getOrCreateSignedDocumentPdf(documentId) {
+  const result = await pool.query(
+    `
+    SELECT *
+    FROM signed_documents
+    WHERE id = $1
+    `,
+    [documentId]
+  );
+
+  if (result.rowCount === 0) {
+    const error = new Error('Document signé introuvable.');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const row = result.rows[0];
+
+  if (row.pdf_path) {
+    const absolutePath = path.join(process.cwd(), row.pdf_path);
+
+    if (fs.existsSync(absolutePath)) {
+      return {
+        row,
+        absolutePath,
+        fileName: path.basename(absolutePath)
+      };
+    }
+  }
+
+  const generated = await generateSignedDocumentPdf(row);
+
+  return {
+    row,
+    absolutePath: generated.absolutePath,
+    fileName: generated.fileName
+  };
+}
+
+async function sendSignedDocumentMail(documentId) {
+  const {
+    row,
+    absolutePath,
+    fileName
+  } = await getOrCreateSignedDocumentPdf(documentId);
+
+  if (!row.signer_email) {
+    throw new Error('Aucune adresse email signataire renseignée.');
+  }
+
+  const token = await getGraphAppToken();
+
+  const pdfBuffer = await fsp.readFile(absolutePath);
+
+  const subject =
+    row.doc_type === 'restitution'
+      ? 'Document de restitution signé'
+      : 'Document d’attribution signé';
+
+  const html = `
+    <p>Bonjour,</p>
+    <p>Veuillez trouver ci-joint votre document signé.</p>
+    <p>Cordialement,<br/>Service Informatique Elyade</p>
+  `;
+
+  const graphRes = await fetch(
+    'https://graph.microsoft.com/v1.0/users/informatique@elyade.com/sendMail',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message: {
+          subject,
+          body: {
+            contentType: 'HTML',
+            content: html
+          },
+          toRecipients: [
+            {
+              emailAddress: {
+                address: row.signer_email
+              }
+            }
+          ],
+          attachments: [
+            {
+              '@odata.type': '#microsoft.graph.fileAttachment',
+              name: fileName,
+              contentType: 'application/pdf',
+              contentBytes: pdfBuffer.toString('base64')
+            }
+          ]
+        },
+        saveToSentItems: true
+      })
+    }
+  );
+
+  if (!graphRes.ok) {
+    const detail = await graphRes.text();
+    throw new Error(`Erreur envoi mail Microsoft Graph : ${detail}`);
+  }
+
+  await pool.query(
+    `
+    UPDATE signed_documents
+    SET
+      email_sent_at = now(),
+      email_error = null
+    WHERE id = $1
+    `,
+    [documentId]
+  );
+
+  return true;
+}
+
 
 app.set('trust proxy', 1);
 
@@ -47,6 +391,7 @@ app.use(cookieParser());
 app.use(express.json());
 
 app.post('/api/sync-microsoft-licenses', syncMicrosoftLicenses);
+app.post('/api/microsoft-users/sync', syncMicrosoftUsers);
 
 app.use(
   session({
@@ -82,6 +427,58 @@ const scopes = [
 function isAuthenticated(req) {
   return Boolean(req.session && req.session.user);
 }
+
+
+
+
+
+
+
+
+app.get('/api/test-lucca-mails', async (req, res) => {
+  try {
+
+    const token = await getGraphAppToken();
+
+    const graphRes = await fetch(
+      'https://graph.microsoft.com/v1.0/users/informatique@elyade.com/messages?$top=10',
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
+
+    const graphJson = await graphRes.json();
+
+    res.json(graphJson);
+
+  } catch (error) {
+
+    res.status(500).json({
+      error: error.message
+    });
+
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 app.get('/auth/login', async (req, res) => {
   try {
@@ -626,14 +1023,18 @@ app.get('/api/licenses', async (req, res) => {
 
 app.post('/api/license-types', async (req, res) => {
   try {
-    const allowedColumns = [
-      'code',
-      'label',
-      'total_seats',
-      'has_expiration',
-      'default_renewal_notice_days',
-      'notes'
-    ];
+
+const allowedColumns = [
+  'code',
+  'label',
+  'total_seats',
+  'has_expiration',
+  'default_renewal_notice_days',
+  'notes',
+  'requestable_for_onboarding'
+];
+
+
 
     const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
 
@@ -717,6 +1118,39 @@ app.patch('/api/license-types/:id', async (req, res) => {
     });
   }
 });
+
+app.delete('/api/license-types/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      DELETE FROM license_types
+      WHERE id = $1
+      RETURNING id
+      `,
+      [req.params.id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Type de licence introuvable.'
+      });
+    }
+
+    res.json({
+      ok: true,
+      id: result.rows[0].id
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+
+
 app.get('/api/microsoft-license-filters', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -977,6 +1411,49 @@ app.get('/api/assignments', async (req, res) => {
 
   }
 });
+
+
+app.post('/api/assignments', async (req, res) => {
+  try {
+
+    const result = await pool.query(
+      `
+      INSERT INTO assignments (
+        employee_id,
+        hardware_item_id,
+        assigned_at
+      )
+      VALUES (
+        $1,
+        $2,
+        now()
+      )
+      RETURNING *
+      `,
+      [
+        req.body.employee_id,
+        req.body.hardware_item_id
+      ]
+    );
+
+    res.json(result.rows[0]);
+
+  } catch (error) {
+
+    res.status(500).json({
+      error: error.message
+    });
+
+  }
+});
+
+
+
+
+
+
+
+
 
 app.get('/api/audit-log', async (req, res) => {
   try {
@@ -1321,6 +1798,109 @@ app.patch('/api/movements/:id', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+
+app.delete('/api/movements/:id', async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const signedDocs = await client.query(
+      `
+      SELECT id
+      FROM signed_documents
+      WHERE movement_id = $1
+        AND status = 'signed'
+      LIMIT 1
+      `,
+      [req.params.id]
+    );
+
+    if (signedDocs.rowCount > 0) {
+      await client.query('ROLLBACK');
+
+      return res.status(400).json({
+        error:
+          'Impossible de supprimer ce mouvement car un document signé existe déjà.'
+      });
+    }
+
+    await client.query(
+      `
+      DELETE FROM signed_documents
+      WHERE movement_id = $1
+      `,
+      [req.params.id]
+    );
+
+    await client.query(
+      `
+      DELETE FROM movement_service_groups
+      WHERE movement_id = $1
+      `,
+      [req.params.id]
+    );
+
+    await client.query(
+      `
+      DELETE FROM movement_licenses
+      WHERE movement_id = $1
+      `,
+      [req.params.id]
+    );
+
+    await client.query(
+      `
+      DELETE FROM movement_items
+      WHERE movement_id = $1
+      `,
+      [req.params.id]
+    );
+
+    await client.query(
+      `
+      DELETE FROM movement_actions
+      WHERE movement_id = $1
+      `,
+      [req.params.id]
+    );
+
+    const result = await client.query(
+      `
+      DELETE FROM movements
+      WHERE id = $1
+      RETURNING *
+      `,
+      [req.params.id]
+    );
+
+    if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
+
+      return res.status(404).json({
+        error: 'Mouvement introuvable.'
+      });
+    }
+
+    await client.query('COMMIT');
+
+    res.json({
+      ok: true,
+      deleted: result.rows[0]
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  } finally {
+    client.release();
   }
 });
 
@@ -1669,22 +2249,253 @@ app.post('/api/signed-documents', async (req, res) => {
       values
     );
 
-    res.status(201).json(result.rows[0]);
+const createdDocument = result.rows[0];
+
+try {
+  await getOrCreateSignedDocumentPdf(createdDocument.id);
+
+  if (createdDocument.signer_email) {
+    await sendSignedDocumentMail(createdDocument.id);
+  }
+} catch (mailOrPdfError) {
+  console.error('Erreur PDF / email après signature', mailOrPdfError);
+
+  await pool.query(
+    `
+    UPDATE signed_documents
+    SET email_error = $1
+    WHERE id = $2
+    `,
+    [
+      mailOrPdfError.message,
+      createdDocument.id
+    ]
+  ).catch(console.error);
+}
+
+res.status(201).json(createdDocument);
+
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
   }
 });
 
+app.get('/api/signed-documents/:id/pdf', async (req, res) => {
+  try {
+    const {
+      absolutePath,
+      fileName
+    } = await getOrCreateSignedDocumentPdf(req.params.id);
+
+    res.download(absolutePath, fileName);
+  } catch (error) {
+    console.error(error);
+
+    res.status(error.statusCode || 500).json({
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/signed-documents/:id/send-email', async (req, res) => {
+  try {
+    await sendSignedDocumentMail(req.params.id);
+
+    res.json({
+      ok: true
+    });
+  } catch (error) {
+    console.error(error);
+
+    await pool.query(
+      `
+      UPDATE signed_documents
+      SET email_error = $1
+      WHERE id = $2
+      `,
+      [
+        error.message,
+        req.params.id
+      ]
+    ).catch(console.error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
 
 
+app.get('/api/onboarding-action-templates', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT *
+      FROM onboarding_action_templates
+      ORDER BY sort_order, label
+    `);
 
+    res.json(result.rows);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.post('/api/onboarding-action-templates', async (req, res) => {
+  try {
+    const {
+      action_type,
+      label,
+      sort_order,
+      is_active
+    } = req.body;
+
+    if (!action_type || !label) {
+      return res.status(400).json({
+        error: 'action_type et label sont obligatoires.'
+      });
+    }
+
+    const result = await pool.query(
+      `
+      INSERT INTO onboarding_action_templates (
+        action_type,
+        label,
+        sort_order,
+        is_active
+      )
+      VALUES ($1, $2, $3, $4)
+      RETURNING *
+      `,
+      [
+        action_type,
+        label,
+        Number.isInteger(sort_order) ? sort_order : 0,
+        is_active !== undefined ? is_active : true
+      ]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.patch('/api/onboarding-action-templates/:id', async (req, res) => {
+  try {
+    const allowedColumns = [
+      'action_type',
+      'label',
+      'sort_order',
+      'is_active'
+    ];
+
+    const columns = allowedColumns.filter(
+      (column) => req.body[column] !== undefined
+    );
+
+    if (columns.length === 0) {
+      return res.status(400).json({
+        error: 'Aucune donnée à mettre à jour.'
+      });
+    }
+
+    const values = columns.map((column) => req.body[column]);
+    values.push(req.params.id);
+
+    const setClause = columns
+      .map((column, index) => `${column} = $${index + 1}`)
+      .join(', ');
+
+    const result = await pool.query(
+      `
+      UPDATE onboarding_action_templates
+      SET
+        ${setClause},
+        updated_at = now()
+      WHERE id = $${values.length}
+      RETURNING *
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Modèle de tâche introuvable.'
+      });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+app.delete('/api/onboarding-action-templates/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      DELETE FROM onboarding_action_templates
+      WHERE id = $1
+      RETURNING *
+      `,
+      [
+        req.params.id
+      ]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Modèle de tâche introuvable.'
+      });
+    }
+
+    res.json({
+      ok: true,
+      deleted: result.rows[0]
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
 
 app.use(express.static(path.join(__dirname, '../dist')));
 
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, '../dist/index.html'));
 });
+
+(async () => {
+  try {
+    await syncLuccaOffboardings();
+  } catch (err) {
+    console.error(err);
+  }
+})();
+
+setInterval(async () => {
+  try {
+    await syncLuccaOffboardings();
+  } catch (err) {
+    console.error(err);
+  }
+}, 60000);
 
 app.listen(port, () => {
   console.log(`GESTION_IT backend listening on port ${port}`);

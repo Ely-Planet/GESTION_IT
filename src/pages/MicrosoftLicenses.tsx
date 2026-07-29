@@ -23,7 +23,14 @@ const LABELS: Record<string, string> = {
   SPZA_IW: 'SharePoint Zone App'
 };
 
-export default function MicrosoftLicenses() {
+export default function MicrosoftLicenses({
+  onBack
+}: {
+  onBack?: () => void;
+}) {
+``
+
+
   const [rows, setRows] = useState<Filter[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -58,7 +65,19 @@ export default function MicrosoftLicenses() {
 
   return (
     <div className="p-6 lg:p-8 max-w-6xl mx-auto">
-      <div className="mb-6">
+    
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="btn-secondary mb-6"
+        >
+          ← Retour
+        </button>
+      )}
+
+
+
+  <div className="mb-6">
         <h1 className="text-2xl font-bold text-ink-900">
           Licences Microsoft
         </h1>

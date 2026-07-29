@@ -9,6 +9,7 @@ import Licenses from './pages/Licenses';
 import MicrosoftLicenses from './pages/MicrosoftLicenses';
 import Settings from './pages/Settings';
 import OnboardingRequest from './pages/OnboardingRequest';
+import SignedDocuments from './pages/SignedDocuments';
 import Audit from './pages/Audit';
 import { Building2 } from 'lucide-react';
 
@@ -40,6 +41,7 @@ function Shell() {
 {page === 'microsoftlicenses' && <MicrosoftLicenses />}
 {page === 'settings' && <Settings />}
 {page === 'onboardingrequest' && <OnboardingRequest />}
+{page === 'documents' && <SignedDocuments />}
 {page === 'audit' && <Audit />}
 
     </Layout>

@@ -7,7 +7,13 @@ type HardwareCategory = {
   requestable_for_onboarding: boolean;
 };
 
-export default function OnboardingHardware() {
+
+export default function OnboardingHardware({
+  onBack
+}: {
+  onBack?: () => void;
+}) {
+
   const [rows, setRows] = useState<HardwareCategory[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -41,9 +47,22 @@ export default function OnboardingHardware() {
     load();
   }, []);
 
-  return (
-    <div className="p-6 lg:p-8 max-w-5xl mx-auto">
-      <h1 className="text-2xl font-bold text-ink-900">
+return (
+  <div className="p-6 lg:p-8 max-w-5xl mx-auto">
+
+    {onBack && (
+      <button
+        onClick={onBack}
+        className="btn-secondary mb-6"
+      >
+        ← Retour
+      </button>
+    )}
+     
+
+
+
+ <h1 className="text-2xl font-bold text-ink-900">
         Matériel Onboarding
       </h1>
 

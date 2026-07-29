@@ -62,6 +62,62 @@ async function setTotalSeats(lt: LicenseType, total: number) {
   data.reload();
 }
 
+async function deleteLicenseType(type: LicenseType) {
+  if (
+    !confirm(
+      `Supprimer le type de licence "${type.label}" ?`
+    )
+  ) {
+    return;
+  }
+
+  const existingSeats = data.licenses.filter(
+    l => l.license_type_id === type.id
+  );
+
+  if (existingSeats.length > 0) {
+    alert(
+      'Impossible de supprimer ce type de licence car des sièges sont encore associés.'
+    );
+    return;
+  }
+
+  const res = await fetch(
+    `/api/license-types/${type.id}`,
+    {
+      method: 'DELETE'
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res
+      .json()
+      .catch(() => ({
+        error:
+          'Erreur suppression type de licence'
+      }));
+
+    alert(
+      err.error ??
+      'Erreur suppression type de licence'
+    );
+
+    return;
+  }
+
+  await logAudit(
+    'delete',
+    'license_type',
+    type.id,
+    {
+      label: type.label,
+      code: type.code
+    },
+    profile?.display_name
+  ).catch(console.error);
+
+  data.reload();
+}
 
 async function assignSeat(lic: License, employeeId: string) {
   const res = await fetch(`/api/licenses/${lic.id}`, {
@@ -246,9 +302,27 @@ const res = await fetch('/api/sync-microsoft-licenses', {
           <div className="card p-8 text-center text-ink-500">Aucun type de licence. Créez-en un pour commencer.</div>
         )}
         {grouped.map(({ type, seats }) => {
-          const assigned = seats.filter((s) => s.status === 'assigned').length;
-          const available = Math.max(0, type.total_seats - assigned);
-          const pct = type.total_seats > 0 ? Math.round((assigned / type.total_seats) * 100) : 0;
+
+const microsoftSku = data.subscribedSkus.find(
+  (sku) => sku.display_name === type.code
+);
+
+const assigned = microsoftSku
+  ? microsoftSku.consumed_units ?? 0
+  : seats.filter((s) => s.status === 'assigned').length;
+
+const total = microsoftSku
+  ? microsoftSku.enabled_units ?? type.total_seats
+  : Math.max(type.total_seats, seats.length);
+
+const available = Math.max(0, total - assigned);
+
+const pct = total > 0
+  ? Math.round((assigned / total) * 100)
+  : 0;
+
+
+
           const expiringSoon = seats.filter((s) => {
             if (!s.expiration_date) return false;
             const notice = s.renewal_notice_days ?? type.default_renewal_notice_days;
@@ -273,13 +347,34 @@ const res = await fetch('/api/sync-microsoft-licenses', {
                 </div>
                 <div className="flex items-center gap-4">
                   <div className="text-right">
-                    <p className="text-sm font-semibold text-ink-900">{assigned}/{type.total_seats} attribuées</p>
+<p className="text-sm font-semibold text-ink-900">
+  {assigned}/{total} attribuées
+</p>
                     <p className={`text-xs ${available === 0 ? 'text-red-600' : 'text-ink-500'}`}>{available} disponible(s)</p>
                   </div>
                   <div className="w-32 h-2 bg-ink-100 rounded-full overflow-hidden">
                     <div className={`h-full ${pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-elyade-500'}`} style={{ width: `${pct}%` }} />
                   </div>
-                  <SeatCountEditor type={type} current={type.total_seats} onSave={setTotalSeats} />
+
+<div className="flex items-center gap-2">
+
+{!microsoftSku && (
+  <SeatCountEditor
+    type={type}
+    current={type.total_seats}
+    onSave={setTotalSeats}
+  />
+)}
+  <button
+    title="Supprimer le type"
+    onClick={() => deleteLicenseType(type)}
+    className="btn-ghost p-2 text-red-600"
+  >
+    <Trash2 className="w-4 h-4" />
+  </button>
+
+</div>
+
                 </div>
               </div>
 
@@ -397,10 +492,32 @@ function SeatCountEditor({ type, current, onSave }: { type: LicenseType; current
   );
 }
 
-function AssignPicker({ license, employees, onAssign }: { license: License; employees: { id: string; first_name: string; last_name: string }[]; onAssign: (l: License, empId: string) => void }) {
+function AssignPicker({ license, employees, onAssign }: {
+  license: License;
+  employees: {
+    id: string;
+    first_name: string;
+    last_name: string;
+    email?: string;
+    microsoft_upn?: string;
+  }[];
+
+onAssign: (l: License, empId: string) => void }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
-  const list = employees.filter((e) => `${e.first_name} ${e.last_name}`.toLowerCase().includes(q.toLowerCase())).slice(0, 8);
+const list = employees
+  .filter((e) =>
+    (
+      `${e.first_name} ${e.last_name} ${
+        e.microsoft_upn ?? ''
+      } ${
+        e.email ?? ''
+      }`
+    )
+      .toLowerCase()
+      .includes(q.toLowerCase())
+  )
+  .slice(0, 8);
   return (
     <div className="relative">
       <button title="Attribuer" onClick={() => setOpen((v) => !v)} className="btn-ghost p-1.5 text-elyade-600">
@@ -411,9 +528,26 @@ function AssignPicker({ license, employees, onAssign }: { license: License; empl
           <input className="input mb-2" placeholder="Rechercher…" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
           <div className="max-h-48 overflow-auto">
             {list.map((e) => (
-              <button key={e.id} onClick={() => { onAssign(license, e.id); setOpen(false); }} className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-ink-50">
-                {e.first_name} {e.last_name}
-              </button>
+
+<button
+  key={e.id}
+  onClick={() => {
+    onAssign(license, e.id);
+    setOpen(false);
+  }}
+  className="w-full text-left px-2 py-1.5 rounded hover:bg-ink-50"
+>
+  <div className="text-sm font-medium">
+    {e.first_name} {e.last_name}
+  </div>
+
+  <div className="text-xs text-ink-500">
+    {e.microsoft_upn || e.email}
+  </div>
+</button>
+
+
+
             ))}
             {list.length === 0 && <p className="text-xs text-ink-400 px-2 py-1">Aucun résultat</p>}
           </div>
@@ -544,7 +678,9 @@ function SeatForm({ types, onClose, onSaved }: { types: LicenseType[]; onClose: 
     try {
       const rows = Array.from({ length: Math.max(1, count) }).map((_, i) => ({
         license_type_id: typeId,
-        seat_key: prefix ? `${prefix}-${String(i + 1).padStart(3, '0')}` : null,
+seat_key: prefix
+  ? prefix
+  : `${selectedType?.code ?? 'LIC'}-${String(i + 1).padStart(3, '0')}`,
         status: 'available' as const,
         expiration_date: hasExpiration ? (expirationDate || null) : null,
         renewal_notice_days: noticeDays === '' ? null : noticeDays,

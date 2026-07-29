@@ -43,3 +43,6 @@ services:
 
     ports:
       - "8090:3001"
+
+    volumes:
+      - ./storage:/app/storage

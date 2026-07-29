@@ -4,7 +4,6 @@ import {
   ArrowUpFromLine,
   Plus,
   Mail,
-  Filter,
   X,
   CheckCircle2,
   Circle,
@@ -33,11 +32,11 @@ export default function Movements() {
   const data = useData();
   const { profile } = useAuth();
 
+
 const [filter, setFilter] = useState<
   'all' |
   'onboarding' |
-  'offboarding' |
-  'manager_requests'
+  'offboarding' 
 >('all');
 
 
@@ -45,18 +44,20 @@ const [showForm, setShowForm] = useState(false);
   const [formType, setFormType] = useState<'onboarding' | 'offboarding'>('onboarding');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [signModal, setSignModal] = useState<{ movementId: string; docType: 'assignment' | 'restitution' } | null>(null);
+const [showArchived, setShowArchived] = useState(false);
 
-const filtered = useMemo(() => {
-  if (filter === 'manager_requests') {
-    return data.movements.filter(
-      (m) => m.source === 'manager_form'
-    );
+const filtered = data.movements.filter((m) => {
+
+  if (!showArchived && m.status === 'done') {
+    return false;
   }
 
-  return data.movements.filter(
-    (m) => filter === 'all' || m.type === filter
-  );
-}, [data.movements, filter]);
+  if (filter !== 'all' && m.type !== filter) {
+    return false;
+  }
+
+  return true;
+});
 
 
   async function changeStatus(m: Movement, status: Movement['status']) {
@@ -84,6 +85,92 @@ const filtered = useMemo(() => {
 
     data.reload();
   }
+
+async function deleteMovement(m: Movement) {
+  const label =
+    m.type === 'onboarding'
+      ? 'cette arrivée'
+      : 'ce départ';
+
+  if (
+    !confirm(
+      `Supprimer définitivement ${label} ?\n\nAttention : cette action supprimera aussi les tâches, matériels/licences liés au mouvement, mais ne modifiera pas l’inventaire déjà traité.`
+    )
+  ) {
+    return;
+  }
+
+  const res = await fetch(`/api/movements/${m.id}`, {
+    method: 'DELETE',
+  });
+
+  if (!res.ok) {
+    const err = await res
+      .json()
+      .catch(() => ({
+        error: 'Erreur suppression mouvement'
+      }));
+
+    alert(
+      err.error ??
+      'Erreur suppression mouvement'
+    );
+
+    return;
+  }
+
+  await logAudit(
+    'delete',
+    'movement',
+    m.id,
+    {
+      type: m.type,
+      effective_date: m.effective_date
+    },
+    profile?.display_name
+  ).catch(console.error);
+
+  data.reload();
+}
+
+
+async function associateMicrosoftUser(
+  movementId: string,
+  employeeId: string
+) {
+  const res = await fetch(
+    `/api/movements/${movementId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        employee_id: employeeId,
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res
+      .json()
+      .catch(() => ({
+        error: 'Erreur association utilisateur Microsoft'
+      }));
+
+    alert(
+      err.error ??
+      'Erreur association utilisateur Microsoft'
+    );
+
+    return;
+  }
+
+  data.reload();
+}
+
+
+
 
   async function toggleAction(a: MovementAction) {
     const patch = a.done_at
@@ -186,7 +273,45 @@ const filtered = useMemo(() => {
       return;
     }
 
-    await logAudit(
+const employeeId =
+  data.movements.find(
+    (m) => m.id === mi.movement_id
+  )?.employee_id ?? null;
+
+if (employeeId) {
+
+  const assignRes = await fetch(
+    '/api/assignments',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        employee_id: employeeId,
+        hardware_item_id: hardwareItemId,
+      }),
+    }
+  );
+
+  if (!assignRes.ok) {
+    const err = await assignRes
+      .json()
+      .catch(() => ({
+        error: 'Erreur affectation matériel'
+      }));
+
+    alert(
+      err.error ??
+      'Erreur affectation matériel'
+    );
+
+    return;
+  }
+}  
+
+
+  await logAudit(
       'assign',
       'movement_item',
       mi.id,
@@ -272,7 +397,49 @@ const filtered = useMemo(() => {
     data.reload();
   }
 
-  async function skipMovementLicense(ml: MovementLicense) {
+async function markMicrosoftLicenseAssigned(ml: MovementLicense) {
+  const res = await fetch(`/api/movement-licenses/${ml.id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      status: 'assigned',
+      license_id: null,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res
+      .json()
+      .catch(() => ({
+        error: 'Erreur attribution licence Microsoft'
+      }));
+
+    alert(
+      err.error ??
+      'Erreur attribution licence Microsoft'
+    );
+
+    return;
+  }
+
+  await logAudit(
+    'assign',
+    'movement_license',
+    ml.id,
+    {
+      microsoft_license: true
+    },
+    profile?.display_name
+  ).catch(console.error);
+
+  data.reload();
+}  
+
+
+
+async function skipMovementLicense(ml: MovementLicense) {
     const res = await fetch(`/api/movement-licenses/${ml.id}`, {
       method: 'PATCH',
       headers: {
@@ -305,7 +472,7 @@ const filtered = useMemo(() => {
         <div>
           <h1 className="text-2xl font-bold text-ink-900">Arrivées & Départs</h1>
           <p className="text-sm text-ink-500 mt-1">
-            Onboardings et offboardings — créés par email (Microsoft Form / Lucca) ou manuellement
+            Onboardings et offboardings
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -320,39 +487,49 @@ const filtered = useMemo(() => {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 mb-4">
-        <Filter className="w-4 h-4 text-ink-400" />
-{(
-  [
-    'all',
-    'onboarding',
-    'offboarding',
-    'manager_requests'
-  ] as const
-).map((f) => (
-
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
-              filter === f ? 'bg-elyade-600 text-white' : 'bg-white text-ink-600 border border-ink-200 hover:bg-ink-50'
-            }`}
-          >
-
-{
-  f === 'all'
-    ? 'Tous'
-    : f === 'onboarding'
-      ? 'Arrivées'
-      : f === 'offboarding'
-        ? 'Départs'
-        : 'Demandes managers'
-}
 
 
-          </button>
-        ))}
-      </div>
+
+<div className="flex items-center mb-4">
+
+  <div className="flex items-center gap-2">
+    {(
+      [
+        'all',
+        'onboarding',
+        'offboarding'
+      ] as const
+    ).map((f) => (
+      <button
+        key={f}
+        onClick={() => setFilter(f)}
+        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+          filter === f
+            ? 'bg-elyade-600 text-white'
+            : 'bg-white text-ink-600 border border-ink-200 hover:bg-ink-50'
+        }`}
+      >
+        {
+          f === 'all'
+            ? 'Tous'
+            : f === 'onboarding'
+              ? 'Arrivées'
+              : 'Départs'
+        }
+      </button>
+    ))}
+  </div>
+
+  <label className="flex items-center gap-2 text-sm ml-10">
+    <input
+      type="checkbox"
+      checked={showArchived}
+      onChange={(e) => setShowArchived(e.target.checked)}
+    />
+    Archives
+  </label>
+
+</div>
 
       <div className="card overflow-hidden">
         {data.loading ? (
@@ -372,7 +549,6 @@ const filtered = useMemo(() => {
                   <th>Source</th>
                   <th>Matériel</th>
                   <th>Licences</th>
-                  <th>Calendrier</th>
                   <th>Statut</th>
                   <th className="text-right">Actions</th>
                 </tr>
@@ -432,14 +608,6 @@ const filtered = useMemo(() => {
                             </span>
                           ) : '—'}
                         </td>
-                        <td>
-                          {m.calendar_event_ids && m.calendar_event_ids.length > 0 ? (
-                            <span className="badge bg-blue-50 text-blue-700">
-                              <Calendar className="w-3 h-3" />
-                              {m.calendar_event_ids[0] === 'pending-credentials' ? 'En attente' : `${m.calendar_event_ids.length} RDV`}
-                            </span>
-                          ) : '—'}
-                        </td>
                         <td><StatusBadge status={m.status} /></td>
                         <td className="text-right">
                           <div className="flex justify-end gap-1">
@@ -465,7 +633,14 @@ const filtered = useMemo(() => {
                               <>
                                 <button onClick={() => changeStatus(m, 'in_progress')} className="btn-ghost text-xs px-2 py-1">Démarrer</button>
                                 <button onClick={() => changeStatus(m, 'done')} className="btn-ghost text-xs px-2 py-1 text-green-700">Terminer</button>
-                              </>
+<button
+  title="Supprimer"
+  onClick={() => deleteMovement(m)}
+  className="btn-ghost text-xs px-2 py-1 text-red-600"
+>
+  Supprimer
+</button>                          
+    </>
                             )}
                           </div>
                         </td>
@@ -477,7 +652,14 @@ const filtered = useMemo(() => {
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                               <ActionChecklist actions={actions} onToggle={toggleAction} onAdd={() => addAction(m.id)} />
                               <div className="space-y-4">
-                                <ItemsPanel
+                                <MicrosoftAccountPanel
+					movement={m}
+					data={data}
+					onAssociate={associateMicrosoftUser}
+				/>
+
+
+				<ItemsPanel
                                   movement={m}
                                   items={items}
                                   data={data}
@@ -489,15 +671,18 @@ const filtered = useMemo(() => {
 				data={data}
 				/>
 
+<LicensesPanel
+  movement={m}
+  licenses={lics}
+  data={data}
+  onAssign={assignLicense}
+  onMarkAssigned={markMicrosoftLicenseAssigned}
+  onSkip={skipMovementLicense}
+/>
 
 
-				<LicensesPanel
-                                  movement={m}
-                                  licenses={lics}
-                                  data={data}
-                                  onAssign={assignLicense}
-                                  onSkip={skipMovementLicense}
-                                />
+
+
                                 <DocumentsPanel docs={docs} movement={m} data={data} />
                               </div>
                             </div>
@@ -590,6 +775,150 @@ function ActionChecklist({
   );
 }
 
+function MicrosoftAccountPanel({
+  movement,
+  data,
+  onAssociate,
+}: {
+  movement: Movement;
+  data: ReturnType<typeof useData>;
+  onAssociate: (
+    movementId: string,
+    employeeId: string
+  ) => void;
+}) {
+
+  const currentEmployee =
+    data.employees.find(
+      (e) => e.id === movement.employee_id
+    );
+
+  const microsoftUsers =
+    data.employees.filter(
+      (e) => e.microsoft_upn
+    );
+
+const [open, setOpen] = useState(false);
+const [q, setQ] = useState('');
+
+const filteredUsers =
+  microsoftUsers
+    .filter((e) =>
+      (
+        `${e.first_name} ${e.last_name} ${
+          e.microsoft_upn ?? ''
+        } ${
+          e.email ?? ''
+        }`
+      )
+        .toLowerCase()
+        .includes(q.toLowerCase())
+    )
+    .slice(0, 15);
+
+
+
+
+  return (
+    <div className="card p-4">
+
+      <h4 className="text-sm font-semibold text-ink-800 mb-3">
+        Compte Microsoft associé
+      </h4>
+
+      {currentEmployee ? (
+        <div className="mb-3 p-2 bg-green-50 rounded border border-green-200">
+          <div className="font-medium">
+            {currentEmployee.first_name}
+            {' '}
+            {currentEmployee.last_name}
+          </div>
+
+          <div className="text-xs text-ink-500">
+            {currentEmployee.microsoft_upn}
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-amber-600 mb-3">
+          Aucun compte Microsoft associé.
+        </p>
+      )}
+
+<div className="relative">
+
+  <button
+    onClick={() => setOpen(!open)}
+    className="btn-primary"
+  >
+    Associer un compte Microsoft
+  </button>
+
+  {open && (
+
+    <div className="absolute z-50 mt-2 w-full bg-white border border-ink-200 rounded-lg shadow-elevated p-2">
+
+      <input
+        className="input mb-2"
+        placeholder="Rechercher un collaborateur..."
+        value={q}
+        onChange={(e) =>
+          setQ(e.target.value)
+        }
+        autoFocus
+      />
+
+      <div className="max-h-64 overflow-auto">
+
+        {filteredUsers.map((e) => (
+
+          <button
+            key={e.id}
+            onClick={() => {
+              onAssociate(
+                movement.id,
+                e.id
+              );
+
+              setOpen(false);
+              setQ('');
+            }}
+            className="w-full text-left px-2 py-2 rounded hover:bg-ink-50"
+          >
+
+            <div className="font-medium">
+              {e.first_name} {e.last_name}
+            </div>
+
+            <div className="text-xs text-ink-500">
+              {e.microsoft_upn}
+            </div>
+
+          </button>
+
+        ))}
+
+        {filteredUsers.length === 0 && (
+          <p className="text-xs text-ink-400 p-2">
+            Aucun résultat
+          </p>
+        )}
+
+      </div>
+
+    </div>
+
+  )}
+
+</div>
+
+
+
+    </div>
+  );
+}
+
+
+
 function ItemsPanel({
   movement, items, data, onAssign, onSkip,
 }: {
@@ -625,7 +954,7 @@ function ItemsPanel({
                 </div>
                 {hw && <p className="text-xs text-ink-500 font-mono">{hw.serial_number ?? hw.reference ?? hw.id.slice(0, 8)}</p>}
                 {mi.status === 'requested' && (
-                  <div className="flex items-center gap-2 mt-2">
+                  <div className="flex items-center gap-4 mt-2">
                     <select
                       className="input py-1 text-xs flex-1"
                       defaultValue=""
@@ -695,18 +1024,23 @@ function MicrosoftGroupsPanel({
   );
 }
 
-
-
-
 function LicensesPanel({
-  movement, licenses, data, onAssign, onSkip,
+  movement,
+  licenses,
+  data,
+  onAssign,
+  onMarkAssigned,
+  onSkip,
 }: {
   movement: Movement;
   licenses: MovementLicense[];
   data: ReturnType<typeof useData>;
   onAssign: (ml: MovementLicense, licId: string) => void;
+  onMarkAssigned: (ml: MovementLicense) => void;
   onSkip: (ml: MovementLicense) => void;
 }) {
+
+
   return (
     <div className="card p-4">
       <h4 className="text-sm font-semibold text-ink-800 flex items-center gap-2 mb-3">
@@ -723,7 +1057,16 @@ function LicensesPanel({
             const available = data.licenses.filter(
               (l) => l.license_type_id === ml.license_type_id && l.status === 'available',
             );
-            return (
+            
+
+const isMicrosoftLicense =
+  !!lt &&
+  data.subscribedSkus.some(
+    (sku) => sku.display_name === lt.code
+  );
+
+
+return (
               <div key={ml.id} className="p-2.5 bg-white rounded-lg border border-ink-100">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-sm font-medium text-ink-800">{lt?.label ?? '—'}</span>
@@ -732,21 +1075,68 @@ function LicensesPanel({
                   </span>
                 </div>
                 {lic && <p className="text-xs text-ink-500 font-mono">{lic.seat_key ?? lic.id.slice(0, 8)}</p>}
-                {ml.status === 'requested' && (
-                  <div className="flex items-center gap-2 mt-2">
-                    <select
-                      className="input py-1 text-xs flex-1"
-                      defaultValue=""
-                      onChange={(e) => { if (e.target.value) onAssign(ml, e.target.value); }}
-                    >
-                      <option value="">Sélectionner…</option>
-                      {available.map((l) => (
-                        <option key={l.id} value={l.id}>{l.seat_key ?? l.id.slice(0, 8)}</option>
-                      ))}
-                    </select>
-                    <button onClick={() => onSkip(ml)} className="btn-ghost text-xs px-2 py-1 text-ink-400">Ignorer</button>
-                  </div>
-                )}
+
+{ml.status === 'requested' && (
+  <div className="flex items-center gap-2 mt-2">
+
+    {isMicrosoftLicense ? (
+      <>
+        <button
+          onClick={() => onMarkAssigned(ml)}
+          className="btn-secondary text-xs px-2 py-1"
+        >
+          Marquer attribuée
+        </button>
+
+        <button
+          onClick={() => onSkip(ml)}
+          className="btn-ghost text-xs px-2 py-1 text-ink-400"
+        >
+          Ignorer
+        </button>
+      </>
+    ) : (
+      <>
+        <select
+          className="input py-1 text-xs flex-1"
+          defaultValue=""
+          onChange={(e) => {
+            if (e.target.value) {
+              onAssign(ml, e.target.value);
+            }
+          }}
+        >
+          <option value="">
+            Sélectionner…
+          </option>
+
+          {available.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.seat_key ?? l.id.slice(0, 8)}
+            </option>
+          ))}
+        </select>
+
+        <button
+          onClick={() => onSkip(ml)}
+          className="btn-ghost text-xs px-2 py-1 text-ink-400"
+        >
+          Ignorer
+        </button>
+      </>
+    )}
+
+  </div>
+)}
+
+{isMicrosoftLicense && ml.status === 'assigned' && (
+  <p className="text-xs text-green-700 mt-2">
+    Attribution validée dans Microsoft 365.
+  </p>
+)}
+
+
+
               </div>
             );
           })}
