@@ -1199,8 +1199,7 @@ function ReassignDialog({
 
   const [employeeId, setEmployeeId] = useState('');
 const [employeeSearch, setEmployeeSearch] = useState('');
-const [replacementByHardwareId, setReplacementByHardwareId] = useState<Record<string, string>>({});
-const [oldStatusByHardwareId, setOldStatusByHardwareId] = useState<Record<string, string>>({});
+
 const filteredEmployees = useMemo(() => {
   return data.employees
     .filter((e) => e.is_active)
@@ -1310,101 +1309,29 @@ const filteredEmployees = useMemo(() => {
                       c.id === hardware.category_id
                   );
 
-return (
-  <div
-    key={assignment.id}
-    className="border rounded-lg p-4 space-y-4"
-  >
-    <div>
-      <div className="font-medium">
-        {category?.label ?? 'Catégorie inconnue'}
-      </div>
+                return (
+                  <div
+                    key={assignment.id}
+                    className="border rounded-lg p-4"
+                  >
+                    <div className="font-medium">
+                      {category?.label ?? 'Catégorie inconnue'}
+                    </div>
 
-      <div className="text-sm text-ink-600 mt-1">
-        {hardware.title ??
-          hardware.model ??
-          hardware.serial_number ??
-          hardware.id}
-      </div>
+                    <div className="text-sm text-ink-600 mt-1">
+                      {hardware.title ??
+                        hardware.model ??
+                        hardware.serial_number ??
+                        hardware.id}
+                    </div>
 
-      <div className="text-xs text-ink-400 mt-1">
-        N° série : {hardware.serial_number ?? '—'}
-      </div>
-    </div>
-
-    <div>
-      <label className="label">
-        Nouveau matériel
-      </label>
-
-<select
-  className="input"
-  value={replacementByHardwareId[hardware.id] ?? ''}
-  onChange={(e) =>
-    setReplacementByHardwareId((prev) => ({
-      ...prev,
-      [hardware.id]: e.target.value,
-    }))
-  }
->
-        <option value="">
-          Aucun changement
-        </option>
-
-        {data.hardware
-          .filter(
-            (h) =>
-              h.category_id === hardware.category_id &&
-              h.status === 'in_stock' &&
-              h.id !== hardware.id
-          )
-          .map((h) => (
-            <option
-              key={h.id}
-              value={h.id}
-            >
-              {(h.title || h.model || h.serial_number || h.id)}
-            </option>
-          ))}
-      </select>
-    </div>
-
-    <div>
-      <label className="label">
-        Statut de l'ancien matériel
-      </label>
-
-<select
-  className="input"
-  value={oldStatusByHardwareId[hardware.id] ?? 'being_reinstalled'}
-  onChange={(e) =>
-    setOldStatusByHardwareId((prev) => ({
-      ...prev,
-      [hardware.id]: e.target.value,
-    }))
-  }
->
-        <option value="in_stock">
-          En stock
-        </option>
-
-        <option value="being_reinstalled">
-          En réinstallation
-        </option>
-
-        <option value="defective">
-          Défectueux
-        </option>
-
-        <option value="retired">
-          Réformé
-        </option>
-      </select>
-    </div>
-  </div>
-);
-
-
+                    <div className="text-xs text-ink-400 mt-1">
+                      N° série :
+                      {' '}
+                      {hardware.serial_number ?? '—'}
+                    </div>
+                  </div>
+                );
               })}
             </div>
           )}
@@ -1418,77 +1345,7 @@ return (
           >
             Fermer
           </button>
-
-<button
-  type="button"
-  className="btn-primary"
-  onClick={async () => {
-    try {
-
-      const changes = activeAssignments
-        .map((assignment) => ({
-          old_hardware_id: assignment.hardware_item_id,
-          new_hardware_id:
-            replacementByHardwareId[
-              assignment.hardware_item_id
-            ] || null,
-          old_status:
-            oldStatusByHardwareId[
-              assignment.hardware_item_id
-            ] || 'being_reinstalled',
-        }))
-        .filter((c) => c.new_hardware_id);
-
-      if (changes.length === 0) {
-        alert('Aucun remplacement sélectionné');
-        return;
-      }
-
-      const res = await fetch(
-        '/api/hardware-reassign',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            employee_id: employeeId,
-            changes,
-          }),
-        }
-      );
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({
-          error: 'Erreur réaffectation',
-        }));
-
-        throw new Error(
-          err.error ?? 'Erreur réaffectation'
-        );
-      }
-
-      alert('Réaffectation réalisée');
-
-      onSaved();
-      onClose();
-
-    } catch (e) {
-
-      alert(
-        e instanceof Error
-          ? e.message
-          : 'Erreur réaffectation'
-      );
-
-    }
-  }}
->
-  Valider la réaffectation
-</button>
-
-
- </div>
+        </div>
       </div>
     </div>
   );

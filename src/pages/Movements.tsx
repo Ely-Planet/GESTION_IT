@@ -671,6 +671,18 @@ async function skipMovementLicense(ml: MovementLicense) {
 				data={data}
 				/>
 
+{m.notes && (
+  <div className="card p-4">
+    <h3 className="font-semibold text-ink-900 mb-2">
+      Boîtes partagées demandées
+    </h3>
+
+    <pre className="text-sm whitespace-pre-wrap text-ink-700">
+      {m.notes}
+    </pre>
+  </div>
+)}
+
 <LicensesPanel
   movement={m}
   licenses={lics}

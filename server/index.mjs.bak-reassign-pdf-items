@@ -1,8 +1,6 @@
 import 'dotenv/config';
 import { pool } from './db.mjs';
 import express from 'express';
-import { getSharedMailboxes } from './sharedMailboxes.mjs';
-
 import session from 'express-session';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
@@ -101,15 +99,10 @@ async function generateSignedDocumentPdf(row) {
   await ensureDocumentsDir();
 
   const snapshot = row.content_snapshot || {};
-const isReassignment =
-  snapshot?.document_type === 'hardware_reassignment';
-
-const employeeName = snapshot.employee || row.signer_name || 'Collaborateur';
-const docLabel = row.doc_type === 'restitution'
-  ? 'Restitution'
-  : isReassignment
-      ? 'MiseAJourMateriel'
-      : 'Attribution';
+  const employeeName = snapshot.employee || row.signer_name || 'Collaborateur';
+  const docLabel = row.doc_type === 'restitution'
+    ? 'Restitution'
+    : 'Attribution';
 
   const datePart = new Date(row.signed_at || row.created_at || Date.now())
     .toISOString()
@@ -132,33 +125,18 @@ const docLabel = row.doc_type === 'restitution'
 
     pdf.pipe(stream);
 
+    pdf
+      .fontSize(20)
+      .text('ELYADE', { align: 'left' });
 
-pdf.image(
-  path.join(
-    process.cwd(),
-    'public/assets/logo-elyade.png'
-  ),
-  40,
-  25,
-  {
-    width: 60
-  }
-);
+    pdf
+      .moveDown(0.5)
+      .fontSize(16)
+      .text(`Document de ${docLabel.toLowerCase()}`, {
+        align: 'left'
+      });
 
-pdf
-  .fontSize(16)
-  .text(
-    isReassignment
-      ? "MISE À JOUR DU MATÉRIEL AFFECTÉ"
-      : "FICHE D'ATTRIBUTION DE MATÉRIEL INFORMATIQUE",
-    50,
-    90,
-    {
-      align: 'center'
-    }
-  );
-
-    pdf.moveDown(2);
+    pdf.moveDown();
 
     pdf
       .fontSize(11)
@@ -166,9 +144,14 @@ pdf
 
     pdf.text(`Date d'effet : ${formatDateFr(snapshot.effective_date)}`);
 
-pdf.text(
-  `${isReassignment ? 'Date de mise à jour' : 'Date de signature'} : ${formattedDate}`
-);
+    pdf.text(
+      `Date de signature : ${
+        row.signed_at
+          ? new Date(row.signed_at).toLocaleString('fr-FR')
+          : '-'
+      }`
+    );
+
     pdf.moveDown();
 
     pdf
@@ -217,8 +200,7 @@ pdf.text(
 
     pdf.moveDown(2);
 
-  if (!isReassignment) {
-  pdf
+    pdf
       .fontSize(14)
       .text('Signature', { underline: true });
 
@@ -238,14 +220,14 @@ pdf.text(
     } else {
       pdf.fontSize(10).text('Signature non disponible.');
     }
-}
+
     pdf.moveDown();
 
     pdf
       .fontSize(9)
       .fillColor('#666666')
       .text(
-        'Document généré automatiquement par le Service Informatique ELYADE',
+        'Document généré automatiquement par GESTION_IT.',
         { align: 'center' }
       );
 
@@ -330,62 +312,16 @@ async function sendSignedDocumentMail(documentId) {
 
   const pdfBuffer = await fsp.readFile(absolutePath);
 
-const snapshot = row.content_snapshot || {};
+  const subject =
+    row.doc_type === 'restitution'
+      ? 'Document de restitution signé'
+      : 'Document d’attribution signé';
 
-const isReassignment =
-  snapshot?.document_type === 'hardware_reassignment';
-
-const subject =
-  row.doc_type === 'restitution'
-    ? 'Document de restitution'
-    : isReassignment
-        ? 'Mise à jour de votre matériel informatique'
-        : 'Fiche d’attribution de matériel informatique';
-
-const html = isReassignment
-  ? `
-      <p>Bonjour,</p>
-
-      <p>
-        Votre matériel informatique a été mis à jour.
-      </p>
-
-      <p>
-        Vous trouverez en pièce jointe le récapitulatif du matériel qui vous est actuellement affecté.
-      </p>
-
-      <p>
-        Aucune action n'est requise de votre part.
-      </p>
-
-      <br/>
-
-      <p>
-        Cordialement,
-        <br/>
-        Service Informatique ELYADE
-      </p>
-    `
-  : `
-      <p>Bonjour,</p>
-
-      <p>
-        Veuillez trouver ci-joint votre fiche d'attribution de matériel informatique.
-      </p>
-
-      <p>
-        Merci de prendre connaissance du document ci-joint et de le signer.
-      </p>
-
-      <br/>
-
-      <p>
-        Cordialement,
-        <br/>
-        Service Informatique ELYADE
-      </p>
-    `;
-
+  const html = `
+    <p>Bonjour,</p>
+    <p>Veuillez trouver ci-joint votre document signé.</p>
+    <p>Cordialement,<br/>Service Informatique Elyade</p>
+  `;
 
   const graphRes = await fetch(
     'https://graph.microsoft.com/v1.0/users/informatique@elyade.com/sendMail',
@@ -495,10 +431,7 @@ function isAuthenticated(req) {
 
 
 
-app.get(
-  '/api/shared-mailboxes',
-  getSharedMailboxes
-);
+
 
 
 
@@ -1949,32 +1882,7 @@ app.post('/api/hardware-reassign', async (req, res) => {
       .filter((change) => change.new_hardware_id)
       .map((change) => change.new_hardware_id);
 
-    let assignedLicensesRows = [];
-
-    if (latestMovement?.id) {
-      const assignedLicensesResult = await client.query(
-        `
-        SELECT
-          ml.id,
-          ml.status,
-          lt.label AS type,
-          l.seat_key AS seat
-        FROM movement_licenses ml
-        LEFT JOIN license_types lt
-          ON lt.id = ml.license_type_id
-        LEFT JOIN licenses l
-          ON l.id = ml.license_id
-        WHERE ml.movement_id = $1
-          AND ml.status = 'assigned'
-        ORDER BY lt.label, l.seat_key
-        `,
-        [latestMovement.id]
-      );
-
-      assignedLicensesRows = assignedLicensesResult.rows;
-    }
-
-const signedDocumentResult = await client.query(
+    const signedDocumentResult = await client.query(
       `
       INSERT INTO signed_documents (
         movement_id,
@@ -2004,55 +1912,27 @@ const signedDocumentResult = await client.query(
           ? `${employee.first_name} ${employee.last_name}`
           : null,
         employee?.email ?? employee?.microsoft_upn ?? null,
-
-JSON.stringify({
-  document_type: 'hardware_reassignment',
-  title: 'Mise à jour de la fiche d’affectation matériel',
-
-  employee: employee
-    ? `${employee.first_name} ${employee.last_name}`
-    : null,
-
-  employee_email: employee?.email ?? employee?.microsoft_upn ?? null,
-
-  movement_type: 'onboarding',
-  effective_date: latestMovement?.effective_date ?? null,
-
-  generated_at: new Date().toISOString(),
-  reason: 'Réaffectation de matériel depuis l’inventaire',
-
-  items: activeAssignmentsResult.rows.map((row) => ({
-    category: row.category,
-    title: row.title,
-    reference: row.reference,
-    serial: row.serial_number,
-    serial_number: row.serial_number,
-    brand: row.brand,
-    model: row.model,
-    status: row.status,
-    assigned_at: row.assigned_at
-  })),
-
-  licenses: assignedLicensesRows.map((row) => ({
-    type: row.type,
-    seat: row.seat
-  })),
-
-  reassignments: changes
-    .filter((change) => change.new_hardware_id)
-    .map((change) => ({
-      old_hardware_id: change.old_hardware_id,
-      new_hardware_id: change.new_hardware_id,
-      old_status: change.old_status
-    }))
-})
-
-
-
-
-
-
-
+        JSON.stringify({
+          document_type: 'hardware_reassignment',
+          title: 'Mise à jour de la fiche d’affectation matériel',
+          employee: employee
+            ? `${employee.first_name} ${employee.last_name}`
+            : null,
+          employee_email: employee?.email ?? employee?.microsoft_upn ?? null,
+          generated_at: new Date().toISOString(),
+          reason: 'Réaffectation de matériel depuis l’inventaire',
+          changed_hardware_ids: changedHardwareIds,
+          current_assigned_hardware: activeAssignmentsResult.rows.map((row) => ({
+            category: row.category,
+            title: row.title,
+            reference: row.reference,
+            serial_number: row.serial_number,
+            brand: row.brand,
+            model: row.model,
+            status: row.status,
+            assigned_at: row.assigned_at
+          }))
+        })
       ]
     );
 

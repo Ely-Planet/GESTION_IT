@@ -7,6 +7,7 @@ type Section =
   | 'workflow'
   | 'licenses'
   | 'hardware'
+  | 'inventory'
   | 'microsoft';
 
 export default function Settings() {
@@ -37,6 +38,13 @@ if (section === 'microsoft') {
   );
 }
 
+if (section === 'inventory') {
+  return (
+    <InventorySettings
+      onBack={() => setSection('home')}
+    />
+  );
+}
 
 if (section === 'licenses') {
   return (
@@ -67,7 +75,15 @@ if (section === 'licenses') {
       description:
         'Matériel visible dans le formulaire Onboarding'
     },
-    {
+
+{
+  key: 'inventory',
+  title: 'Inventaire',
+  description:
+    'Fabricants, OS, processeurs, mémoires, tailles, fournisseurs, budgets et statuts'
+},
+  
+  {
       key: 'microsoft',
       title: 'Licences Microsoft',
       description:
@@ -103,7 +119,11 @@ onClick={() => {
     setSection('hardware');
   }
 
-  if (card.key === 'microsoft') {
+if (card.key === 'inventory') {
+  setSection('inventory');
+}  
+
+if (card.key === 'microsoft') {
     setSection('microsoft');
   }
 }}
@@ -562,6 +582,10 @@ function LicenseSettings({
     setLoading(false);
   }
 
+
+
+
+
   async function toggle(
     row: LicenseTypeRow
   ) {
@@ -656,6 +680,178 @@ function LicenseSettings({
 
         </div>
       )}
+
+    </div>
+  );
+}
+function InventorySettings({
+  onBack
+}: {
+  onBack: () => void;
+}) {
+  return (
+    <div className="p-6 lg:p-8">
+      <button
+        onClick={onBack}
+        className="btn-secondary mb-6"
+      >
+        ← Retour
+      </button>
+
+      <h1 className="text-2xl font-bold text-ink-900">
+        Paramètres Inventaire
+      </h1>
+
+      <p className="mt-2 text-ink-500">
+        Gestion des listes déroulantes de l'inventaire.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-8">
+
+        <InventoryList
+          title="Fabricants"
+          endpoint="/api/inventory-brands"
+        />
+
+        <InventoryList
+          title="OS"
+          endpoint="/api/inventory-operatingSystems"
+        />
+
+        <InventoryList
+          title="Processeurs"
+          endpoint="/api/inventory-processors"
+        />
+
+        <InventoryList
+          title="Mémoires"
+          endpoint="/api/inventory-memories"
+        />
+
+        <InventoryList
+          title="Tailles"
+          endpoint="/api/inventory-sizes"
+        />
+
+        <InventoryList
+          title="Fournisseurs"
+          endpoint="/api/inventory-suppliers"
+        />
+
+        <InventoryList
+          title="Budgets"
+          endpoint="/api/inventory-budgets"
+        />
+
+        <InventoryList
+          title="Statuts"
+          endpoint="/api/inventory-statuses"
+        />
+
+      </div>
+    </div>
+  );
+}
+function InventoryList({
+  title,
+  endpoint
+}: {
+  title: string;
+  endpoint: string;
+}) {
+
+  const [rows, setRows] = useState<any[]>([]);
+  const [value, setValue] = useState('');
+
+  async function load() {
+    const res = await fetch(endpoint);
+    const data = await res.json();
+    setRows(data);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function add() {
+    if (!value.trim()) return;
+
+    await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        label: value
+      })
+    });
+
+    setValue('');
+    load();
+  }
+
+  async function remove(id: string) {
+    if (!confirm('Supprimer cette valeur ?')) {
+      return;
+    }
+
+    await fetch(
+      `${endpoint}/${id}`,
+      {
+        method: 'DELETE'
+      }
+    );
+
+    load();
+  }
+
+  return (
+    <div className="card p-4">
+
+      <h3 className="font-semibold mb-4">
+        {title}
+      </h3>
+
+      <div className="flex gap-2 mb-4">
+
+        <input
+          className="input"
+          value={value}
+          onChange={(e) =>
+            setValue(e.target.value)
+          }
+        />
+
+        <button
+          onClick={add}
+          className="btn-primary"
+        >
+          Ajouter
+        </button>
+
+      </div>
+
+      <div className="space-y-2">
+
+        {rows.map(row => (
+          <div
+            key={row.id}
+            className="flex items-center justify-between border rounded-lg px-3 py-2"
+          >
+            <span>
+              {row.label}
+            </span>
+
+            <button
+              onClick={() => remove(row.id)}
+              className="btn-ghost text-red-600"
+            >
+              Supprimer
+            </button>
+          </div>
+        ))}
+
+      </div>
 
     </div>
   );

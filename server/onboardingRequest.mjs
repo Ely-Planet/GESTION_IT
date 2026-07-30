@@ -19,7 +19,14 @@ const {
   email,
   effective_date,
   job_title,
+contract_reason,
+internship_mission,
+employee_status,
+employee_level,
+gross_annual_salary,
+variable_bonus,
   service_groups,
+shared_mailboxes,
   hardware_category_ids,
   license_type_ids
 } = req.body;
@@ -115,14 +122,20 @@ const movementResult = await client.query(
   )
   RETURNING *
   `,
-  [
-    employee.id,
-    effectiveDate,
-    managerName,
-    managerEmail,
-    cleanString(job_title),
-    'Demande créée depuis le formulaire manager.'
-  ]
+
+[
+  employee.id,
+  effectiveDate,
+  managerName,
+  managerEmail,
+  cleanString(job_title),
+
+  shared_mailboxes
+    ? `Demande créée depuis le formulaire manager.\n\nBoîtes partagées demandées :\n${shared_mailboxes}`
+    : 'Demande créée depuis le formulaire manager.'
+]
+
+
 );
 
 
@@ -165,6 +178,15 @@ for (const group of selectedGroups) {
         ]
       );
     }
+
+const businessPremiumResult = await client.query(
+  `
+  SELECT id
+  FROM license_types
+  WHERE label ILIKE '%Business Premium%'
+  LIMIT 1
+  `
+);
 
 const licenseIds = new Set();
 
