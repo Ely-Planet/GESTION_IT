@@ -1,10 +1,30 @@
+import fs from 'fs';
 import { pool } from './db.mjs';
+import { generateOnboardingPdf } from './onboardingPdf.mjs';
 
 function cleanString(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+
+  if (typeof value !== 'string') return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseBoolean(value) {
+  return value === true || value === 'true';
+}
+
 
 export async function createOnboardingRequest(req, res) {
   if (!req.session?.user) {
@@ -25,6 +45,10 @@ employee_status,
 employee_level,
 gross_annual_salary,
 variable_bonus,
+school,
+referral,
+contract_type,
+referral_employee,
   service_groups,
 shared_mailboxes,
   hardware_category_ids,
@@ -42,9 +66,8 @@ shared_mailboxes,
     });
   }
 
-const selectedGroups = Array.isArray(service_groups)
-  ? service_groups.filter(g => g?.id)
-  : [];
+const selectedGroups = parseJsonArray(service_groups)
+  .filter(g => g?.id);
 
 if (selectedGroups.length === 0) {
   return res.status(400).json({
@@ -52,13 +75,11 @@ if (selectedGroups.length === 0) {
   });
 }
 
-  const hardwareIds = Array.isArray(hardware_category_ids)
-    ? hardware_category_ids.filter(Boolean)
-    : [];
+const hardwareIds = parseJsonArray(hardware_category_ids)
+  .filter(Boolean);
 
-  const selectedLicenseIds = Array.isArray(license_type_ids)
-    ? license_type_ids.filter(Boolean)
-    : [];
+const selectedLicenseIds = parseJsonArray(license_type_ids)
+  .filter(Boolean);
 
   const managerName = req.session.user.displayName ?? null;
   const managerEmail =
@@ -140,6 +161,117 @@ const movementResult = await client.query(
 
 
     const movement = movementResult.rows[0];
+
+const pdfInfo =
+  await generateOnboardingPdf({
+    requesterName: managerName,
+    requesterEmail: managerEmail,
+
+    firstName,
+    lastName,
+
+    jobTitle: job_title,
+
+    effectiveDate,
+
+    contractType: contract_type,
+
+    employeeStatus:
+      employee_status,
+
+    employeeLevel:
+      employee_level,
+
+    grossAnnualSalary:
+      gross_annual_salary,
+
+    variableBonus:
+      variable_bonus,
+
+    school,
+
+    internshipMission:
+      internship_mission,
+
+    sharedMailboxes:
+      shared_mailboxes
+  });
+
+console.log(
+  'PDF RH créé :',
+  pdfInfo.filePath
+);
+
+
+const pdfBuffer = fs.readFileSync(
+  pdfInfo.filePath
+);
+
+const cvBuffer =
+  cvFilePath
+    ? fs.readFileSync(
+        path.join(process.cwd(), cvFilePath)
+      )
+    : null;
+
+const cvFileName = req.file?.originalname ?? null;
+const cvFilePath = req.file
+  ? `public/uploads/cv/${req.file.filename}`
+  : null;
+
+await client.query(
+  `
+  INSERT INTO onboarding_details (
+    movement_id,
+    contract_type,
+    employee_status,
+    employee_level,
+    gross_annual_salary,
+    variable_bonus,
+    contract_reason,
+    school,
+    internship_mission,
+    referral,
+    referral_employee,
+    cv_file_name,
+    cv_file_path
+  )
+  VALUES (
+    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+  )
+  `,
+  [
+    movement.id,
+
+    cleanString(contract_type),
+
+    cleanString(employee_status),
+
+    cleanString(employee_level),
+
+    gross_annual_salary
+      ? Number(gross_annual_salary)
+      : null,
+
+    cleanString(variable_bonus),
+
+    cleanString(contract_reason),
+
+    cleanString(school),
+
+    cleanString(internship_mission),
+
+    parseBoolean(referral),
+
+    cleanString(referral_employee),
+
+    cvFileName,
+
+    cvFilePath
+  ]
+);
+
+
 
 for (const group of selectedGroups) {
   await client.query(

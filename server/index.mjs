@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { pool } from './db.mjs';
 import express from 'express';
 import { getSharedMailboxes } from './sharedMailboxes.mjs';
+import multer from 'multer';
 
 import session from 'express-session';
 import helmet from 'helmet';
@@ -442,6 +443,29 @@ const html = isReassignment
   return true;
 }
 
+const cvStorage = multer.diskStorage({
+  destination(req, file, cb) {
+    cb(null, path.join(process.cwd(), 'public/uploads/cv'));
+  },
+
+  filename(req, file, cb) {
+    const unique =
+      Date.now() + '-' +
+      Math.round(Math.random() * 1e9);
+
+    cb(
+      null,
+      `${unique}-${file.originalname}`
+    );
+  }
+});
+
+const uploadCv = multer({
+  storage: cvStorage,
+  limits: {
+    fileSize: 10 * 1024 * 1024
+  }
+});
 
 app.set('trust proxy', 1);
 
@@ -702,7 +726,11 @@ app.get('/api/me', (req, res) => {
 
 app.get('/api/microsoft-onboarding-services', getMicrosoftOnboardingServices);
 
-app.post('/api/onboarding-request', createOnboardingRequest);
+app.post(
+  '/api/onboarding-request',
+  uploadCv.single('cv'),
+  createOnboardingRequest
+);
 
 app.get('/api/services', async (req, res) => {
 

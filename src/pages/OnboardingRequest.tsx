@@ -149,38 +149,69 @@ const filteredReferralEmployees = employees
     setBusy(true);
 
     try {
-      const res = await fetch('/api/onboarding-request', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-body: JSON.stringify({
-  first_name: firstName,
-  last_name: lastName,
-  job_title: jobTitle,
-  effective_date: effectiveDate,
-contract_reason: contractReason,
-internship_mission: internshipMission,
-employee_status: employeeStatus,
-employee_level: employeeLevel,
-gross_annual_salary: grossAnnualSalary,
-variable_bonus: variableBonus,
+      
+const formData = new FormData();
 
-  contract_type: contractType,
-  contract_end_date:
-    contractType === 'CDD' ||
-    contractType === 'Stage'
-      ? contractEndDate
-      : null,
-	  service_groups: services.filter( 
-		s => selectedServices.includes(s.id)
-	  ),
+formData.append('first_name', firstName);
+formData.append('last_name', lastName);
+formData.append('job_title', jobTitle);
+formData.append('effective_date', effectiveDate);
 
-shared_mailboxes: sharedMailboxes,
-          hardware_category_ids: selectedHardware,
-          license_type_ids: selectedLicenses
-        })
-      });
+formData.append('contract_type', contractType);
+formData.append(
+  'contract_end_date',
+  contractType === 'CDD' || contractType === 'Stage'
+    ? contractEndDate
+    : ''
+);
+
+formData.append('contract_reason', contractReason);
+formData.append('internship_mission', internshipMission);
+
+formData.append('employee_status', employeeStatus);
+formData.append('employee_level', employeeLevel);
+formData.append('gross_annual_salary', grossAnnualSalary);
+formData.append('variable_bonus', variableBonus);
+
+formData.append('school', school);
+
+formData.append('referral', String(isReferral));
+formData.append('referral_employee', referralEmployee);
+
+formData.append(
+  'service_groups',
+  JSON.stringify(
+    services.filter(
+      s => selectedServices.includes(s.id)
+    )
+  )
+);
+
+formData.append(
+  'shared_mailboxes',
+  sharedMailboxes
+);
+
+formData.append(
+  'hardware_category_ids',
+  JSON.stringify(selectedHardware)
+);
+
+formData.append(
+  'license_type_ids',
+  JSON.stringify(selectedLicenses)
+);
+
+if (cvFile) {
+  formData.append('cv', cvFile);
+}
+
+const res = await fetch('/api/onboarding-request', {
+  method: 'POST',
+  body: formData
+});
+
+
 
       const json = await res.json().catch(() => ({}));
 
@@ -203,6 +234,16 @@ setInternshipMission('');
       setSelectedHardware([]);
       setSelectedLicenses([]);
 setSharedMailboxes('');
+setSchool('');
+setVariableBonus('');
+setGrossAnnualSalary('');
+setEmployeeStatus('');
+setEmployeeLevel('');
+setReferralEmployee('');
+setReferralSearch('');
+setIsReferral(false);
+setCvFile(null);
+
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erreur inconnue.');
     } finally {
