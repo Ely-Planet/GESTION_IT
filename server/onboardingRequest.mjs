@@ -1,4 +1,6 @@
 import fs from 'fs';
+import path from 'path';
+import { sendMailWithAttachments } from './graphMail.mjs';
 import { pool } from './db.mjs';
 import { generateOnboardingPdf } from './onboardingPdf.mjs';
 
@@ -51,7 +53,8 @@ contract_type,
 referral_employee,
   service_groups,
 shared_mailboxes,
-  hardware_category_ids,
+  company_car,
+hardware_category_ids,
   license_type_ids
 } = req.body;
 
@@ -139,7 +142,7 @@ const movementResult = await client.query(
     $4,
     $5,
     $6,
-    'pending'
+'envoye'
   )
   RETURNING *
   `,
@@ -161,6 +164,32 @@ const movementResult = await client.query(
 
 
     const movement = movementResult.rows[0];
+
+console.log(
+  'SERVICES PDF',
+  selectedGroups.map(g => g.displayName)
+);
+
+let referralEmployeeName = null;
+
+if (referral_employee) {
+  const referralResult = await client.query(
+    `
+    SELECT
+      first_name,
+      last_name
+    FROM employees
+    WHERE id = $1
+    `,
+    [referral_employee]
+  );
+
+  if (referralResult.rows.length) {
+    referralEmployeeName =
+      `${referralResult.rows[0].first_name} ${referralResult.rows[0].last_name}`;
+  }
+}
+
 
 const pdfInfo =
   await generateOnboardingPdf({
@@ -189,10 +218,21 @@ const pdfInfo =
       variable_bonus,
 
     school,
+companyCar:
+  company_car === 'true',
 
     internshipMission:
       internship_mission,
+referral:
+  referral === true,
 
+referralEmployee:
+  referralEmployeeName,
+
+services:
+  selectedGroups.map(
+    g => g.displayName
+  ),
     sharedMailboxes:
       shared_mailboxes
   });
@@ -202,6 +242,11 @@ console.log(
   pdfInfo.filePath
 );
 
+const cvFileName = req.file?.originalname ?? null;
+
+const cvFilePath = req.file
+  ? `public/uploads/cv/${req.file.filename}`
+  : null;
 
 const pdfBuffer = fs.readFileSync(
   pdfInfo.filePath
@@ -213,11 +258,147 @@ const cvBuffer =
         path.join(process.cwd(), cvFilePath)
       )
     : null;
+await sendMailWithAttachments({
+  to: 'Service_RH@elyade.com',
 
-const cvFileName = req.file?.originalname ?? null;
-const cvFilePath = req.file
-  ? `public/uploads/cv/${req.file.filename}`
-  : null;
+  subject:
+    `Demande onboarding - ${firstName} ${lastName}`,
+
+  html: `
+    <p>Bonjour,</p>
+
+    <p>
+<br>
+      Une nouvelle demande d'onboarding a été créée.
+    </p>
+<br>
+   <p>
+      <strong>Demandeur :</strong>
+      ${managerName}
+    </p>
+<br>
+    <p>
+      <strong>Collaborateur :</strong>
+      ${firstName} ${lastName}
+    </p>
+
+    <p>
+      <strong>Fonction :</strong>
+      ${job_title || '-'}
+    </p>
+
+    <p>
+      <strong>Date d'arrivée :</strong>
+      ${effectiveDate}
+    </p>
+<br>
+    <p>
+      Le PDF récapitulatif et le CV sont joints.
+    </p>
+
+    <p>
+      Cordialement,<br>
+Service Informatique
+    </p>
+  `,
+
+  attachments: [
+    {
+      '@odata.type':
+        '#microsoft.graph.fileAttachment',
+
+      name: pdfInfo.fileName,
+
+      contentType: 'application/pdf',
+
+      contentBytes:
+        pdfBuffer.toString('base64')
+    },
+
+    ...(cvBuffer
+      ? [
+          {
+            '@odata.type':
+              '#microsoft.graph.fileAttachment',
+
+            name: cvFileName,
+
+            contentType:
+              'application/pdf',
+
+            contentBytes:
+              cvBuffer.toString('base64')
+          }
+        ]
+      : [])
+  ]
+});
+
+
+if (company_car === 'true' || company_car === true) {
+
+  await sendMailWithAttachments({
+    to: 'moyensgeneraux@elyade.com',
+
+    subject:
+      `Demande véhicule de fonction - ${firstName} ${lastName}`,
+
+    html: `
+      <p>Bonjour,</p>
+
+      <p>
+        Une demande de véhicule de fonction a été créée pour un nouveau collaborateur.
+      </p>
+
+<br>
+   <p>
+      <strong>Demandeur :</strong>
+      ${managerName}
+    </p>
+<br>
+   <p>
+      <strong>Collaborateur :</strong>
+      ${firstName} ${lastName}
+    </p>
+
+      <p>
+        <strong>Fonction :</strong>
+        ${job_title || '-'}
+      </p>
+
+      <p>
+        <strong>Date d'arrivée :</strong>
+        ${effectiveDate}
+      </p>
+
+      <p>
+        <strong>Type de contrat :</strong>
+        ${contract_type || '-'}
+      </p>
+
+      <p>
+        <strong>Service :</strong>
+        ${
+          selectedGroups
+            .map(g => g.displayName)
+            .join(', ') || '-'
+        }
+      </p>
+
+      <p>
+        Merci de prévoir un véhicule de fonction pour ce collaborateur.
+      </p>
+
+      <p>
+        Cordialement,<br>
+        Service Informatique
+      </p>
+    `
+  });
+
+}
+
+
 
 await client.query(
   `

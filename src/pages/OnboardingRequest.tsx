@@ -1,4 +1,9 @@
-import { type FormEvent, useEffect, useState } from 'react';
+import {
+  FormEvent,
+  useEffect,
+  useState,
+  useRef
+} from 'react';
 
 type Service = {
   id: string;
@@ -53,6 +58,9 @@ const [referralSearch, setReferralSearch] =
 const [cvFile, setCvFile] = useState<File | null>(null);
 const [contractType, setContractType] = useState('CDI');
 const [contractEndDate, setContractEndDate] = useState('');
+const fileInputRef = useRef<HTMLInputElement>(null);
+const [companyCar, setCompanyCar] = useState(false);
+
 const stageDurationDays =
   effectiveDate && contractEndDate
     ? Math.floor(
@@ -198,6 +206,11 @@ formData.append(
 );
 
 formData.append(
+  'company_car',
+  String(companyCar)
+);
+
+formData.append(
   'license_type_ids',
   JSON.stringify(selectedLicenses)
 );
@@ -211,8 +224,6 @@ const res = await fetch('/api/onboarding-request', {
   body: formData
 });
 
-
-
       const json = await res.json().catch(() => ({}));
 
       if (!res.ok) {
@@ -221,6 +232,16 @@ const res = await fetch('/api/onboarding-request', {
       }
 
       setSuccess('Demande d’onboarding créée avec succès.');
+
+window.scrollTo({
+  top: 0,
+  behavior: 'smooth'
+});
+
+alert(
+  '✅ La demande a été transmise au Service RH.\n\n' +
+  'La demande de matériel a été transmise aux services concernés.'
+);
 
       setFirstName('');
       setLastName('');
@@ -243,6 +264,9 @@ setReferralEmployee('');
 setReferralSearch('');
 setIsReferral(false);
 setCvFile(null);
+if (fileInputRef.current) {
+  fileInputRef.current.value = '';
+}
 
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erreur inconnue.');
@@ -545,13 +569,15 @@ onChange={(e) => {
   </label>
 
   <input
-    type="file"
+ref={fileInputRef}    
+type="file"
     className="input"
     accept=".pdf,.doc,.docx"
     onChange={(e) =>
       setCvFile(
         e.target.files?.[0] ?? null
       )
+
     }
   />
 </div>
@@ -744,6 +770,27 @@ Il faut absolument lister les messageries nécessaires"
             ))}
           </div>
         </section>
+<section className="card p-5">
+  <h2 className="font-semibold text-ink-900 mb-2">
+    Voiture de fonction
+  </h2>
+
+  <div className="space-y-4">
+    <label className="flex items-center gap-2 text-sm">
+      <input
+        type="checkbox"
+        checked={companyCar}
+        onChange={(e) =>
+          setCompanyCar(e.target.checked)
+        }
+      />
+      Attribution d'une voiture de fonction
+    </label>
+
+</div>
+
+</section>
+
 
         <div className="flex justify-end">
           <button

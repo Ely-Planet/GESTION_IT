@@ -626,67 +626,16 @@ app.get('/auth/callback', async (req, res) => {
     const allowedGroups = memberResponse.data?.value || [];
     const isAllowed = allowedGroups.includes(process.env.MICROSOFT_ALLOWED_GROUP_ID);
 
-    if (!isAllowed) {
-      req.session.destroy(() => {});
+const user = meResponse.data;
 
-      return res.status(403).send(`
-        <!doctype html>
-        <html lang="fr">
-          <head>
-            <meta charset="utf-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>Accès refusé - GESTION_IT</title>
-            <style>
-              body {
-                margin: 0;
-                font-family: Arial, sans-serif;
-                background: #f6f7f9;
-                color: #171717;
-              }
-              .box {
-                max-width: 620px;
-                margin: 90px auto;
-                background: #ffffff;
-                padding: 32px;
-                border-radius: 16px;
-                box-shadow: 0 12px 35px rgba(0,0,0,.08);
-              }
-              h1 {
-                margin-top: 0;
-                color: #b00020;
-                font-size: 26px;
-              }
-              p {
-                line-height: 1.5;
-                color: #333333;
-              }
-              a {
-                color: #ee0093;
-                font-weight: 700;
-                text-decoration: none;
-              }
-            </style>
-          </head>
-          <body>
-            <div class="box">
-              <h1>Accès refusé</h1>
-              <p>Votre compte Microsoft est valide, mais il n'appartient pas au groupe autorisé.</p>
-              <p>Accès réservé au groupe : <strong>🏢 Service Informatique</strong>.</p>
-              <p>/auth/logoutChanger de compte</a></p>
-            </div>
-          </body>
-        </html>
-      `);
-    }
+req.session.user = {
+  id: user.id,
+  displayName: user.displayName,
+  email: user.mail || user.userPrincipalName,
+  userPrincipalName: user.userPrincipalName,
+  isIT: isAllowed
+};
 
-    const user = meResponse.data;
-
-    req.session.user = {
-      id: user.id,
-      displayName: user.displayName,
-      email: user.mail || user.userPrincipalName,
-      userPrincipalName: user.userPrincipalName
-    };
 
     res.redirect('/');
   } catch (error) {
@@ -766,6 +715,42 @@ app.get('/api/contract-types', async (req, res) => {
     res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/my-onboarding-requests', async (req, res) => {
+  try {
+    const userEmail = req.session.user?.email;
+
+    const result = await pool.query(
+      `
+      SELECT
+        m.id,
+        m.created_at,
+        m.effective_date,
+        m.status,
+        m.manager_name,
+        m.manager_email,
+        e.first_name,
+        e.last_name,
+        e.email
+      FROM movements m
+      LEFT JOIN employees e
+        ON e.id = m.employee_id
+      WHERE
+        m.type = 'onboarding'
+        AND m.created_at >= NOW() - INTERVAL '2 months'
+        AND m.manager_email = $1
+      ORDER BY m.created_at DESC
+      `,
+      [userEmail]
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
   }
 });
 

@@ -15,7 +15,17 @@ import { Building2 } from 'lucide-react';
 
 function Shell() {
   const { user, loading } = useAuth();
-  const [page, setPage] = useState<PageKey>('dashboard');
+const [page, setPage] = useState<PageKey>(
+  user?.isIT ? 'dashboard' : 'onboardingrequest'
+);
+if (
+  user &&
+  !user.isIT &&
+  page !== 'onboardingrequest'
+) {
+  setPage('onboardingrequest');
+}
+
 
   if (loading) {
     return (

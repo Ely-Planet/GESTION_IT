@@ -5,6 +5,7 @@ type MicrosoftUser = {
   displayName: string;
   email: string;
   userPrincipalName: string;
+isIT: boolean;
 };
 
 type Profile = {

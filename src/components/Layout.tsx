@@ -23,16 +23,21 @@ export type PageKey =
   | 'documents'
   | 'audit';
 
-const NAV: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = [
+const NAV_IT = [
   { key: 'dashboard', label: 'Tableau de bord', icon: LayoutDashboard },
   { key: 'movements', label: 'Arrivées & Départs', icon: ArrowRightLeft },
   { key: 'inventory', label: 'Inventaire', icon: Laptop },
   { key: 'licenses', label: 'Licences', icon: KeyRound },
-{ key: 'settings', label: 'Paramètres', icon: Settings2 },
-{ key: 'onboardingrequest', label: "Demande d'onboarding", icon: FileSignature },  
-{ key: 'documents', label: 'Documents signés', icon: FileSignature },
-{ key: 'audit', label: "Journal d'audit", icon: ScrollText },
+  { key: 'settings', label: 'Paramètres', icon: Settings2 },
+  { key: 'onboardingrequest', label: "Demande d'onboarding", icon: FileSignature },
+  { key: 'documents', label: 'Documents signés', icon: FileSignature },
+  { key: 'audit', label: "Journal d'audit", icon: ScrollText },
 ];
+
+const NAV_USER = [
+  { key: 'onboardingrequest', label: "Demande d'onboarding", icon: FileSignature },
+];
+
 
 export default function Layout({
   current,
@@ -43,7 +48,11 @@ export default function Layout({
   onNavigate: (p: PageKey) => void;
   children: ReactNode;
 }) {
-  const { profile, signOut } = useAuth();
+const { profile, user, signOut } = useAuth();
+
+const navItems = user?.isIT
+  ? NAV_IT
+  : NAV_USER;
 
   return (
     <div className="min-h-screen flex bg-ink-50">
@@ -59,7 +68,7 @@ export default function Layout({
         </div>
 
         <nav className="flex-1 px-3 py-4 space-y-1">
-          {NAV.map(({ key, label, icon: Icon }) => {
+{navItems.map(({ key, label, icon: Icon }) => {
             const active = current === key;
             return (
               <button
