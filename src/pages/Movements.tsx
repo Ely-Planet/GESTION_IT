@@ -241,86 +241,137 @@ async function associateMicrosoftUser(
     data.reload();
   }
 
-  async function assignHardwareItem(mi: MovementItem, hardwareItemId: string) {
-    const res = await fetch(`/api/movement-items/${mi.id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        hardware_item_id: hardwareItemId,
-        status: 'assigned',
-      }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Erreur attribution matériel au mouvement' }));
-      alert(err.error ?? 'Erreur attribution matériel au mouvement');
-      return;
-    }
-
-    const hwRes = await fetch(`/api/hardware-items/${hardwareItemId}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ status: 'assigned' }),
-    });
-
-    if (!hwRes.ok) {
-      const err = await hwRes.json().catch(() => ({ error: 'Erreur mise à jour matériel' }));
-      alert(err.error ?? 'Erreur mise à jour matériel');
-      return;
-    }
-
-const employeeId =
-  data.movements.find(
+async function assignHardwareItem(
+  mi: MovementItem,
+  hardwareItemId: string
+) {
+  const movement = data.movements.find(
     (m) => m.id === mi.movement_id
-  )?.employee_id ?? null;
+  );
 
-if (employeeId) {
+  const employeeId = movement?.employee_id ?? null;
 
-  const assignRes = await fetch(
-    '/api/assignments',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        employee_id: employeeId,
-        hardware_item_id: hardwareItemId,
-      }),
+  if (!employeeId) {
+    alert(
+      'Impossible d’affecter le matériel : aucun collaborateur associé à cette arrivée.'
+    );
+    return;
+  }
+
+  const oldAssignment = data.assignments.find(
+    (assignment) => {
+      if (
+        assignment.employee_id !== employeeId ||
+        assignment.returned_at ||
+        assignment.hardware_item_id === hardwareItemId
+      ) {
+        return false;
+      }
+
+      const oldHardware = data.hardware.find(
+        (hardware) =>
+          hardware.id === assignment.hardware_item_id
+      );
+
+      return oldHardware?.category_id === mi.category_id;
     }
   );
 
-  if (!assignRes.ok) {
-    const err = await assignRes
+  const reassignRes = await fetch(
+    '/api/hardware-reassign',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        employee_id: employeeId,
+        changes: [
+          {
+            old_hardware_id:
+              oldAssignment?.hardware_item_id ?? null,
+
+            new_hardware_id:
+              hardwareItemId,
+
+            old_status:
+              'in_stock'
+          }
+        ]
+      })
+    }
+  );
+
+  if (!reassignRes.ok) {
+    const err = await reassignRes
       .json()
       .catch(() => ({
-        error: 'Erreur affectation matériel'
+        error:
+          'Erreur lors de la réaffectation du matériel'
       }));
 
     alert(
       err.error ??
-      'Erreur affectation matériel'
+      'Erreur lors de la réaffectation du matériel'
     );
 
     return;
   }
-}  
 
+  const movementItemRes = await fetch(
+    `/api/movement-items/${mi.id}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        hardware_item_id: hardwareItemId,
+        status: 'assigned'
+      })
+    }
+  );
+
+  if (!movementItemRes.ok) {
+    const err = await movementItemRes
+      .json()
+      .catch(() => ({
+        error:
+          'Erreur lors de la mise à jour de la demande de matériel'
+      }));
+
+    alert(
+      err.error ??
+      'Erreur lors de la mise à jour de la demande de matériel'
+    );
+
+    return;
+  }
 
   await logAudit(
-      'assign',
-      'movement_item',
-      mi.id,
-      { hardware_item_id: hardwareItemId },
-      profile?.display_name
-    ).catch(console.error);
+    'assign',
+    'movement_item',
+    mi.id,
+    {
+      employee_id: employeeId,
+      old_hardware_item_id:
+        oldAssignment?.hardware_item_id ?? null,
+      new_hardware_item_id:
+        hardwareItemId
+    },
+    profile?.display_name
+  ).catch(console.error);
 
-    data.reload();
-  }
+  data.reload();
+}
+
+
+
+
+
+
+
+
 
   async function skipMovementItem(mi: MovementItem) {
     const res = await fetch(`/api/movement-items/${mi.id}`, {
@@ -953,6 +1004,14 @@ function ItemsPanel({
           {items.map((mi) => {
             const cat = data.hardwareCategories.find((c) => c.id === mi.category_id);
             const hw = mi.hardware_item_id ? data.hardware.find((h) => h.id === mi.hardware_item_id) : null;
+
+const assignmentSigned =
+  data.signedDocuments.some(
+    (d) =>
+      d.movement_id === movement.id &&
+      d.doc_type === 'assignment'
+  );
+
             const available = data.hardware.filter(
               (h) => h.category_id === mi.category_id && (h.status === 'in_stock' || h.status === 'being_reinstalled'),
             );
@@ -965,7 +1024,18 @@ function ItemsPanel({
                   </span>
                 </div>
                 {hw && <p className="text-xs text-ink-500 font-mono">{hw.serial_number ?? hw.reference ?? hw.id.slice(0, 8)}</p>}
-                {mi.status === 'requested' && (
+{mi.status === 'assigned' &&
+ !assignmentSigned && (
+  <p className="text-xs text-orange-600 mt-1">
+    Matériel modifiable tant que le document
+    d'attribution n'est pas signé.
+  </p>
+)}    
+
+
+{(mi.status === 'requested' ||
+  (mi.status === 'assigned' &&
+   !assignmentSigned)) && (
                   <div className="flex items-center gap-4 mt-2">
                     <select
                       className="input py-1 text-xs flex-1"
@@ -975,7 +1045,7 @@ function ItemsPanel({
                       <option value="">Sélectionner…</option>
                       {available.map((h) => (
                         <option key={h.id} value={h.id}>
-                          {h.serial_number ?? h.reference ?? h.id.slice(0, 8)} {h.status === 'being_reinstalled' ? '(réinstall.)' : ''}
+                          {h.title ?? h.serial_number ?? h.reference ?? h.id.slice(0, 8)} {h.status === 'being_reinstalled' ? '(réinstall.)' : ''}
                         </option>
                       ))}
                     </select>

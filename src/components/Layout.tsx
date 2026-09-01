@@ -20,6 +20,7 @@ export type PageKey =
   | 'microsoftlicenses'
   | 'settings'
   | 'onboardingrequest'
+| 'myrequests'
   | 'documents'
   | 'audit';
 
@@ -30,14 +31,15 @@ const NAV_IT = [
   { key: 'licenses', label: 'Licences', icon: KeyRound },
   { key: 'settings', label: 'Paramètres', icon: Settings2 },
   { key: 'onboardingrequest', label: "Demande d'onboarding", icon: FileSignature },
+{ key: 'myrequests', label: 'Mes demandes', icon: FileSignature },
   { key: 'documents', label: 'Documents signés', icon: FileSignature },
   { key: 'audit', label: "Journal d'audit", icon: ScrollText },
 ];
 
-const NAV_USER = [
+const NAV_LIMITED = [
   { key: 'onboardingrequest', label: "Demande d'onboarding", icon: FileSignature },
+  { key: 'myrequests', label: 'Mes demandes', icon: FileSignature },
 ];
-
 
 export default function Layout({
   current,
@@ -50,9 +52,16 @@ export default function Layout({
 }) {
 const { profile, user, signOut } = useAuth();
 
-const navItems = user?.isIT
-  ? NAV_IT
-  : NAV_USER;
+const navItems =
+  user?.isIT
+    ? NAV_IT
+    : (
+        user?.isRH ||
+        user?.isManager ||
+        user?.isDirector
+      )
+        ? NAV_LIMITED
+        : [];
 
   return (
     <div className="min-h-screen flex bg-ink-50">

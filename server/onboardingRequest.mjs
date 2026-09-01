@@ -415,12 +415,16 @@ await client.query(
     referral,
     referral_employee,
     cv_file_name,
-    cv_file_path
+    cv_file_path,
+pdf_file_path,
+company_car
   )
-  VALUES (
-    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
-  )
-  `,
+
+VALUES (
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+)
+ `,
+
   [
     movement.id,
 
@@ -444,11 +448,15 @@ await client.query(
 
     parseBoolean(referral),
 
-    cleanString(referral_employee),
+referralEmployeeName,
 
     cvFileName,
 
-    cvFilePath
+    cvFilePath,
+
+pdfInfo.filePath,
+
+company_car === 'true'
   ]
 );
 

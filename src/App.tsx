@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import MyRequests from './pages/MyRequests';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import Layout, { type PageKey } from './components/Layout';
@@ -16,12 +17,19 @@ import { Building2 } from 'lucide-react';
 function Shell() {
   const { user, loading } = useAuth();
 const [page, setPage] = useState<PageKey>(
-  user?.isIT ? 'dashboard' : 'onboardingrequest'
+  user?.isIT
+    ? 'dashboard'
+    : 'onboardingrequest'
 );
+
 if (
   user &&
   !user.isIT &&
-  page !== 'onboardingrequest'
+  !user.isRH &&
+  !user.isManager &&
+  !user.isDirector &&
+  page !== 'onboardingrequest' &&
+  page !== 'myrequests'
 ) {
   setPage('onboardingrequest');
 }
@@ -51,6 +59,7 @@ if (
 {page === 'microsoftlicenses' && <MicrosoftLicenses />}
 {page === 'settings' && <Settings />}
 {page === 'onboardingrequest' && <OnboardingRequest />}
+{page === 'myrequests' && ( <MyRequests /> )}
 {page === 'documents' && <SignedDocuments />}
 {page === 'audit' && <Audit />}
 

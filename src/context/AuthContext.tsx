@@ -5,8 +5,13 @@ type MicrosoftUser = {
   displayName: string;
   email: string;
   userPrincipalName: string;
-isIT: boolean;
+
+  isIT: boolean;
+  isRH: boolean;
+  isManager: boolean;
+  isDirector: boolean;
 };
+
 
 type Profile = {
   id: string;

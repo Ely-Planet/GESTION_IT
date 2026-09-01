@@ -614,7 +614,7 @@ app.post('/api/hardware-assignments/unassign', async (req, res) => {
 
   await pool.query(
     `
-    UPDATE assignments
+    UPDATE hardware_assignments
     SET returned_at = now()
     WHERE
       hardware_item_id = $1
@@ -1864,11 +1864,10 @@ if (req.body.status === 'in_stock') {
 
   const assignmentResult = await pool.query(
     `
-SELECT 1
-FROM assignments
-WHERE hardware_item_id = $1
-AND returned_at IS NULL
-LIMIT 1
+    SELECT 1
+    FROM assignments
+    WHERE hardware_item_id = $1
+    LIMIT 1
     `,
     [id]
   );
@@ -2566,54 +2565,7 @@ app.post('/api/hardware-reassign', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-const {
-  beneficiary_type,
-  employee_id,
-  group_id,
-  group_name,
-  changes
-} = req.body;
-
-if (
-  beneficiary_type !== 'employee' &&
-  beneficiary_type !== 'group'
-) {
-  await client.query('ROLLBACK');
-
-  return res.status(400).json({
-    error: 'Type de bénéficiaire invalide.'
-  });
-}
-
-if (
-  beneficiary_type === 'employee' &&
-  !employee_id
-) {
-  await client.query('ROLLBACK');
-
-  return res.status(400).json({
-    error: 'Collaborateur obligatoire.'
-  });
-}
-
-if (
-  beneficiary_type === 'group' &&
-  !group_name
-) {
-  await client.query('ROLLBACK');
-
-  return res.status(400).json({
-    error: 'Groupe obligatoire.'
-  });
-}
-
-if (!Array.isArray(changes) || changes.length === 0) {
-  await client.query('ROLLBACK');
-
-  return res.status(400).json({
-    error: 'Aucun changement transmis.'
-  });
-}
+    const { employee_id, changes } = req.body;
 
     for (const change of changes) {
       if (!change.new_hardware_id) {
@@ -2632,31 +2584,24 @@ if (!Array.isArray(changes) || changes.length === 0) {
       );
 
       // Création de la nouvelle affectation
-
-await client.query(
-  `
-  INSERT INTO assignments (
-    employee_id,
-    group_id,
-    group_name,
-    hardware_item_id,
-    assigned_at
-  )
-  VALUES (
-    $1,
-    $2,
-    $3,
-    $4,
-    NOW()
-  )
-  `,
-  [
-    employee_id || null,
-    group_id || null,
-    group_name || null,
-    change.new_hardware_id
-  ]
-);
+      await client.query(
+        `
+        INSERT INTO assignments (
+          employee_id,
+          hardware_item_id,
+          assigned_at
+        )
+        VALUES (
+          $1,
+          $2,
+          NOW()
+        )
+        `,
+        [
+          employee_id,
+          change.new_hardware_id
+        ]
+      );
 
       // Ancien matériel
       await client.query(
@@ -2683,10 +2628,6 @@ await client.query(
         [change.new_hardware_id]
       );
     }
-
-let createdSignedDocument = null;
-
-if (employee_id) {
 
     // Création automatique d'une nouvelle fiche d'affectation signée
     // après réaffectation du matériel
@@ -2852,10 +2793,10 @@ JSON.stringify({
       ]
     );
 
-createdSignedDocument = signedDocumentResult.rows[0];
-}
+    const createdSignedDocument = signedDocumentResult.rows[0];
+
     await client.query('COMMIT');
-if (createdSignedDocument) {
+
     try {
       await getOrCreateSignedDocumentPdf(createdSignedDocument.id);
 
@@ -2880,7 +2821,7 @@ if (createdSignedDocument) {
         ]
       ).catch(console.error);
     }
-}
+
     res.json({
       success: true,
       signed_document_id: createdSignedDocument.id,

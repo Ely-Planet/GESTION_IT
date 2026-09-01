@@ -32,10 +32,7 @@ const requiredEnv = [
   'MICROSOFT_CLIENT_ID',
   'MICROSOFT_CLIENT_SECRET',
   'MICROSOFT_REDIRECT_URI',
-  'MICROSOFT_IT_GROUP_ID',
-  'MICROSOFT_RH_GROUP_ID',
-  'MICROSOFT_MANAGER_GROUP_ID',
-  'MICROSOFT_DIRECTOR_GROUP_ID'
+  'MICROSOFT_ALLOWED_GROUP_ID'
 ];
 
 for (const key of requiredEnv) {
@@ -521,119 +518,7 @@ function isAuthenticated(req) {
   return Boolean(req.session && req.session.user);
 }
 
-app.get('/api/hardware-groups', async (req, res) => {
-  const result = await pool.query(`
-    SELECT *
-    FROM hardware_groups
-    ORDER BY name
-  `);
 
-  res.json(result.rows);
-});
-
-app.post('/api/hardware-assignments/user', async (req, res) => {
-
-  const {
-    hardware_item_id,
-    employee_id
-  } = req.body;
-
-  await pool.query(
-    `
-    INSERT INTO hardware_assignments
-    (
-      hardware_item_id,
-      employee_id
-    )
-    VALUES
-    (
-      $1,
-      $2
-    )
-    `,
-    [
-      hardware_item_id,
-      employee_id
-    ]
-  );
-
-  await pool.query(
-    `
-    UPDATE hardware_items
-    SET status='assigned'
-    WHERE id=$1
-    `,
-    [hardware_item_id]
-  );
-
-  res.json({ success: true });
-});
-app.post('/api/hardware-assignments/group', async (req, res) => {
-
-  const {
-    hardware_item_id,
-    group_name
-  } = req.body;
-
-  await pool.query(
-    `
-    INSERT INTO hardware_assignments
-    (
-      hardware_item_id,
-      group_name
-    )
-    VALUES
-    (
-      $1,
-      $2
-    )
-    `,
-    [
-      hardware_item_id,
-      group_name
-    ]
-  );
-
-  await pool.query(
-    `
-    UPDATE hardware_items
-    SET status='assigned'
-    WHERE id=$1
-    `,
-    [hardware_item_id]
-  );
-
-  res.json({ success: true });
-});
-
-app.post('/api/hardware-assignments/unassign', async (req, res) => {
-
-  const {
-    hardware_item_id
-  } = req.body;
-
-  await pool.query(
-    `
-    UPDATE assignments
-    SET returned_at = now()
-    WHERE
-      hardware_item_id = $1
-      AND returned_at IS NULL
-    `,
-    [hardware_item_id]
-  );
-
-  await pool.query(
-    `
-    UPDATE hardware_items
-    SET status='in_stock'
-    WHERE id=$1
-    `,
-    [hardware_item_id]
-  );
-
-  res.json({ success: true });
-});
 
 
 app.get(
@@ -824,15 +709,10 @@ app.get('/auth/callback', async (req, res) => {
     const memberResponse = await axios.post(
       'https://graph.microsoft.com/v1.0/me/checkMemberGroups',
       {
-
 groupIds: [
-  process.env.MICROSOFT_IT_GROUP_ID,
-  process.env.MICROSOFT_RH_GROUP_ID,
-  process.env.MICROSOFT_MANAGER_GROUP_ID,
-  process.env.MICROSOFT_DIRECTOR_GROUP_ID
+  process.env.MICROSOFT_ALLOWED_GROUP_ID,
+  '6bd499a8-3929-485d-adbf-6c00035fcc3a'
 ]
-
-
 
       },
       {
@@ -844,57 +724,20 @@ groupIds: [
     );
 
     const allowedGroups = memberResponse.data?.value || [];
-
-const isIT = allowedGroups.includes(
-  process.env.MICROSOFT_IT_GROUP_ID
-);
-
-const isRH = allowedGroups.includes(
-  process.env.MICROSOFT_RH_GROUP_ID
-);
-
-const isManager = allowedGroups.includes(
-  process.env.MICROSOFT_MANAGER_GROUP_ID
-);
-
-const isDirector = allowedGroups.includes(
-  process.env.MICROSOFT_DIRECTOR_GROUP_ID
-);
+const isRH = allowedGroups.includes( '6bd499a8-3929-485d-adbf-6c00035fcc3a');
+const isAllowed = allowedGroups.includes(process.env.MICROSOFT_ALLOWED_GROUP_ID);
 
 const user = meResponse.data;
-const hasApplicationAccess =
-  isIT ||
-  isRH ||
-  isManager ||
-  isDirector;
-
-if (!hasApplicationAccess) {
-  console.warn('Accès refusé à GESTION_IT', {
-    email: user.mail || user.userPrincipalName,
-    isIT,
-    isRH,
-    isManager,
-    isDirector
-  });
-
-  return res
-    .status(403)
-    .send(
-      'Accès refusé : votre compte Microsoft ne fait partie d’aucun groupe autorisé.'
-    );
-}
 
 req.session.user = {
   id: user.id,
   displayName: user.displayName,
   email: user.mail || user.userPrincipalName,
   userPrincipalName: user.userPrincipalName,
-
-  isIT,
-  isRH,
-  isManager,
-  isDirector
+  isIT: isAllowed,
+isRH
 };
+
 
     res.redirect('/');
   } catch (error) {
@@ -1538,10 +1381,7 @@ for (const [routeName, tableName] of Object.entries(inventoryLookupTables)) {
 app.post('/api/hardware-items', async (req, res) => {
   try {
     const inputRows = Array.isArray(req.body) ? req.body : [req.body];
-console.log(
-  'IMPORT HARDWARE BATCH :',
-  inputRows.length
-);
+
     if (inputRows.length === 0) {
       return res.status(400).json({
         error: 'Aucun matériel à créer.'
@@ -1589,90 +1429,6 @@ const allowedColumns = [
     const insertedRows = [];
 
     for (const row of inputRows) {
-
-const rawUserSource =
-  typeof row.import_user_source === 'string'
-    ? row.import_user_source.trim()
-    : '';
-
-const rawUserLabel =
-  typeof row.import_user_label === 'string'
-    ? row.import_user_label.trim()
-    : '';
-
-let normalizedEmail = null;
-
-const emailMatch = rawUserSource.match(
-  /([A-Z0-9._%+-]+@[A-Z0-9.-]+(?:\.[A-Z]{2,})?)/i
-);
-
-if (emailMatch) {
-  normalizedEmail =
-    emailMatch[1].toLowerCase();
-
-  if (
-    normalizedEmail.endsWith('@elyade')
-  ) {
-    normalizedEmail += '.com';
-  }
-}
-
-const looksLikeGroup =
-  rawUserLabel.startsWith('🏢') ||
-  /(?:^|\s)-?\s*membres$/i.test(
-    rawUserLabel
-  ) ||
-  rawUserLabel.toLowerCase().includes(
-    'pole '
-  ) ||
-  rawUserLabel.toLowerCase().includes(
-    'service '
-  );
-
-let employeeId = null;
-
-if (normalizedEmail) {
-  const employeeResult = await pool.query(
-    `
-    SELECT id
-    FROM employees
-    WHERE
-      lower(email) = lower($1)
-      OR lower(microsoft_upn) = lower($1)
-    LIMIT 1
-    `,
-    [normalizedEmail]
-  );
-
-  employeeId =
-    employeeResult.rows[0]?.id ?? null;
-}
-const existingNotes =
-  typeof row.notes === 'string'
-    ? row.notes.trim()
-    : '';
-
-let importAssignmentNote = '';
-
-if (
-  !employeeId &&
-  !looksLikeGroup &&
-  (rawUserSource || rawUserLabel)
-) {
-  importAssignmentNote =
-    `Affectation importée non résolue : ` +
-    `Usager="${rawUserSource || '-'}" ; ` +
-    `Utilisateur="${rawUserLabel || '-'}"`;
-}
-
-if (importAssignmentNote) {
-  row.notes = existingNotes
-    ? `${existingNotes}\n${importAssignmentNote}`
-    : importAssignmentNote;
-}
-
-
-
       const columns = allowedColumns.filter((column) => row[column] !== undefined);
 
       if (!columns.includes('category_id')) {
@@ -1694,80 +1450,53 @@ if (importAssignmentNote) {
       );
 
       insertedRows.push(result.rows[0]);
+if (row.employee_email) {
 
-
-
-const hardwareItem =
-  result.rows[0];
-
-if (employeeId) {
-
-  await pool.query(
+  const employeeResult = await pool.query(
     `
-    INSERT INTO assignments (
-      employee_id,
-      hardware_item_id,
-      assigned_at
-    )
-    VALUES ($1, $2, NOW())
+    SELECT id
+    FROM employees
+    WHERE
+      lower(email) = lower($1)
+      OR lower(microsoft_upn) = lower($1)
+    LIMIT 1
     `,
-    [
-      employeeId,
-      hardwareItem.id
-    ]
+    [row.employee_email]
   );
 
-  await pool.query(
-    `
-    UPDATE hardware_items
-    SET
-      status = 'assigned',
-      updated_at = NOW()
-    WHERE id = $1
-    `,
-    [hardwareItem.id]
-  );
+  if (employeeResult.rows.length) {
 
-} else if (
-  looksLikeGroup &&
-  rawUserLabel
-) {
+    await pool.query(
+      `
+      INSERT INTO assignments (
+        employee_id,
+        hardware_item_id,
+        assigned_at
+      )
+      VALUES (
+        $1,
+        $2,
+        NOW()
+      )
+      `,
+      [
+        employeeResult.rows[0].id,
+        result.rows[0].id
+      ]
+    );
 
-  await pool.query(
-    `
-    INSERT INTO assignments (
-      employee_id,
-      hardware_item_id,
-      group_id,
-      group_name,
-      assigned_at
-    )
-    VALUES (
-      NULL,
-      $1,
-      NULL,
-      $2,
-      NOW()
-    )
-    `,
-    [
-      hardwareItem.id,
-      rawUserLabel
-    ]
-  );
+    await pool.query(
+      `
+      UPDATE hardware_items
+      SET status = 'assigned'
+      WHERE id = $1
+      `,
+      [result.rows[0].id]
+    );
 
-  await pool.query(
-    `
-    UPDATE hardware_items
-    SET
-      status = 'assigned',
-      updated_at = NOW()
-    WHERE id = $1
-    `,
-    [hardwareItem.id]
-  );
-
+  }
 }
+
     }
 
     res.status(201).json(insertedRows);
@@ -1864,11 +1593,10 @@ if (req.body.status === 'in_stock') {
 
   const assignmentResult = await pool.query(
     `
-SELECT 1
-FROM assignments
-WHERE hardware_item_id = $1
-AND returned_at IS NULL
-LIMIT 1
+    SELECT 1
+    FROM assignments
+    WHERE hardware_item_id = $1
+    LIMIT 1
     `,
     [id]
   );
@@ -2522,42 +2250,6 @@ app.post('/api/assignments', async (req, res) => {
   }
 });
 
-app.post('/api/assignments/group', async (req, res) => {
-  try {
-
-    const result = await pool.query(
-      `
-      INSERT INTO assignments (
-        group_id,
-        group_name,
-        hardware_item_id,
-        assigned_at
-      )
-      VALUES (
-        $1,
-        $2,
-        $3,
-        NOW()
-      )
-      RETURNING *
-      `,
-      [
-        req.body.group_id,
-        req.body.group_name,
-        req.body.hardware_item_id
-      ]
-    );
-
-    res.json(result.rows[0]);
-
-  } catch (error) {
-
-    res.status(500).json({
-      error: error.message
-    });
-
-  }
-});
 
 
 app.post('/api/hardware-reassign', async (req, res) => {
@@ -2566,54 +2258,7 @@ app.post('/api/hardware-reassign', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-const {
-  beneficiary_type,
-  employee_id,
-  group_id,
-  group_name,
-  changes
-} = req.body;
-
-if (
-  beneficiary_type !== 'employee' &&
-  beneficiary_type !== 'group'
-) {
-  await client.query('ROLLBACK');
-
-  return res.status(400).json({
-    error: 'Type de bénéficiaire invalide.'
-  });
-}
-
-if (
-  beneficiary_type === 'employee' &&
-  !employee_id
-) {
-  await client.query('ROLLBACK');
-
-  return res.status(400).json({
-    error: 'Collaborateur obligatoire.'
-  });
-}
-
-if (
-  beneficiary_type === 'group' &&
-  !group_name
-) {
-  await client.query('ROLLBACK');
-
-  return res.status(400).json({
-    error: 'Groupe obligatoire.'
-  });
-}
-
-if (!Array.isArray(changes) || changes.length === 0) {
-  await client.query('ROLLBACK');
-
-  return res.status(400).json({
-    error: 'Aucun changement transmis.'
-  });
-}
+    const { employee_id, changes } = req.body;
 
     for (const change of changes) {
       if (!change.new_hardware_id) {
@@ -2632,31 +2277,24 @@ if (!Array.isArray(changes) || changes.length === 0) {
       );
 
       // Création de la nouvelle affectation
-
-await client.query(
-  `
-  INSERT INTO assignments (
-    employee_id,
-    group_id,
-    group_name,
-    hardware_item_id,
-    assigned_at
-  )
-  VALUES (
-    $1,
-    $2,
-    $3,
-    $4,
-    NOW()
-  )
-  `,
-  [
-    employee_id || null,
-    group_id || null,
-    group_name || null,
-    change.new_hardware_id
-  ]
-);
+      await client.query(
+        `
+        INSERT INTO assignments (
+          employee_id,
+          hardware_item_id,
+          assigned_at
+        )
+        VALUES (
+          $1,
+          $2,
+          NOW()
+        )
+        `,
+        [
+          employee_id,
+          change.new_hardware_id
+        ]
+      );
 
       // Ancien matériel
       await client.query(
@@ -2683,10 +2321,6 @@ await client.query(
         [change.new_hardware_id]
       );
     }
-
-let createdSignedDocument = null;
-
-if (employee_id) {
 
     // Création automatique d'une nouvelle fiche d'affectation signée
     // après réaffectation du matériel
@@ -2852,10 +2486,10 @@ JSON.stringify({
       ]
     );
 
-createdSignedDocument = signedDocumentResult.rows[0];
-}
+    const createdSignedDocument = signedDocumentResult.rows[0];
+
     await client.query('COMMIT');
-if (createdSignedDocument) {
+
     try {
       await getOrCreateSignedDocumentPdf(createdSignedDocument.id);
 
@@ -2880,7 +2514,7 @@ if (createdSignedDocument) {
         ]
       ).catch(console.error);
     }
-}
+
     res.json({
       success: true,
       signed_document_id: createdSignedDocument.id,
@@ -3930,88 +3564,6 @@ app.delete('/api/onboarding-action-templates/:id', async (req, res) => {
 
 app.use(express.static(path.join(__dirname, '../dist')));
 
-app.get('/api/inventory/preferences/:email', async (req, res) => {
-  try {
-    const { email } = req.params;
-
-    const result = await pool.query(
-      `
-      SELECT visible_columns, column_order
-      FROM user_inventory_preferences
-      WHERE user_email = $1
-      `,
-      [email]
-    );
-
-    if (result.rows.length === 0) {
-      return res.json({
-        visibleColumns: null,
-        columnOrder: null
-      });
-    }
-
-    res.json({
-      visibleColumns: result.rows[0].visible_columns,
-      columnOrder: result.rows[0].column_order
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
-  }
-});
-app.post('/api/inventory/preferences', async (req, res) => {
-  try {
-    const {
-      email,
-      visibleColumns,
-      columnOrder
-    } = req.body;
-
-    await pool.query(
-      `
-      INSERT INTO user_inventory_preferences
-      (
-        user_email,
-        visible_columns,
-        column_order,
-        updated_at
-      )
-      VALUES
-      (
-        $1,
-        $2,
-        $3,
-        NOW()
-      )
-      ON CONFLICT (user_email)
-      DO UPDATE SET
-        visible_columns = EXCLUDED.visible_columns,
-        column_order = EXCLUDED.column_order,
-        updated_at = NOW()
-      `,
-      [
-        email,
-        JSON.stringify(visibleColumns),
-        JSON.stringify(columnOrder)
-      ]
-    );
-
-    res.json({ success: true });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-
-
-
-
-
-
-
-
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, '../dist/index.html'));
 });
@@ -4031,33 +3583,6 @@ setInterval(async () => {
     console.error(err);
   }
 }, 60000);
-
-setInterval(async () => {
-  try {
-    console.log('MICROSOFT USERS SYNC START');
-
-    await syncMicrosoftUsers(
-      {},
-      {
-        json: (result) =>
-          console.log(
-            'MICROSOFT USERS SYNC RESULT',
-            result
-          ),
-        status: () => ({
-          json: (err) =>
-            console.error(
-              'MICROSOFT USERS SYNC ERROR',
-              err
-            )
-        })
-      }
-    );
-  } catch (err) {
-    console.error(err);
-  }
-}, 60000);
-
 
 app.listen(port, () => {
   console.log(`GESTION_IT backend listening on port ${port}`);
