@@ -174,9 +174,7 @@ pdf
     pdf.text(`Date d'effet : ${formatDateFr(snapshot.effective_date)}`);
 
 pdf.text(
-  `${isReassignment ? 'Date de mise à jour' : 'Date de signature'} : ${formatDateFr(
-    row.signed_at || row.created_at
-  )}`
+  `${isReassignment ? 'Date de mise à jour' : 'Date de signature'} : ${formattedDate}`
 );
     pdf.moveDown();
 
@@ -198,23 +196,6 @@ pdf.text(
             `- ${item.category || '-'} | Réf. ${item.reference || '-'} | Série ${item.serial || '-'}`
           );
       }
-
-if (snapshot.hardware_issue) {
-  pdf.moveDown();
-
-  pdf
-    .fontSize(14)
-    .text('Problème signalé', {
-      underline: true
-    });
-
-  pdf.moveDown(0.5);
-
-  pdf
-    .fontSize(11)
-    .text(snapshot.hardware_issue);
-}
-
     }
 
     pdf.moveDown();
@@ -1310,19 +1291,41 @@ app.post('/api/employees', async (req, res) => {
   try {
 
 const allowedColumns = [
-  'first_name',
-  'last_name',
-  'email',
-  'service_id',
-  'contract_type_id',
-  'contract_end_date',
-  'manager_name',
-  'job_title',
-  'is_active',
-  'microsoft_upn',
-  'microsoft_object_id',
-  'account_enabled',
-  'microsoft_synced_at'
+  'category_id',
+
+  'title',
+
+  'reference',
+  'serial_number',
+
+  'brand',
+  'model',
+
+  'os_id',
+  'processor_id',
+  'memory_id',
+  'size_id',
+
+  'hdmi',
+  'displayport',
+  'usbc',
+
+  'status',
+
+  'purchase_date',
+  'invoice_number',
+  'purchase_value',
+
+  'supplier_id',
+  'budget_id',
+
+  'warranty_expiration_date',
+  'asset_number',
+
+  'intune_device_id',
+  'atera_ticket_id',
+
+  'notes'
 ];
 
 
@@ -3367,7 +3370,6 @@ app.post('/api/movements', async (req, res) => {
       'effective_date',
       'source',
       'manager_name',
-      'manager_email',
       'job_title',
       'notes',
       'status',
@@ -3670,8 +3672,6 @@ app.patch('/api/movement-licenses/:id', async (req, res) => {
 });
 
 app.post('/api/signed-documents', async (req, res) => {
-  const client = await pool.connect();
-
   try {
     const allowedColumns = [
       'movement_id',
@@ -3684,27 +3684,18 @@ app.post('/api/signed-documents', async (req, res) => {
       'content_snapshot'
     ];
 
-    const columns = allowedColumns.filter(
-      (column) => req.body[column] !== undefined
-    );
+    const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
 
-    if (
-      !columns.includes('movement_id') ||
-      !columns.includes('doc_type')
-    ) {
+    if (!columns.includes('movement_id') || !columns.includes('doc_type')) {
       return res.status(400).json({
         error: 'movement_id et doc_type sont obligatoires.'
       });
     }
 
-    await client.query('BEGIN');
-
     const values = columns.map((column) => req.body[column]);
-    const placeholders = columns.map(
-      (_, index) => `$${index + 1}`
-    );
+    const placeholders = columns.map((_, index) => `$${index + 1}`);
 
-    const result = await client.query(
+    const result = await pool.query(
       `
       INSERT INTO signed_documents (${columns.join(', ')})
       VALUES (${placeholders.join(', ')})
@@ -3713,182 +3704,35 @@ app.post('/api/signed-documents', async (req, res) => {
       values
     );
 
-    const createdDocument = result.rows[0];
+const createdDocument = result.rows[0];
 
-    /*
-     * RESTITUTION-AUTOMATIQUE-MATERIEL
-     *
-     * Quand une fiche de restitution est signée :
-     * - toutes les affectations actives du collaborateur sont clôturées ;
-     * - les PC fixes et portables passent en being_reinstalled ;
-     * - les autres matériels passent en in_stock.
-     */
-    if (createdDocument.doc_type === 'restitution') {
-      const movementResult = await client.query(
-        `
-        SELECT
-          id,
-          employee_id,
-          type
-        FROM movements
-        WHERE id = $1
-        FOR UPDATE
-        `,
-        [createdDocument.movement_id]
-      );
+try {
+  await getOrCreateSignedDocumentPdf(createdDocument.id);
 
-      if (movementResult.rowCount === 0) {
-        throw new Error(
-          'Mouvement introuvable pour la fiche de restitution.'
-        );
-      }
+  if (createdDocument.signer_email) {
+    await sendSignedDocumentMail(createdDocument.id);
+  }
+} catch (mailOrPdfError) {
+  console.error('Erreur PDF / email après signature', mailOrPdfError);
 
-      const movement = movementResult.rows[0];
+  await pool.query(
+    `
+    UPDATE signed_documents
+    SET email_error = $1
+    WHERE id = $2
+    `,
+    [
+      mailOrPdfError.message,
+      createdDocument.id
+    ]
+  ).catch(console.error);
+}
 
-      if (!movement.employee_id) {
-        throw new Error(
-          'Aucun collaborateur associé au mouvement de restitution.'
-        );
-      }
-
-      if (movement.type !== 'offboarding') {
-        throw new Error(
-          `Une restitution ne peut être traitée que pour un offboarding. Type reçu : ${movement.type}`
-        );
-      }
-
-      /*
-       * On verrouille les affectations actives avant de les modifier.
-       */
-      const activeAssignmentsResult = await client.query(
-        `
-        SELECT
-          a.id,
-          a.hardware_item_id
-        FROM assignments a
-        WHERE a.employee_id = $1
-          AND a.returned_at IS NULL
-        FOR UPDATE
-        `,
-        [movement.employee_id]
-      );
-
-      const hardwareIds = activeAssignmentsResult.rows.map(
-        (row) => row.hardware_item_id
-      );
-
-      if (hardwareIds.length > 0) {
-        /*
-         * Clôture des affectations actives.
-         */
-        await client.query(
-          `
-          UPDATE assignments
-          SET
-            returned_at = NOW()
-          WHERE employee_id = $1
-            AND returned_at IS NULL
-          `,
-          [movement.employee_id]
-        );
-
-        /*
-         * PC Fixe et PC Portable :
-         * status = being_reinstalled
-         *
-         * Tous les autres matériels :
-         * status = in_stock
-         */
-        await client.query(
-          `
-          UPDATE hardware_items h
-          SET
-            status = CASE
-              WHEN (
-                (
-                  LOWER(COALESCE(hc.code, '')) LIKE '%pc%'
-                  OR LOWER(COALESCE(hc.label, '')) LIKE '%pc%'
-                  OR LOWER(COALESCE(hc.code, '')) LIKE '%ordinateur%'
-                  OR LOWER(COALESCE(hc.label, '')) LIKE '%ordinateur%'
-                )
-                AND
-                (
-                  LOWER(COALESCE(hc.code, '')) LIKE '%fixe%'
-                  OR LOWER(COALESCE(hc.label, '')) LIKE '%fixe%'
-                  OR LOWER(COALESCE(hc.code, '')) LIKE '%portable%'
-                  OR LOWER(COALESCE(hc.label, '')) LIKE '%portable%'
-                )
-              )
-                THEN 'being_reinstalled'
-              ELSE 'in_stock'
-            END,
-            updated_at = NOW()
-          FROM hardware_categories hc
-          WHERE hc.id = h.category_id
-            AND h.id = ANY($1::uuid[])
-          `,
-          [hardwareIds]
-        );
-
-        console.log(
-          `[RESTITUTION] ${hardwareIds.length} matériel(s) restitué(s) ` +
-          `pour l'employé ${movement.employee_id}`
-        );
-      } else {
-        console.log(
-          `[RESTITUTION] Aucune affectation active pour l'employé ` +
-          `${movement.employee_id}`
-        );
-      }
-    }
-
-    await client.query('COMMIT');
-
-    /*
-     * Le PDF et l'email sont générés après validation en base.
-     * Une erreur d'email ne remet pas en cause la restitution signée.
-     */
-    try {
-      await getOrCreateSignedDocumentPdf(createdDocument.id);
-
-      if (createdDocument.signer_email) {
-        await sendSignedDocumentMail(createdDocument.id);
-      }
-    } catch (mailOrPdfError) {
-      console.error(
-        'Erreur PDF / email après signature',
-        mailOrPdfError
-      );
-
-      await pool.query(
-        `
-        UPDATE signed_documents
-        SET email_error = $1
-        WHERE id = $2
-        `,
-        [
-          mailOrPdfError.message,
-          createdDocument.id
-        ]
-      ).catch(console.error);
-    }
-
-    res.status(201).json(createdDocument);
+res.status(201).json(createdDocument);
 
   } catch (error) {
-    await client.query('ROLLBACK').catch(console.error);
-
-    console.error(
-      'Erreur lors de la création du document signé',
-      error
-    );
-
-    res.status(500).json({
-      error: error.message
-    });
-
-  } finally {
-    client.release();
+    console.error(error);
+    res.status(500).json({ error: error.message });
   }
 });
 

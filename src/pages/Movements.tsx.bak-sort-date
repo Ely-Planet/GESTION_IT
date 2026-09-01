@@ -607,10 +607,7 @@ async function skipMovementLicense(ml: MovementLicense) {
                 </tr>
               </thead>
               <tbody>
-                {filtered
-                  .slice()
-                  .sort((a, b) => new Date(a.effective_date).getTime() - new Date(b.effective_date).getTime())
-                  .map((m) => {
+                {filtered.map((m) => {
                   const emp = data.employees.find((e) => e.id === m.employee_id);
                   const svc = data.services.find((s) => s.id === m.service_id);
                   const actions = data.movementActions.filter((a) => a.movement_id === m.id);

@@ -1,6 +1,4 @@
-import { useMemo, useState, type FormEvent,
-  useEffect
-} from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -607,10 +605,7 @@ async function skipMovementLicense(ml: MovementLicense) {
                 </tr>
               </thead>
               <tbody>
-                {filtered
-                  .slice()
-                  .sort((a, b) => new Date(a.effective_date).getTime() - new Date(b.effective_date).getTime())
-                  .map((m) => {
+                {filtered.map((m) => {
                   const emp = data.employees.find((e) => e.id === m.employee_id);
                   const svc = data.services.find((s) => s.id === m.service_id);
                   const actions = data.movementActions.filter((a) => a.movement_id === m.id);
@@ -1573,25 +1568,6 @@ hardware_issue:
   );
 }
 
-type MicrosoftOnboardingService = {
-  id: string;
-  displayName: string;
-  mail: string | null;
-};
-
-type OnboardingHardwareCategory = {
-  id: string;
-  code: string;
-  label: string;
-  requestable_for_onboarding?: boolean;
-};
-
-type OnboardingLicenseType = {
-  id: string;
-  code: string;
-  label: string;
-};
-
 function MovementForm({
   type,
   onClose,
@@ -1624,123 +1600,7 @@ const [employeeSearch, setEmployeeSearch] = useState('');
   const [requestedHardware, setRequestedHardware] = useState<string[]>([]);
   const [requestedLicenses, setRequestedLicenses] = useState<string[]>([]);
 
-  const [onboardingServices, setOnboardingServices] =
-    useState<MicrosoftOnboardingService[]>([]);
-
-  const [onboardingHardware, setOnboardingHardware] =
-    useState<OnboardingHardwareCategory[]>([]);
-
-  const [onboardingLicenses, setOnboardingLicenses] =
-    useState<OnboardingLicenseType[]>([]);
-
-  const [selectedServiceGroups, setSelectedServiceGroups] =
-    useState<string[]>([]);
-
-  const [onboardingListsLoading, setOnboardingListsLoading] =
-    useState(false);
-
-  const [onboardingListsError, setOnboardingListsError] =
-    useState<string | null>(null);
-
   const contract = data.contractTypes.find((c) => c.id === contractTypeId);
-
-  useEffect(() => {
-    if (type !== 'onboarding') {
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadOnboardingLists() {
-      setOnboardingListsLoading(true);
-      setOnboardingListsError(null);
-
-      try {
-        const [
-          servicesResponse,
-          hardwareResponse,
-          licensesResponse,
-        ] = await Promise.all([
-          fetch('/api/microsoft-onboarding-services'),
-          fetch('/api/onboarding-hardware-categories'),
-          fetch('/api/onboarding-license-types'),
-        ]);
-
-        if (!servicesResponse.ok) {
-          throw new Error(
-            `Erreur groupes Microsoft : ${servicesResponse.status}`
-          );
-        }
-
-        if (!hardwareResponse.ok) {
-          throw new Error(
-            `Erreur matériel onboarding : ${hardwareResponse.status}`
-          );
-        }
-
-        if (!licensesResponse.ok) {
-          throw new Error(
-            `Erreur licences onboarding : ${licensesResponse.status}`
-          );
-        }
-
-        const [
-          servicesResult,
-          hardwareResult,
-          licensesResult,
-        ] = await Promise.all([
-          servicesResponse.json(),
-          hardwareResponse.json(),
-          licensesResponse.json(),
-        ]);
-
-        if (cancelled) {
-          return;
-        }
-
-        setOnboardingServices(
-          Array.isArray(servicesResult)
-            ? servicesResult
-            : []
-        );
-
-        setOnboardingHardware(
-          Array.isArray(hardwareResult)
-            ? hardwareResult
-            : []
-        );
-
-        setOnboardingLicenses(
-          Array.isArray(licensesResult)
-            ? licensesResult
-            : []
-        );
-      } catch (loadError) {
-        console.error(
-          'Erreur chargement listes onboarding',
-          loadError
-        );
-
-        if (!cancelled) {
-          setOnboardingListsError(
-            loadError instanceof Error
-              ? loadError.message
-              : 'Erreur de chargement des listes onboarding.'
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setOnboardingListsLoading(false);
-        }
-      }
-    }
-
-    loadOnboardingLists();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [type]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -2165,6 +2025,20 @@ manager_email:
 
         <div>
           <label className="label">
+            Email
+          </label>
+
+          <input
+            type="email"
+            className="input"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="prenom.nom@elyade.com"
+          />
+        </div>
+
+        <div>
+          <label className="label">
             Date d'arrivée prévue
           </label>
 
@@ -2177,61 +2051,29 @@ manager_email:
           />
         </div>
 
-        <div className="md:col-span-2">
+        <div>
           <label className="label">
-            Service (plusieurs cases possibles)
+            Service
           </label>
 
-          {onboardingListsLoading && (
-            <p className="mt-2 text-sm text-ink-500">
-              Chargement des groupes Microsoft...
-            </p>
-          )}
+          <select
+            className="input"
+            value={serviceId}
+            onChange={(e) => setServiceId(e.target.value)}
+          >
+            <option value="">
+              Sélectionner un service
+            </option>
 
-          {!onboardingListsLoading &&
-            onboardingServices.length === 0 && (
-              <p className="mt-2 text-sm text-amber-700">
-                Aucun groupe Microsoft disponible.
-              </p>
-            )}
-
-          <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-            {onboardingServices
-              .slice()
-              .sort((a, b) =>
-                (a.displayName ?? '').localeCompare(
-                  b.displayName ?? '',
-                  'fr-FR',
-                  { sensitivity: 'base' }
-                )
-              )
-              .map((service) => (
-                <label
-                  key={service.id}
-                  className="flex cursor-pointer items-center gap-2 text-sm"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedServiceGroups.includes(
-                      service.id
-                    )}
-                    onChange={(event) => {
-                      setSelectedServiceGroups((previous) =>
-                        event.target.checked
-                          ? previous.includes(service.id)
-                            ? previous
-                            : [...previous, service.id]
-                          : previous.filter(
-                              (id) => id !== service.id
-                            )
-                      );
-                    }}
-                  />
-
-                  <span>{service.displayName}</span>
-                </label>
-              ))}
-          </div>
+            {data.services.map((service) => (
+              <option
+                key={service.id}
+                value={service.id}
+              >
+                {service.name}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div>
@@ -2493,120 +2335,49 @@ manager_email:
       </div>
     </section>
   </>
-)}
+)
           {type === 'onboarding' && (
             <div className="p-4 rounded-lg bg-elyade-50/30 border border-elyade-100 space-y-3">
               <div>
-                <label className="label">
-                  Matériel demandé
-                </label>
-
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {onboardingHardware
-                    .filter(
-                      (category) =>
-                        category.requestable_for_onboarding !== false
-                    )
-                    .slice()
-                    .sort((a, b) =>
-                      (a.label ?? '').localeCompare(
-                        b.label ?? '',
-                        'fr-FR',
-                        { sensitivity: 'base' }
-                      )
-                    )
-                    .map((category) => {
-                      const checked =
-                        requestedHardware.includes(category.code);
-
-                      return (
-                        <label
-                          key={category.id}
-                          className="flex cursor-pointer items-center gap-2 text-sm text-ink-700"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) =>
-                              setRequestedHardware((previous) =>
-                                e.target.checked
-                                  ? previous.includes(category.code)
-                                    ? previous
-                                    : [...previous, category.code]
-                                  : previous.filter(
-                                      (code) =>
-                                        code !== category.code
-                                    )
-                              )
-                            }
-                          />
-
-                          <span>{category.label}</span>
-                        </label>
-                      );
-                    })}
+                <label className="label">Matériel à attribuer</label>
+                <div className="flex flex-wrap gap-2">
+                  {trackedCats.map((c) => {
+                    const checked = requestedHardware.includes(c.code);
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setRequestedHardware((prev) => checked ? prev.filter((x) => x !== c.code) : [...prev, c.code])}
+                        className={`badge cursor-pointer ${checked ? 'bg-elyade-600 text-white' : 'bg-white text-ink-600 border border-ink-200'}`}
+                      >
+                        {checked && <CheckCircle2 className="w-3 h-3" />}
+                        {c.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
               <div>
-                <label className="label">
-                  Licences complémentaires
-                </label>
-
-                <p className="mb-2 text-xs text-ink-500">
-                  Microsoft 365 Business Premium est ajouté automatiquement à chaque nouvel arrivant.
-                </p>
-
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {onboardingLicenses
-                    .slice()
-                    .sort((a, b) =>
-                      (a.label ?? '').localeCompare(
-                        b.label ?? '',
-                        'fr-FR',
-                        { sensitivity: 'base' }
-                      )
-                    )
-                    .map((licenseType) => {
-                      const checked =
-                        requestedLicenses.includes(licenseType.code);
-
-                      return (
-                        <label
-                          key={licenseType.id}
-                          className="flex cursor-pointer items-center gap-2 text-sm text-ink-700"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) =>
-                              setRequestedLicenses((previous) =>
-                                e.target.checked
-                                  ? previous.includes(licenseType.code)
-                                    ? previous
-                                    : [...previous, licenseType.code]
-                                  : previous.filter(
-                                      (code) =>
-                                        code !== licenseType.code
-                                    )
-                              )
-                            }
-                          />
-
-                          <span>{licenseType.label}</span>
-                        </label>
-                      );
-                    })}
+                <label className="label">Licences à attribuer</label>
+                <div className="flex flex-wrap gap-2">
+                  {data.licenseTypes.map((lt) => {
+                    const checked = requestedLicenses.includes(lt.code);
+                    return (
+                      <button
+                        key={lt.id}
+                        type="button"
+                        onClick={() => setRequestedLicenses((prev) => checked ? prev.filter((x) => x !== lt.code) : [...prev, lt.code])}
+                        className={`badge cursor-pointer ${checked ? 'bg-elyade-600 text-white' : 'bg-white text-ink-600 border border-ink-200'}`}
+                      >
+                        {checked && <CheckCircle2 className="w-3 h-3" />}
+                        {lt.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
           )}
-
-          {type === 'onboarding' &&
-            onboardingListsError && (
-              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                {onboardingListsError}
-              </div>
-            )}
 
           <div>
             <label className="label">Notes</label>

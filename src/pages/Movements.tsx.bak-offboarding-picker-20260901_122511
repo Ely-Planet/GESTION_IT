@@ -1,6 +1,4 @@
-import { useMemo, useState, type FormEvent,
-  useEffect
-} from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -607,10 +605,7 @@ async function skipMovementLicense(ml: MovementLicense) {
                 </tr>
               </thead>
               <tbody>
-                {filtered
-                  .slice()
-                  .sort((a, b) => new Date(a.effective_date).getTime() - new Date(b.effective_date).getTime())
-                  .map((m) => {
+                {filtered.map((m) => {
                   const emp = data.employees.find((e) => e.id === m.employee_id);
                   const svc = data.services.find((s) => s.id === m.service_id);
                   const actions = data.movementActions.filter((a) => a.movement_id === m.id);
@@ -1573,25 +1568,6 @@ hardware_issue:
   );
 }
 
-type MicrosoftOnboardingService = {
-  id: string;
-  displayName: string;
-  mail: string | null;
-};
-
-type OnboardingHardwareCategory = {
-  id: string;
-  code: string;
-  label: string;
-  requestable_for_onboarding?: boolean;
-};
-
-type OnboardingLicenseType = {
-  id: string;
-  code: string;
-  label: string;
-};
-
 function MovementForm({
   type,
   onClose,
@@ -1613,134 +1589,15 @@ const [employeeSearch, setEmployeeSearch] = useState('');
   const [serviceId, setServiceId] = useState('');
   const [contractTypeId, setContractTypeId] = useState('');
   const [contractEndDate, setContractEndDate] = useState('');
-  const [contractReason, setContractReason] = useState('');
   const [effectiveDate, setEffectiveDate] = useState(new Date().toISOString().slice(0, 10));
   const [managerName, setManagerName] = useState('');
-  const [managerSearch, setManagerSearch] = useState('');
-  const [selectedManagerId, setSelectedManagerId] = useState('');
   const [jobTitle, setJobTitle] = useState('');
   const [notes, setNotes] = useState('');
   const [source, setSource] = useState<'manager_form' | 'lucca_email' | 'manual'>('manager_form');
   const [requestedHardware, setRequestedHardware] = useState<string[]>([]);
   const [requestedLicenses, setRequestedLicenses] = useState<string[]>([]);
 
-  const [onboardingServices, setOnboardingServices] =
-    useState<MicrosoftOnboardingService[]>([]);
-
-  const [onboardingHardware, setOnboardingHardware] =
-    useState<OnboardingHardwareCategory[]>([]);
-
-  const [onboardingLicenses, setOnboardingLicenses] =
-    useState<OnboardingLicenseType[]>([]);
-
-  const [selectedServiceGroups, setSelectedServiceGroups] =
-    useState<string[]>([]);
-
-  const [onboardingListsLoading, setOnboardingListsLoading] =
-    useState(false);
-
-  const [onboardingListsError, setOnboardingListsError] =
-    useState<string | null>(null);
-
   const contract = data.contractTypes.find((c) => c.id === contractTypeId);
-
-  useEffect(() => {
-    if (type !== 'onboarding') {
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadOnboardingLists() {
-      setOnboardingListsLoading(true);
-      setOnboardingListsError(null);
-
-      try {
-        const [
-          servicesResponse,
-          hardwareResponse,
-          licensesResponse,
-        ] = await Promise.all([
-          fetch('/api/microsoft-onboarding-services'),
-          fetch('/api/onboarding-hardware-categories'),
-          fetch('/api/onboarding-license-types'),
-        ]);
-
-        if (!servicesResponse.ok) {
-          throw new Error(
-            `Erreur groupes Microsoft : ${servicesResponse.status}`
-          );
-        }
-
-        if (!hardwareResponse.ok) {
-          throw new Error(
-            `Erreur matériel onboarding : ${hardwareResponse.status}`
-          );
-        }
-
-        if (!licensesResponse.ok) {
-          throw new Error(
-            `Erreur licences onboarding : ${licensesResponse.status}`
-          );
-        }
-
-        const [
-          servicesResult,
-          hardwareResult,
-          licensesResult,
-        ] = await Promise.all([
-          servicesResponse.json(),
-          hardwareResponse.json(),
-          licensesResponse.json(),
-        ]);
-
-        if (cancelled) {
-          return;
-        }
-
-        setOnboardingServices(
-          Array.isArray(servicesResult)
-            ? servicesResult
-            : []
-        );
-
-        setOnboardingHardware(
-          Array.isArray(hardwareResult)
-            ? hardwareResult
-            : []
-        );
-
-        setOnboardingLicenses(
-          Array.isArray(licensesResult)
-            ? licensesResult
-            : []
-        );
-      } catch (loadError) {
-        console.error(
-          'Erreur chargement listes onboarding',
-          loadError
-        );
-
-        if (!cancelled) {
-          setOnboardingListsError(
-            loadError instanceof Error
-              ? loadError.message
-              : 'Erreur de chargement des listes onboarding.'
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setOnboardingListsLoading(false);
-        }
-      }
-    }
-
-    loadOnboardingLists();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [type]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -1768,15 +1625,7 @@ if (type === 'offboarding') {
         service_id: serviceId || null,
         contract_type_id: contractTypeId || null,
         contract_end_date: contractEndDate || null,
-manager_name: managerName || null,
-manager_email:
-  data.employees.find(
-    (employee) => employee.id === selectedManagerId
-  )?.email ??
-  data.employees.find(
-    (employee) => employee.id === selectedManagerId
-  )?.microsoft_upn ??
-  null,
+        manager_name: managerName || null,
         job_title: jobTitle || null,
         is_active: true,
       }),
@@ -1797,33 +1646,8 @@ manager_email:
         effective_date: effectiveDate,
         source,
         manager_name: managerName || null,
-
-        manager_email:
-          type === 'onboarding' && selectedManagerId
-            ? (
-                data.employees.find(
-                  (employee) =>
-                    employee.id === selectedManagerId
-                )?.email ??
-                data.employees.find(
-                  (employee) =>
-                    employee.id === selectedManagerId
-                )?.microsoft_upn ??
-                null
-              )
-            : null,
         job_title: jobTitle || null,
-        notes:
-          type === 'onboarding'
-            ? [
-                contractReason.trim()
-                  ? `Motif du CDD : ${contractReason.trim()}`
-                  : null,
-                notes.trim() || null,
-              ]
-                .filter(Boolean)
-                .join('\n') || null
-            : notes || null,
+        notes: notes || null,
         status: 'pending',
         created_by: user?.id ?? null,
       };
@@ -1962,7 +1786,7 @@ manager_email:
 
   return (
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className={`card w-full max-h-[90vh] overflow-auto ${type === 'onboarding' ? 'max-w-5xl' : 'max-w-2xl'}`} onClick={(e) => e.stopPropagation()}>
+      <div className="card w-full max-w-2xl max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-ink-100 sticky top-0 bg-white rounded-t-xl">
           <h2 className="text-lg font-semibold text-ink-900 flex items-center gap-2">
             {type === 'onboarding' ? <ArrowDownToLine className="w-5 h-5 text-green-600" /> : <ArrowUpFromLine className="w-5 h-5 text-amber-600" />}
@@ -1977,128 +1801,51 @@ manager_email:
     <div>
       <label className="label">Collaborateur</label>
 
-<div className="relative">
-  <input
-    type="text"
-    className="input"
-    placeholder="Rechercher par nom, prénom ou email..."
-    value={employeeSearch}
-    onChange={(e) => {
-      setEmployeeSearch(e.target.value);
-      setSelectedEmployeeId('');
-    }}
-    autoComplete="off"
-    required={!selectedEmployeeId}
-  />
+<input
+  className="input mb-2"
+  placeholder="Rechercher un collaborateur..."
+  value={employeeSearch}
+  onChange={(e) => setEmployeeSearch(e.target.value)}
+/>
 
-  <div className="mt-2 max-h-64 overflow-y-auto rounded-lg border border-ink-200 bg-white shadow-sm">
-    {data.employees
-      .filter((employee) => employee.is_active)
-      .filter((employee) => {
-        const search = employeeSearch.trim().toLowerCase();
+<select
+  className="input"
+  value={selectedEmployeeId}
+  onChange={(e) => setSelectedEmployeeId(e.target.value)}
+  required
+>
+  <option value="">
+    Sélectionner un collaborateur
+  </option>
 
-        if (!search) {
-          return true;
-        }
+  {data.employees
+    .filter((e) => e.is_active)
+    .filter((employee) => {
+      const search = employeeSearch.trim().toLowerCase();
 
-        const firstName = employee.first_name ?? '';
-        const lastName = employee.last_name ?? '';
-        const email =
-          employee.email ??
-          employee.microsoft_upn ??
-          '';
+      if (!search) return true;
 
-        const searchableText = [
-          firstName,
-          lastName,
-          email,
-          `${firstName} ${lastName}`,
-          `${lastName} ${firstName}`,
-        ]
-          .join(' ')
-          .toLowerCase();
-
-        return searchableText.includes(search);
-      })
-      .sort((a, b) =>
-        `${a.last_name ?? ''} ${a.first_name ?? ''}`.localeCompare(
-          `${b.last_name ?? ''} ${b.first_name ?? ''}`,
-          'fr',
-          { sensitivity: 'base' }
-        )
+      return (
+        (employee.first_name || '').toLowerCase().includes(search) ||
+        (employee.last_name || '').toLowerCase().includes(search) ||
+        (employee.email || '').toLowerCase().includes(search) ||
+        (employee.microsoft_upn || '').toLowerCase().includes(search)
+      );
+    })
+    .sort((a, b) =>
+      `${a.last_name} ${a.first_name}`.localeCompare(
+        `${b.last_name} ${b.first_name}`
       )
-      .map((employee) => {
-        const employeeEmail =
-          employee.email ??
-          employee.microsoft_upn ??
-          '';
-
-        const isSelected =
-          selectedEmployeeId === employee.id;
-
-        return (
-          <button
-            key={employee.id}
-            type="button"
-            onClick={() => {
-              setSelectedEmployeeId(employee.id);
-              setEmployeeSearch(
-                `${employee.first_name ?? ''} ${employee.last_name ?? ''}`.trim()
-              );
-            }}
-            className={`w-full border-b border-ink-100 px-3 py-2 text-left last:border-b-0 hover:bg-elyade-50 ${
-              isSelected
-                ? 'bg-elyade-50 ring-1 ring-inset ring-elyade-300'
-                : 'bg-white'
-            }`}
-          >
-            <div className="text-sm font-medium text-ink-800">
-              {employee.first_name} {employee.last_name}
-            </div>
-
-            {employeeEmail && (
-              <div className="text-xs text-ink-500">
-                {employeeEmail}
-              </div>
-            )}
-          </button>
-        );
-      })}
-
-    {data.employees
-      .filter((employee) => employee.is_active)
-      .filter((employee) => {
-        const search = employeeSearch.trim().toLowerCase();
-
-        if (!search) {
-          return true;
-        }
-
-        const searchableText = [
-          employee.first_name ?? '',
-          employee.last_name ?? '',
-          employee.email ?? '',
-          employee.microsoft_upn ?? '',
-          `${employee.first_name ?? ''} ${employee.last_name ?? ''}`,
-          `${employee.last_name ?? ''} ${employee.first_name ?? ''}`,
-        ]
-          .join(' ')
-          .toLowerCase();
-
-        return searchableText.includes(search);
-      }).length === 0 && (
-        <div className="px-3 py-3 text-sm text-ink-400">
-          Aucun collaborateur trouvé.
-        </div>
-      )}
-  </div>
-
-  {selectedEmployeeId && (
-    <p className="mt-2 text-xs font-medium text-green-700">
-      Collaborateur sélectionné
-    </p>
-  )}
-</div>
+    )
+    .map((employee) => (
+      <option
+        key={employee.id}
+        value={employee.id}
+      >
+        {employee.first_name} {employee.last_name}
+      </option>
+    ))}
+</select>
 
     </div>
 
@@ -2115,498 +1862,105 @@ manager_email:
     </div>
   </>
 ) : (
-  <>
-    <section className="card border border-ink-100 p-5">
-      <h3 className="mb-4 text-base font-semibold text-ink-900">
-        Collaborateur
-      </h3>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div>
-          <label className="label">
-            Prénom
-          </label>
-
-          <input
-            className="input"
-            value={firstName}
-            onChange={(e) => setFirstName(e.target.value)}
-            placeholder="Prénom"
-            required
-          />
-        </div>
-
-        <div>
-          <label className="label">
-            Nom
-          </label>
-
-          <input
-            className="input"
-            value={lastName}
-            onChange={(e) => setLastName(e.target.value)}
-            placeholder="Nom"
-            required
-          />
-        </div>
-
-        <div>
-          <label className="label">
-            Fonction
-          </label>
-
-          <input
-            className="input"
-            value={jobTitle}
-            onChange={(e) => setJobTitle(e.target.value)}
-            placeholder="Exemple : Gestionnaire locatif"
-          />
-        </div>
-
-        <div>
-          <label className="label">
-            Date d'arrivée prévue
-          </label>
-
-          <input
-            type="date"
-            className="input"
-            value={effectiveDate}
-            onChange={(e) => setEffectiveDate(e.target.value)}
-            required
-          />
-        </div>
-
-        <div className="md:col-span-2">
-          <label className="label">
-            Service (plusieurs cases possibles)
-          </label>
-
-          {onboardingListsLoading && (
-            <p className="mt-2 text-sm text-ink-500">
-              Chargement des groupes Microsoft...
-            </p>
-          )}
-
-          {!onboardingListsLoading &&
-            onboardingServices.length === 0 && (
-              <p className="mt-2 text-sm text-amber-700">
-                Aucun groupe Microsoft disponible.
-              </p>
-            )}
-
-          <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
-            {onboardingServices
-              .slice()
-              .sort((a, b) =>
-                (a.displayName ?? '').localeCompare(
-                  b.displayName ?? '',
-                  'fr-FR',
-                  { sensitivity: 'base' }
-                )
-              )
-              .map((service) => (
-                <label
-                  key={service.id}
-                  className="flex cursor-pointer items-center gap-2 text-sm"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedServiceGroups.includes(
-                      service.id
-                    )}
-                    onChange={(event) => {
-                      setSelectedServiceGroups((previous) =>
-                        event.target.checked
-                          ? previous.includes(service.id)
-                            ? previous
-                            : [...previous, service.id]
-                          : previous.filter(
-                              (id) => id !== service.id
-                            )
-                      );
-                    }}
-                  />
-
-                  <span>{service.displayName}</span>
-                </label>
-              ))}
-          </div>
-        </div>
-
-        <div>
-          <label className="label">
-            Contrat
-          </label>
-
-          <select
-            className="input"
-            value={contractTypeId}
-            onChange={(e) => {
-              const value = e.target.value;
-
-              setContractTypeId(value);
-
-              const selectedContract =
-                data.contractTypes.find(
-                  (contractType) =>
-                    contractType.id === value
-                );
-
-              const selectedLabel =
-                selectedContract?.label
-                  ?.trim()
-                  .toLocaleLowerCase('fr-FR') ?? '';
-
-              if (selectedLabel !== 'cdd') {
-                setContractReason('');
-              }
-
-              if (
-                selectedLabel !== 'cdd' &&
-                selectedLabel !== 'stage' &&
-                !selectedContract?.has_end_date
-              ) {
-                setContractEndDate('');
-              }
-            }}
-            required
-          >
-            <option value="">
-              Sélectionner un contrat
-            </option>
-
-            {data.contractTypes.map((contractType) => (
-              <option
-                key={contractType.id}
-                value={contractType.id}
-              >
-                {contractType.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {contractTypeId &&
-          (
-            contract?.has_end_date ||
-            contract?.label
-              ?.trim()
-              .toLocaleLowerCase('fr-FR') === 'cdd' ||
-            contract?.label
-              ?.trim()
-              .toLocaleLowerCase('fr-FR') === 'stage'
-          ) && (
-          <div>
-            <label className="label">
-              Date de fin de contrat
-            </label>
-
-            <input
-              type="date"
-              className="input"
-              value={contractEndDate}
-              onChange={(e) =>
-                setContractEndDate(e.target.value)
-              }
-            />
-
-            <p className="mt-1 text-xs text-elyade-600">
-              Un offboarding pourra être généré à cette date.
-            </p>
-          </div>
-        )}
-
-        {contract?.label
-          ?.trim()
-          .toLocaleLowerCase('fr-FR') === 'cdd' && (
-          <div>
-            <label className="label">
-              Motif du CDD
-            </label>
-
-            <input
-              type="text"
-              className="input"
-              value={contractReason}
-              onChange={(e) =>
-                setContractReason(e.target.value)
-              }
-              placeholder="Exemple : remplacement congé maternité"
-            />
-          </div>
-        )}
-      </div>
-    </section>
-
-    <section className="card border border-ink-100 p-5">
-      <h3 className="mb-4 text-base font-semibold text-ink-900">
-        Manager
-      </h3>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="relative">
-          <label className="label">
-            Compte Microsoft du manager
-          </label>
-
-          <input
-            type="text"
-            className="input"
-            value={managerSearch}
-            placeholder="Rechercher par nom, prénom ou email..."
-            autoComplete="off"
-            onChange={(e) => {
-              setManagerSearch(e.target.value);
-              setSelectedManagerId('');
-              setManagerName('');
-            }}
-          />
-
-          {managerSearch.trim() && !selectedManagerId && (
-            <div className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-ink-200 bg-white shadow-lg">
-              {data.employees
-                .filter((employee) => employee.is_active)
-                .filter((employee) => {
-                  const search = managerSearch
-                    .trim()
-                    .toLocaleLowerCase('fr-FR');
-
-                  const searchableText = [
-                    employee.first_name ?? '',
-                    employee.last_name ?? '',
-                    employee.email ?? '',
-                    employee.microsoft_upn ?? '',
-                    `${employee.first_name ?? ''} ${employee.last_name ?? ''}`,
-                    `${employee.last_name ?? ''} ${employee.first_name ?? ''}`,
-                  ]
-                    .join(' ')
-                    .toLocaleLowerCase('fr-FR');
-
-                  return searchableText.includes(search);
-                })
-                .sort((a, b) =>
-                  `${a.last_name ?? ''} ${a.first_name ?? ''}`
-                    .localeCompare(
-                      `${b.last_name ?? ''} ${b.first_name ?? ''}`,
-                      'fr-FR',
-                      { sensitivity: 'base' }
-                    )
-                )
-                .slice(0, 20)
-                .map((employee) => {
-                  const employeeName =
-                    `${employee.first_name ?? ''} ${employee.last_name ?? ''}`
-                      .trim();
-
-                  const employeeEmail =
-                    employee.email ??
-                    employee.microsoft_upn ??
-                    '';
-
-                  return (
-                    <button
-                      key={employee.id}
-                      type="button"
-                      className="w-full border-b border-ink-100 px-3 py-2 text-left last:border-b-0 hover:bg-elyade-50"
-                      onClick={() => {
-                        setSelectedManagerId(employee.id);
-                        setManagerName(employeeName);
-
-                        setManagerSearch(
-                          employeeEmail
-                            ? `${employeeName} - ${employeeEmail}`
-                            : employeeName
-                        );
-                      }}
-                    >
-                      <div className="text-sm font-medium text-ink-800">
-                        {employeeName}
-                      </div>
-
-                      {employeeEmail && (
-                        <div className="text-xs text-ink-500">
-                          {employeeEmail}
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
-
-              {data.employees
-                .filter((employee) => employee.is_active)
-                .filter((employee) => {
-                  const search = managerSearch
-                    .trim()
-                    .toLocaleLowerCase('fr-FR');
-
-                  const searchableText = [
-                    employee.first_name ?? '',
-                    employee.last_name ?? '',
-                    employee.email ?? '',
-                    employee.microsoft_upn ?? '',
-                  ]
-                    .join(' ')
-                    .toLocaleLowerCase('fr-FR');
-
-                  return searchableText.includes(search);
-                }).length === 0 && (
-                <div className="px-3 py-3 text-sm text-ink-400">
-                  Aucun manager trouvé.
-                </div>
-              )}
+<> 
+         <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Email</label>
+              <input type="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="prenom.nom@elyade.com" />
             </div>
-          )}
+            <div>
+              <label className="label">Poste</label>
+              <input className="input" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="ex: Gestionnaire locatif" />
+            </div>
+          </div>
 
-          {selectedManagerId && (
-            <p className="mt-1 text-xs font-medium text-green-700">
-              Manager sélectionné
-            </p>
-          )}
-        </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Service</label>
+              <select className="input" value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
+                <option value="">—</option>
+                {data.services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Type de contrat</label>
+              <select className="input" value={contractTypeId} onChange={(e) => setContractTypeId(e.target.value)}>
+                <option value="">—</option>
+                {data.contractTypes.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+              </select>
+            </div>
+          </div>
 
-        <div>
-          <label className="label">
-            Source
-          </label>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Date d'effet</label>
+              <input type="date" className="input" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} required />
+            </div>
+            <div>
+              <label className="label">Fin de contrat {contract?.has_end_date ? '(automatique)' : ''}</label>
+              <input type="date" className="input" value={contractEndDate} onChange={(e) => setContractEndDate(e.target.value)} disabled={!contract?.has_end_date && !contractTypeId} />
+              {contract?.has_end_date && <p className="text-xs text-elyade-600 mt-1">Un offboarding sera généré automatiquement à cette date.</p>}
+            </div>
+          </div>
 
-          <select
-            className="input"
-            value={source}
-            onChange={(e) =>
-              setSource(e.target.value as typeof source)
-            }
-          >
-            <option value="manual">
-              Saisie manuelle
-            </option>
-
-            <option value="manager_form">
-              Formulaire manager
-            </option>
-
-            <option value="lucca_email">
-              Email Lucca
-            </option>
-          </select>
-        </div>
-      </div>
-    </section>
-  </>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Manager</label>
+              <input className="input" value={managerName} onChange={(e) => setManagerName(e.target.value)} placeholder="Nom du manager" />
+            </div>
+            <div>
+              <label className="label">Source</label>
+              <select className="input" value={source} onChange={(e) => setSource(e.target.value as typeof source)}>
+                <option value="manager_form">Formulaire manager</option>
+                <option value="lucca_email">Email Lucca</option>
+                <option value="manual">Saisie manuelle</option>
+              </select>
+            </div>
+          </div>
+</>
 )}
           {type === 'onboarding' && (
             <div className="p-4 rounded-lg bg-elyade-50/30 border border-elyade-100 space-y-3">
               <div>
-                <label className="label">
-                  Matériel demandé
-                </label>
-
-                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {onboardingHardware
-                    .filter(
-                      (category) =>
-                        category.requestable_for_onboarding !== false
-                    )
-                    .slice()
-                    .sort((a, b) =>
-                      (a.label ?? '').localeCompare(
-                        b.label ?? '',
-                        'fr-FR',
-                        { sensitivity: 'base' }
-                      )
-                    )
-                    .map((category) => {
-                      const checked =
-                        requestedHardware.includes(category.code);
-
-                      return (
-                        <label
-                          key={category.id}
-                          className="flex cursor-pointer items-center gap-2 text-sm text-ink-700"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) =>
-                              setRequestedHardware((previous) =>
-                                e.target.checked
-                                  ? previous.includes(category.code)
-                                    ? previous
-                                    : [...previous, category.code]
-                                  : previous.filter(
-                                      (code) =>
-                                        code !== category.code
-                                    )
-                              )
-                            }
-                          />
-
-                          <span>{category.label}</span>
-                        </label>
-                      );
-                    })}
+                <label className="label">Matériel à attribuer</label>
+                <div className="flex flex-wrap gap-2">
+                  {trackedCats.map((c) => {
+                    const checked = requestedHardware.includes(c.code);
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setRequestedHardware((prev) => checked ? prev.filter((x) => x !== c.code) : [...prev, c.code])}
+                        className={`badge cursor-pointer ${checked ? 'bg-elyade-600 text-white' : 'bg-white text-ink-600 border border-ink-200'}`}
+                      >
+                        {checked && <CheckCircle2 className="w-3 h-3" />}
+                        {c.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
               <div>
-                <label className="label">
-                  Licences complémentaires
-                </label>
-
-                <p className="mb-2 text-xs text-ink-500">
-                  Microsoft 365 Business Premium est ajouté automatiquement à chaque nouvel arrivant.
-                </p>
-
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {onboardingLicenses
-                    .slice()
-                    .sort((a, b) =>
-                      (a.label ?? '').localeCompare(
-                        b.label ?? '',
-                        'fr-FR',
-                        { sensitivity: 'base' }
-                      )
-                    )
-                    .map((licenseType) => {
-                      const checked =
-                        requestedLicenses.includes(licenseType.code);
-
-                      return (
-                        <label
-                          key={licenseType.id}
-                          className="flex cursor-pointer items-center gap-2 text-sm text-ink-700"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) =>
-                              setRequestedLicenses((previous) =>
-                                e.target.checked
-                                  ? previous.includes(licenseType.code)
-                                    ? previous
-                                    : [...previous, licenseType.code]
-                                  : previous.filter(
-                                      (code) =>
-                                        code !== licenseType.code
-                                    )
-                              )
-                            }
-                          />
-
-                          <span>{licenseType.label}</span>
-                        </label>
-                      );
-                    })}
+                <label className="label">Licences à attribuer</label>
+                <div className="flex flex-wrap gap-2">
+                  {data.licenseTypes.map((lt) => {
+                    const checked = requestedLicenses.includes(lt.code);
+                    return (
+                      <button
+                        key={lt.id}
+                        type="button"
+                        onClick={() => setRequestedLicenses((prev) => checked ? prev.filter((x) => x !== lt.code) : [...prev, lt.code])}
+                        className={`badge cursor-pointer ${checked ? 'bg-elyade-600 text-white' : 'bg-white text-ink-600 border border-ink-200'}`}
+                      >
+                        {checked && <CheckCircle2 className="w-3 h-3" />}
+                        {lt.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>
           )}
-
-          {type === 'onboarding' &&
-            onboardingListsError && (
-              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                {onboardingListsError}
-              </div>
-            )}
 
           <div>
             <label className="label">Notes</label>

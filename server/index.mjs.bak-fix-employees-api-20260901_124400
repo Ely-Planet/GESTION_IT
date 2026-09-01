@@ -1310,19 +1310,41 @@ app.post('/api/employees', async (req, res) => {
   try {
 
 const allowedColumns = [
-  'first_name',
-  'last_name',
-  'email',
-  'service_id',
-  'contract_type_id',
-  'contract_end_date',
-  'manager_name',
-  'job_title',
-  'is_active',
-  'microsoft_upn',
-  'microsoft_object_id',
-  'account_enabled',
-  'microsoft_synced_at'
+  'category_id',
+
+  'title',
+
+  'reference',
+  'serial_number',
+
+  'brand',
+  'model',
+
+  'os_id',
+  'processor_id',
+  'memory_id',
+  'size_id',
+
+  'hdmi',
+  'displayport',
+  'usbc',
+
+  'status',
+
+  'purchase_date',
+  'invoice_number',
+  'purchase_value',
+
+  'supplier_id',
+  'budget_id',
+
+  'warranty_expiration_date',
+  'asset_number',
+
+  'intune_device_id',
+  'atera_ticket_id',
+
+  'notes'
 ];
 
 
@@ -3367,7 +3389,6 @@ app.post('/api/movements', async (req, res) => {
       'effective_date',
       'source',
       'manager_name',
-      'manager_email',
       'job_title',
       'notes',
       'status',

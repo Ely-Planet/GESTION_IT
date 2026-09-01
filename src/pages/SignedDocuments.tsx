@@ -272,6 +272,20 @@ const [selectedDoc, setSelectedDoc] = useState<any>(null);
     </table>
   </div>
 
+{selectedDoc.content_snapshot?.hardware_issue && (
+  <div>
+    <h3 className="font-semibold text-lg text-amber-700">
+      Problème signalé
+    </h3>
+
+    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+      {String(
+        selectedDoc.content_snapshot.hardware_issue
+      )}
+    </div>
+  </div>
+)}
+
   <div>
     <h3 className="font-semibold text-lg mb-2">
       Licences attribuées
