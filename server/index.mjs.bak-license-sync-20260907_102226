@@ -504,57 +504,6 @@ app.use(cookieParser());
 app.use(express.json());
 
 app.post('/api/sync-microsoft-licenses', syncMicrosoftLicenses);
-
-// Synchronisation automatique des licences Microsoft toutes les 10 minutes.
-// Pas de node-cron : utilisation du scheduler natif de Node.js.
-let microsoftLicenseSyncRunning = false;
-
-async function runScheduledMicrosoftLicenseSync() {
-  if (microsoftLicenseSyncRunning) {
-    console.log('[LICENSE SYNC] Synchronisation précédente encore en cours, exécution ignorée');
-    return;
-  }
-
-  microsoftLicenseSyncRunning = true;
-
-  try {
-    console.log('[LICENSE SYNC] Début de la synchronisation automatique');
-
-    const req = {};
-
-    const res = {
-      statusCode: 200,
-      status(code) {
-        this.statusCode = code;
-        return this;
-      },
-      json(payload) {
-        if (this.statusCode >= 400) {
-          console.error('[LICENSE SYNC] Échec :', payload);
-        } else {
-          console.log('[LICENSE SYNC] Résultat :', payload);
-        }
-        return payload;
-      }
-    };
-
-    await syncMicrosoftLicenses(req, res);
-  } catch (error) {
-    console.error('[LICENSE SYNC] Erreur inattendue :', error);
-  } finally {
-    microsoftLicenseSyncRunning = false;
-  }
-}
-
-const microsoftLicenseSyncTimer = setInterval(
-  runScheduledMicrosoftLicenseSync,
-  10 * 60 * 1000
-);
-
-microsoftLicenseSyncTimer.unref();
-
-console.log('[LICENSE SYNC] Synchronisation automatique activée toutes les 10 minutes');
-
 app.post('/api/microsoft-users/sync', syncMicrosoftUsers);
 
 app.use(
