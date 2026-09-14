@@ -246,6 +246,16 @@ title="Marquer comme non embauché"
           {selectedRequest.contract_type || '-'}
         </p>
 
+{selectedRequest.contract_end_date && (
+  <p>
+    <strong>Fin de contrat :</strong>{' '}
+    {new Date(
+      selectedRequest.contract_end_date
+    ).toLocaleDateString('fr-FR')}
+  </p>
+)}
+
+
         <p>
           <strong>Statut salarié :</strong>{' '}
           {selectedRequest.employee_status || '-'}

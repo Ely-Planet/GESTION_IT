@@ -113,6 +113,15 @@ pdf.moveDown();
 .text(
       `Contrat : ${data.contractType || '-'}`
     );
+pdf.font('Helvetica')
+.text(
+  `Motif : ${data.contractReason || '-'}`
+);
+
+pdf.font('Helvetica')
+.text(
+  `Fin de contrat : ${data.contractEndDate || '-'}`
+);
 
     pdf.font('Helvetica')
 .text(

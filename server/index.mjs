@@ -548,7 +548,7 @@ async function runScheduledMicrosoftLicenseSync() {
 
 const microsoftLicenseSyncTimer = setInterval(
   runScheduledMicrosoftLicenseSync,
-  10 * 60 * 1000
+  1 * 60 * 1000
 );
 
 microsoftLicenseSyncTimer.unref();

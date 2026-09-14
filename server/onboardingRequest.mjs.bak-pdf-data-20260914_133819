@@ -205,8 +205,6 @@ const pdfInfo =
     effectiveDate,
 
     contractType: contract_type,
-contractReason: contract_reason,
-    contractEndDate: contract_end_date,
 
     employeeStatus:
       employee_status,
@@ -227,7 +225,7 @@ companyCar:
     internshipMission:
       internship_mission,
 referral:
-  parseBoolean(referral),
+  referral === true,
 
 referralEmployee:
   referralEmployeeName,

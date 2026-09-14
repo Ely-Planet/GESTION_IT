@@ -283,6 +283,9 @@ inventoryStatuses: inventoryStatuses as any[],
     reload();
   }, [reload]);
 
+useEffect(() => { const intervalId = setInterval(() => { reload(); }, 5 * 60 * 1000); return () => clearInterval(intervalId); }, [reload]);
+
+
   return { ...state, loading, error, reload };
 }
 
