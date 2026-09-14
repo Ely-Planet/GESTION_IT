@@ -17,7 +17,7 @@ function parseOffboardingName(subject) {
     .trim();
 
   let match = cleanSubject.match(
-    /offboarding\s+de\s+(.+)$/i
+    /(offboarding|Restitution)\s+de\s+(.+)$/i
   );
 
   if (match) {
@@ -27,12 +27,12 @@ function parseOffboardingName(subject) {
   }
 
   match = cleanSubject.match(
-  /offboarding\s+(.+?)(?:\s+-\s+.*)?$/i
-);
+/(offboarding|restitution)\s+(.+?)(?:\s+-\s+.*)?$/i
+  );
 
-if (match) {
-  return match[1].trim();
-}
+  if (match) {
+    return match[2].trim();
+  }
 
   match = cleanSubject.match(
     /restitution du matériel pour\s+(.+)$/i
