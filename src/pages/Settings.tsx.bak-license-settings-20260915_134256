@@ -621,128 +621,21 @@ function LicenseSettings({
   async function toggle(
     row: LicenseTypeRow
   ) {
-    const newValue =
-      !row.requestable_for_onboarding;
-
-    setRows(currentRows =>
-      currentRows.map(currentRow =>
-        currentRow.id === row.id
-          ? {
-              ...currentRow,
-              requestable_for_onboarding:
-                newValue
-            }
-          : currentRow
-      )
+    await fetch(
+      `/api/license-types/${row.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          requestable_for_onboarding:
+            !row.requestable_for_onboarding
+        })
+      }
     );
 
-    try {
-      const res = await fetch(
-        `/api/license-types/${row.id}`,
-        {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            requestable_for_onboarding:
-              newValue
-          })
-        }
-      );
-
-      if (!res.ok) {
-        const errorData = await res
-          .json()
-          .catch(() => null);
-
-        throw new Error(
-          errorData?.error ||
-          `Erreur HTTP ${res.status}`
-        );
-      }
-    } catch (error) {
-      setRows(currentRows =>
-        currentRows.map(currentRow =>
-          currentRow.id === row.id
-            ? {
-                ...currentRow,
-                requestable_for_onboarding:
-                  row.requestable_for_onboarding
-              }
-            : currentRow
-        )
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : 'Impossible de modifier la licence.'
-      );
-    }
-  }
-
-  function changeLabel(
-    id: string,
-    label: string
-  ) {
-    setRows(currentRows =>
-      currentRows.map(currentRow =>
-        currentRow.id === id
-          ? {
-              ...currentRow,
-              label
-            }
-          : currentRow
-      )
-    );
-  }
-
-  async function saveLabel(
-    row: LicenseTypeRow
-  ) {
-    const label = row.label.trim();
-
-    if (!label) {
-      alert(
-        'Le nom de la licence ne peut pas être vide.'
-      );
-      return;
-    }
-
-    try {
-      const res = await fetch(
-        `/api/license-types/${row.id}`,
-        {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            label
-          })
-        }
-      );
-
-      if (!res.ok) {
-        const errorData = await res
-          .json()
-          .catch(() => null);
-
-        throw new Error(
-          errorData?.error ||
-          `Erreur HTTP ${res.status}`
-        );
-      }
-
-      await load();
-    } catch (error) {
-      alert(
-        error instanceof Error
-          ? error.message
-          : 'Impossible de renommer la licence.'
-      );
-    }
+    load();
   }
 
   useEffect(() => {
@@ -779,10 +672,9 @@ function LicenseSettings({
 
             <thead>
               <tr>
-                <th>Nom affiché</th>
+                <th>Licence</th>
                 <th>Code</th>
                 <th>Visible</th>
-                <th>Actions</th>
               </tr>
             </thead>
 
@@ -792,22 +684,7 @@ function LicenseSettings({
                 <tr key={row.id}>
 
                   <td>
-                    <input
-                      type="text"
-                      className="input"
-                      value={row.label}
-                      onChange={e =>
-                        changeLabel(
-                          row.id,
-                          e.target.value
-                        )
-                      }
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') {
-                          saveLabel(row);
-                        }
-                      }}
-                    />
+                    {row.label}
                   </td>
 
                   <td>
@@ -817,25 +694,13 @@ function LicenseSettings({
                   <td>
                     <input
                       type="checkbox"
-                      checked={Boolean(
+                      checked={
                         row.requestable_for_onboarding
-                      )}
+                      }
                       onChange={() =>
                         toggle(row)
                       }
                     />
-                  </td>
-
-                  <td>
-                    <button
-                      type="button"
-                      className="btn-primary"
-                      onClick={() =>
-                        saveLabel(row)
-                      }
-                    >
-                      Enregistrer
-                    </button>
                   </td>
 
                 </tr>

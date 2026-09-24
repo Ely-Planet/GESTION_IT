@@ -20,7 +20,6 @@ import { getMicrosoftOnboardingServices } from './microsoftOnboardingServices.mj
 import { createOnboardingRequest } from './onboardingRequest.mjs';
 import { syncMicrosoftUsers } from './syncMicrosoftUsers.mjs';
 import { syncLuccaOffboardings } from './luccaOffboardingSync.mjs';
-import { registerProjectRoutes } from './projects.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -359,19 +358,6 @@ async function sendSignedDocumentMail(documentId) {
 
 const snapshot = row.content_snapshot || {};
 
-let managerRecipients = [];
-
-if (
-  row.doc_type === 'restitution' &&
-  row.manager_email
-) {
-  managerRecipients.push({
-    emailAddress: {
-      address: row.manager_email
-    }
-  });
-}
-
 const isReassignment =
   snapshot?.document_type === 'hardware_reassignment';
 
@@ -447,8 +433,7 @@ const html = isReassignment
               emailAddress: {
                 address: row.signer_email
               }
-            },
-            ...managerRecipients
+            }
           ],
           attachments: [
             {
@@ -915,9 +900,8 @@ groupIds: [
   process.env.MICROSOFT_IT_GROUP_ID,
   process.env.MICROSOFT_RH_GROUP_ID,
   process.env.MICROSOFT_MANAGER_GROUP_ID,
-  process.env.MICROSOFT_DIRECTOR_GROUP_ID,
-  process.env.MICROSOFT_IT_MANAGER_GROUP_ID
-].filter(Boolean)
+  process.env.MICROSOFT_DIRECTOR_GROUP_ID
+]
 
 
 
@@ -948,56 +932,12 @@ const isDirector = allowedGroups.includes(
   process.env.MICROSOFT_DIRECTOR_GROUP_ID
 );
 
-const isITManager = Boolean(
-  process.env.MICROSOFT_IT_MANAGER_GROUP_ID &&
-  allowedGroups.includes(process.env.MICROSOFT_IT_MANAGER_GROUP_ID)
-);
-
 const user = meResponse.data;
-
-let hasProjectAccess = false;
-
-try {
-  const projectAccessResult = await pool.query(
-    `
-    SELECT 1
-    FROM projects p
-    WHERE p.client_account_id = $1
-
-    UNION ALL
-
-    SELECT 1
-    FROM project_assignments pa
-    WHERE pa.account_id = $1
-
-    LIMIT 1
-    `,
-    [user.id]
-  );
-
-  hasProjectAccess = projectAccessResult.rowCount > 0;
-} catch (projectAccessError) {
-  console.error(
-    '[AUTH] Vérification accès aux projets impossible',
-    projectAccessError
-  );
-}
-
 const hasApplicationAccess =
   isIT ||
   isRH ||
   isManager ||
-  isDirector ||
-  isITManager ||
-  hasProjectAccess;
-
-const projectsOnly =
-  hasProjectAccess &&
-  !isIT &&
-  !isRH &&
-  !isManager &&
-  !isDirector &&
-  !isITManager;
+  isDirector;
 
 if (!hasApplicationAccess) {
   console.warn('Accès refusé à GESTION_IT', {
@@ -1024,32 +964,8 @@ req.session.user = {
   isIT,
   isRH,
   isManager,
-  isDirector,
-  isITManager,
-  hasProjectAccess,
-  projectsOnly
+  isDirector
 };
-
-try {
-  await pool.query(
-    `
-    INSERT INTO app_accounts (id, email, display_name, is_it, is_it_manager, is_rh, is_manager, is_director, last_login_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
-    ON CONFLICT (id) DO UPDATE SET
-      email = EXCLUDED.email,
-      display_name = EXCLUDED.display_name,
-      is_it = EXCLUDED.is_it,
-      is_it_manager = EXCLUDED.is_it_manager,
-      is_rh = EXCLUDED.is_rh,
-      is_manager = EXCLUDED.is_manager,
-      is_director = EXCLUDED.is_director,
-      last_login_at = now()
-    `,
-    [user.id, user.mail || user.userPrincipalName, user.displayName, isIT, isITManager, isRH, isManager, isDirector]
-  );
-} catch (err) {
-  console.error('Erreur mise à jour app_accounts', err);
-}
 
     res.redirect('/');
   } catch (error) {
@@ -2280,8 +2196,7 @@ app.patch('/api/license-types/:id', async (req, res) => {
       'total_seats',
       'has_expiration',
       'default_renewal_notice_days',
-      'notes',
-      'requestable_for_onboarding'
+      'notes'
     ];
 
     const columns = allowedColumns.filter((column) => req.body[column] !== undefined);
@@ -4454,8 +4369,6 @@ app.post('/api/inventory/preferences', async (req, res) => {
 
 
 
-
-registerProjectRoutes(app);
 
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, '../dist/index.html'));

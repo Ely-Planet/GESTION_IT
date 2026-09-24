@@ -287,7 +287,6 @@ async function assignHardwareItem(
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        beneficiary_type: 'employee',
         employee_id: employeeId,
         changes: [
           {
@@ -1340,40 +1339,22 @@ const [error, setError] = useState<string | null>(null);
 
   const docLicenses = lics.filter((l) => l.status === 'assigned');
 
-  function startDraw(e: React.PointerEvent<HTMLCanvasElement>) {
+  function startDraw(e: React.MouseEvent<HTMLCanvasElement>) {
     if (!canvas) return;
-
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {}
-
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
     setDrawing(true);
-
     const rect = canvas.getBoundingClientRect();
     ctx.beginPath();
     ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
   }
 
-  function draw(e: React.PointerEvent<HTMLCanvasElement>) {
+  function draw(e: React.MouseEvent<HTMLCanvasElement>) {
     if (!drawing || !canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const rect = canvas.getBoundingClientRect();
-
-    const x = Math.max(
-      0,
-      Math.min(canvas.width, e.clientX - rect.left)
-    );
-
-    const y = Math.max(
-      0,
-      Math.min(canvas.height, e.clientY - rect.top)
-    );
-
-    ctx.lineTo(x, y);
+    ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
     ctx.strokeStyle = '#ca0088';
     ctx.lineWidth = 2;
     ctx.stroke();
@@ -1399,20 +1380,6 @@ const [error, setError] = useState<string | null>(null);
   function setCanvasRef(el: HTMLCanvasElement | null) {
     setCanvas(el);
   }
-
-  useEffect(() => {
-    const handleEnter = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && signerName && signatureData && !busy) {
-        submit();
-      }
-    };
-
-    window.addEventListener('keydown', handleEnter);
-
-    return () => {
-      window.removeEventListener('keydown', handleEnter);
-    };
-  }, [signerName, signatureData, busy]);
 
   async function submit() {
     if (!signerName) { setError('Veuillez saisir le nom du signataire.'); return; }
@@ -1574,18 +1541,11 @@ hardware_issue:
                 ref={setCanvasRef}
                 width={560}
                 height={160}
-                className="w-full h-full cursor-crosshair touch-none outline-none"
-                onPointerDown={startDraw}
-                onPointerMove={draw}
-                onPointerUp={endDraw}
-                onPointerCancel={endDraw}
-                onPointerLeave={() => {}}
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    submit();
-                  }
-                }}
+                className="w-full h-full cursor-crosshair touch-none"
+                onMouseDown={startDraw}
+                onMouseMove={draw}
+                onMouseUp={endDraw}
+                onMouseLeave={endDraw}
               />
               {!signatureData && (
                 <span className="absolute inset-0 flex items-center justify-center text-ink-300 text-sm pointer-events-none">

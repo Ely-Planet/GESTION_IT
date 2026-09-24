@@ -1,0 +1,1407 @@
+import { pool } from './db.mjs';
+import { sendMailWithAttachments } from './graphMail.mjs';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import fsp from 'fs/promises';
+import crypto from 'crypto';
+
+
+// === SYNCHRONISATION ENTRA DES MEMBRES DU SERVICE IT ===
+function getFirstEnvValue(...names) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (value && String(value).trim()) {
+      return String(value).trim();
+    }
+  }
+  return null;
+}
+
+async function getProjectsGraphAccessToken() {
+  const tenantId = getFirstEnvValue(
+    'MICROSOFT_TENANT_ID',
+    'AZURE_TENANT_ID',
+    'TENANT_ID'
+  );
+
+  const clientId = getFirstEnvValue(
+    'MICROSOFT_CLIENT_ID',
+    'AZURE_CLIENT_ID',
+    'CLIENT_ID'
+  );
+
+  const clientSecret = getFirstEnvValue(
+    'MICROSOFT_CLIENT_SECRET',
+    'AZURE_CLIENT_SECRET',
+    'CLIENT_SECRET'
+  );
+
+  if (!tenantId || !clientId || !clientSecret) {
+    throw new Error(
+      'Configuration Graph incomplète : tenant ID, client ID ou secret client absent'
+    );
+  }
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    scope: 'https://graph.microsoft.com/.default',
+    grant_type: 'client_credentials'
+  });
+
+  const response = await fetch(
+    `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body
+    }
+  );
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(
+      `Impossible d'obtenir le jeton Microsoft Graph (${response.status}) : ${details}`
+    );
+  }
+
+  const token = await response.json();
+
+  if (!token.access_token) {
+    throw new Error("Microsoft Graph n'a retourné aucun jeton d'accès");
+  }
+
+  return token.access_token;
+}
+
+async function fetchAllItGroupMembersFromGraph(accessToken, groupId) {
+  const members = [];
+  let url =
+    `https://graph.microsoft.com/v1.0/groups/${encodeURIComponent(groupId)}` +
+    `/transitiveMembers/microsoft.graph.user` +
+    `?$select=id,displayName,mail,userPrincipalName,accountEnabled&$top=999`;
+
+  while (url) {
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(
+        `Lecture du groupe Service Informatique impossible (${response.status}) : ${details}`
+      );
+    }
+
+    const page = await response.json();
+
+    if (Array.isArray(page.value)) {
+      members.push(...page.value);
+    }
+
+    url = page['@odata.nextLink'] || null;
+  }
+
+  return members;
+}
+
+async function syncItAccountsFromEntra() {
+  const groupId = getFirstEnvValue(
+    'MICROSOFT_IT_GROUP_ID',
+    'MICROSOFT_SERVICE_IT_GROUP_ID',
+    'SERVICE_IT_GROUP_ID'
+  );
+
+  if (!groupId) {
+    throw new Error(
+      'Variable du groupe IT absente. Attendu : MICROSOFT_IT_GROUP_ID'
+    );
+  }
+
+  const accessToken = await getProjectsGraphAccessToken();
+  const members = await fetchAllItGroupMembersFromGraph(accessToken, groupId);
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    for (const member of members) {
+      if (!member?.id || member.accountEnabled === false) {
+        continue;
+      }
+
+      const email = member.mail || member.userPrincipalName || null;
+      const displayName =
+        member.displayName ||
+        member.userPrincipalName ||
+        member.mail ||
+        member.id;
+
+      await client.query(
+        `
+        INSERT INTO app_accounts (
+          id,
+          email,
+          display_name,
+          is_it,
+          is_it_manager,
+          is_rh,
+          is_manager,
+          is_director
+        )
+        VALUES ($1, $2, $3, true, false, false, false, false)
+        ON CONFLICT (id) DO UPDATE SET
+          email = EXCLUDED.email,
+          display_name = EXCLUDED.display_name,
+          is_it = true
+        `,
+        [member.id, email, displayName]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    console.log(
+      `[Projets IT] Synchronisation Entra réussie : ${members.length} membre(s) reçu(s)`
+    );
+
+    return members.length;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+
+const PROJECTS_DIR = path.join(process.cwd(), 'storage', 'projects');
+
+async function ensureProjectsDir() {
+  await fsp.mkdir(PROJECTS_DIR, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination(req, file, cb) {
+    cb(null, PROJECTS_DIR);
+  },
+  filename(req, file, cb) {
+    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, `${unique}-${file.originalname}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 25 * 1024 * 1024 }
+});
+
+// ---------------------------------------------------------------------
+// Rôles du module, dérivés des groupes Microsoft déjà présents en session
+// (voir /auth/callback dans index.mjs) :
+//   - isITManager (groupe "🔐 Manager Service Informatique") -> manager
+//   - isIT (sans isITManager)                                 -> dev
+//   - isDirector                                               -> directeur (lecture seule)
+//   - tout le reste (isRH, isManager RH, ou aucun groupe)      -> client interne
+// ---------------------------------------------------------------------
+
+function isAuthenticated(req) {
+  return Boolean(req.session && req.session.user);
+}
+
+function getModuleRole(user) {
+  if (!user) return null;
+  if (user.isITManager) return 'manager';
+  if (user.isIT) return 'dev';
+  if (user.isDirector) return 'directeur';
+  return 'client';
+}
+
+function requireAuth(req, res, next) {
+  if (!isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Non authentifié' });
+  }
+  next();
+}
+
+function requireRole(...roles) {
+  return (req, res, next) => {
+    const role = getModuleRole(req.session.user);
+    if (!roles.includes(role)) {
+      return res.status(403).json({ error: 'Accès refusé pour ce rôle' });
+    }
+    next();
+  };
+}
+
+async function isAssignedToProject(accountId, projectId) {
+  const result = await pool.query(
+    `SELECT 1 FROM project_assignments WHERE project_id = $1 AND account_id = $2`,
+    [projectId, accountId]
+  );
+  return result.rowCount > 0;
+}
+
+async function isChefDeProjet(accountId, projectId) {
+  const result = await pool.query(
+    `SELECT 1 FROM project_assignments WHERE project_id = $1 AND account_id = $2 AND project_role = 'chef_de_projet'`,
+    [projectId, accountId]
+  );
+  return result.rowCount > 0;
+}
+
+function completionRate(tasks) {
+  if (!tasks.length) return 0;
+  const done = tasks.filter((t) => t.status === 'closed').length;
+  return Math.round((done / tasks.length) * 100);
+}
+
+async function notifyClient({ email, subject, html }) {
+  try {
+    await sendMailWithAttachments({ to: email, subject, html });
+    return true;
+  } catch (err) {
+    console.error('[PROJECTS] Échec envoi e-mail client', err.message || err);
+    return false;
+  }
+}
+
+
+// === SYNCHRONISATION DES TACHES AVEC LES ISSUES GITHUB ===
+function parseGitHubRepositoryUrl(value) {
+  if (!value) return null;
+  try {
+    const url = new URL(String(value).trim());
+    if (!['github.com', 'www.github.com'].includes(url.hostname.toLowerCase())) return null;
+    const parts = url.pathname.replace(/^\/+|\/+$/g, '').split('/');
+    if (parts.length < 2) return null;
+    return { owner: parts[0], repo: parts[1].replace(/\.git$/i, '') };
+  } catch {
+    return null;
+  }
+}
+
+async function githubRequest(pathname, method = 'GET', body = undefined) {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token) throw new Error('GITHUB_TOKEN absent');
+  const response = await fetch(`https://api.github.com${pathname}`, {
+    method,
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'ELYade-GESTION-IT'
+    },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`GitHub ${response.status}: ${detail}`);
+  }
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+async function createGitHubIssueForTask(task) {
+  const projectResult = await pool.query(
+    `SELECT name, github_repo_url FROM projects WHERE id = $1`,
+    [task.project_id]
+  );
+  const project = projectResult.rows[0];
+  const repository = parseGitHubRepositoryUrl(project?.github_repo_url);
+  if (!repository) return null;
+  const issue = await githubRequest(
+    `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/issues`,
+    'POST',
+    {
+      title: task.title,
+      body: [
+        task.description || '',
+        '',
+        `Projet GESTION_IT : ${project.name}`,
+        `Identifiant de tâche : ${task.id}`,
+        `Temps estimé : ${Number(task.estimated_hours || 0)} h`
+      ].join('\n')
+    }
+  );
+  await pool.query(
+    `UPDATE project_tasks SET github_issue_url = $1, updated_at = now() WHERE id = $2`,
+    [issue.html_url, task.id]
+  );
+  return issue.html_url;
+}
+
+async function syncGitHubIssueState(task, status) {
+  if (!task.github_issue_url || status === undefined || status === null) return;
+  const match = String(task.github_issue_url).match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/i);
+  if (!match) return;
+  await githubRequest(
+    `/repos/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}/issues/${match[3]}`,
+    'PATCH',
+    { state: status === 'closed' ? 'closed' : 'open' }
+  );
+}
+
+
+async function githubRequestAll(pathname) {
+  const rows = [];
+  let page = 1;
+  while (true) {
+    const separator = pathname.includes('?') ? '&' : '?';
+    const batch = await githubRequest(`${pathname}${separator}per_page=100&page=${page}`);
+    if (!Array.isArray(batch)) throw new Error('Reponse GitHub inattendue');
+    rows.push(...batch);
+    if (batch.length < 100) break;
+    page += 1;
+  }
+  return rows;
+}
+
+async function syncGitHubRepositoriesAndIssues() {
+  if (!process.env.GITHUB_TOKEN) throw new Error('GITHUB_TOKEN absent');
+  const repositories = await githubRequestAll('/user/repos?affiliation=owner,organization_member,collaborator&sort=updated');
+  let projectsCreated = 0;
+  let projectsUpdated = 0;
+  let tasksCreated = 0;
+  let tasksUpdated = 0;
+
+  for (const repository of repositories) {
+    if (repository.archived) continue;
+    const repoUrl = repository.html_url;
+    let projectResult = await pool.query(
+      `SELECT * FROM projects WHERE github_repo_url = $1 LIMIT 1`,
+      [repoUrl]
+    );
+    let project;
+    if (projectResult.rowCount === 0) {
+      const inserted = await pool.query(
+        `INSERT INTO projects (name, description, type, status, github_repo_url)
+         VALUES ($1, $2, 'dev', 'en_cours', $3)
+         RETURNING *`,
+        [repository.name, repository.description || null, repoUrl]
+      );
+      project = inserted.rows[0];
+      projectsCreated += 1;
+    } else {
+      const updated = await pool.query(
+        `UPDATE projects
+         SET name = $1, description = $2, type = 'dev', updated_at = now()
+         WHERE id = $3 RETURNING *`,
+        [repository.name, repository.description || null, projectResult.rows[0].id]
+      );
+      project = updated.rows[0];
+      projectsUpdated += 1;
+    }
+
+    if (repository.has_issues === false) continue;
+    const issues = await githubRequestAll(
+      `/repos/${encodeURIComponent(repository.owner.login)}/${encodeURIComponent(repository.name)}/issues?state=all`
+    );
+    for (const issue of issues) {
+      if (issue.pull_request) continue;
+      const status = issue.state === 'closed' ? 'closed' : 'open';
+      const existing = await pool.query(
+        `SELECT id FROM project_tasks WHERE github_issue_url = $1 LIMIT 1`,
+        [issue.html_url]
+      );
+      if (existing.rowCount === 0) {
+        await pool.query(
+          `INSERT INTO project_tasks
+           (project_id, title, description, status, origin, github_issue_url, updated_at)
+           VALUES ($1, $2, $3, $4, 'manuelle', $5, now())`,
+          [project.id, issue.title, issue.body || null, status, issue.html_url]
+        );
+        tasksCreated += 1;
+      } else {
+        await pool.query(
+          `UPDATE project_tasks
+           SET project_id = $1, title = $2, description = $3,
+               status = $4, updated_at = now()
+           WHERE id = $5`,
+          [project.id, issue.title, issue.body || null, status, existing.rows[0].id]
+        );
+        tasksUpdated += 1;
+      }
+    }
+  }
+  const summary = { repositories: repositories.length, projectsCreated, projectsUpdated, tasksCreated, tasksUpdated };
+  console.log('[GitHub Sync]', summary);
+  return summary;
+}
+
+export function registerProjectRoutes(app) {
+  ensureProjectsDir().catch((err) => console.error('[PROJECTS] Impossible de créer le dossier storage/projects', err));
+
+  // express.json() ne peuple req.body que si le Content-Type est application/json ;
+  // sans corps (ou sans ce header), req.body reste undefined et fait planter
+  // les déstructurations ci-dessous. On normalise à {} pour toute requête.
+  app.use((req, res, next) => {
+    if (req.body === undefined) req.body = {};
+    next();
+  });
+
+
+  app.post('/api/projects/github/sync', requireAuth, requireRole('manager'), async (req, res) => {
+    try {
+      res.json(await syncGitHubRepositoriesAndIssues());
+    } catch (error) {
+      console.error('[GitHub Sync] erreur', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  setTimeout(() => {
+    syncGitHubRepositoriesAndIssues().catch((error) =>
+      console.error('[GitHub Sync] synchronisation initiale impossible', error.message || error)
+    );
+  }, 15000).unref();
+
+  const githubSyncTimer = setInterval(() => {
+    syncGitHubRepositoriesAndIssues().catch((error) =>
+      console.error('[GitHub Sync] synchronisation periodique impossible', error.message || error)
+    );
+  }, 5 * 60 * 1000);
+  githubSyncTimer.unref();
+
+  // -------------------------------------------------------------------
+  // Comptes disponibles pour affectation (manager uniquement)
+  // -------------------------------------------------------------------
+  app.get('/api/projects/accounts', requireAuth, requireRole('manager', 'dev'), async (req, res) => {
+    try {
+      try {
+        await syncItAccountsFromEntra();
+      } catch (syncError) {
+        console.error(
+          '[Projets IT] Échec de la synchronisation des membres Entra :',
+          syncError.message || syncError
+        );
+      }
+
+      const result = await pool.query(
+        `SELECT id, email, display_name, is_it, is_it_manager, is_rh, is_manager, is_director, weekly_capacity_hours
+         FROM app_accounts
+         WHERE is_it = true OR is_it_manager = true
+         ORDER BY display_name`
+      );
+      res.json(result.rows);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+
+  // -------------------------------------------------------------------
+  // Utilisateurs Microsoft 365 disponibles comme clients
+  // -------------------------------------------------------------------
+  app.get('/api/projects/clients', requireAuth, requireRole('manager'), async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT
+          e.id AS employee_id,
+          e.microsoft_object_id AS id,
+          COALESCE(
+            NULLIF(TRIM(CONCAT_WS(' ', e.first_name, e.last_name)), ''),
+            e.email,
+            e.microsoft_upn
+          ) AS display_name,
+          COALESCE(e.email, e.microsoft_upn) AS email
+        FROM employees e
+        WHERE e.is_active = true
+          AND e.account_enabled = true
+          AND e.microsoft_object_id IS NOT NULL
+          AND COALESCE(e.email, e.microsoft_upn) IS NOT NULL
+        ORDER BY display_name
+        `
+      );
+
+      res.json(result.rows);
+    } catch (error) {
+      console.error('[Projets IT] Liste clients Microsoft 365', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  async function ensureProjectAccount(client, microsoftObjectId) {
+    if (!microsoftObjectId) {
+      throw new Error('Identifiant Microsoft obligatoire');
+    }
+
+    const employeeResult = await client.query(
+      `
+      SELECT
+        microsoft_object_id,
+        COALESCE(email, microsoft_upn) AS email,
+        COALESCE(
+          NULLIF(TRIM(CONCAT_WS(' ', first_name, last_name)), ''),
+          email,
+          microsoft_upn
+        ) AS display_name
+      FROM employees
+      WHERE microsoft_object_id = $1
+        AND is_active = true
+        AND account_enabled = true
+      LIMIT 1
+      `,
+      [microsoftObjectId]
+    );
+
+    if (employeeResult.rowCount === 0) {
+      throw new Error('Utilisateur Microsoft 365 actif introuvable');
+    }
+
+    const employee = employeeResult.rows[0];
+
+    await client.query(
+      `
+      INSERT INTO app_accounts (
+        id,
+        email,
+        display_name,
+        is_it,
+        is_it_manager,
+        is_rh,
+        is_manager,
+        is_director
+      )
+      VALUES ($1, $2, $3, false, false, false, false, false)
+      ON CONFLICT (id) DO UPDATE SET
+        email = EXCLUDED.email,
+        display_name = EXCLUDED.display_name
+      `,
+      [
+        employee.microsoft_object_id,
+        employee.email,
+        employee.display_name
+      ]
+    );
+
+    return employee.microsoft_object_id;
+  }
+
+  async function replaceProjectDevelopers(client, projectId, developerAssignments) {
+    const raw = Array.isArray(developerAssignments) ? developerAssignments : [];
+    const assignments = raw.map((item) =>
+      typeof item === 'string'
+        ? { accountId: item, projectRole: 'contributeur' }
+        : {
+            accountId: item?.accountId,
+            projectRole: item?.projectRole === 'chef_de_projet'
+              ? 'chef_de_projet'
+              : 'contributeur'
+          }
+    ).filter((item) => item.accountId);
+
+    await client.query(`DELETE FROM project_assignments WHERE project_id = $1`, [projectId]);
+
+    for (const assignment of assignments) {
+      const accountResult = await client.query(
+        `SELECT id FROM app_accounts
+         WHERE id = $1 AND (is_it = true OR is_it_manager = true)
+         LIMIT 1`,
+        [assignment.accountId]
+      );
+      if (accountResult.rowCount === 0) {
+        throw new Error(`Le développeur ${assignment.accountId} n'est pas un membre actif du service IT`);
+      }
+      await client.query(
+        `INSERT INTO project_assignments (project_id, account_id, project_role)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (project_id, account_id)
+         DO UPDATE SET project_role = EXCLUDED.project_role`,
+        [projectId, assignment.accountId, assignment.projectRole]
+      );
+    }
+  }
+
+  app.put('/api/projects/accounts/:id/capacity', requireAuth, requireRole('manager'), async (req, res) => {
+    try {
+      const { weeklyCapacityHours } = req.body;
+      const result = await pool.query(
+        `UPDATE app_accounts SET weekly_capacity_hours = $1 WHERE id = $2 RETURNING *`,
+        [weeklyCapacityHours, req.params.id]
+      );
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Projets — liste filtrée par rôle
+  // -------------------------------------------------------------------
+  app.get('/api/projects', requireAuth, async (req, res) => {
+    try {
+      const { id: accountId } = req.session.user;
+      const role = getModuleRole(req.session.user);
+
+      let where = '';
+      let params = [];
+
+      if (role === 'manager' || role === 'directeur') {
+        where = '';
+      } else if (role === 'client') {
+        where = 'WHERE p.client_account_id = $1';
+        params = [accountId];
+      } else {
+        where = 'WHERE EXISTS (SELECT 1 FROM project_assignments pa WHERE pa.project_id = p.id AND pa.account_id = $1)';
+        params = [accountId];
+      }
+
+      const projectsResult = await pool.query(
+        `SELECT p.*, c.display_name AS client_name, c.email AS client_email
+         FROM projects p
+         LEFT JOIN app_accounts c ON c.id = p.client_account_id
+         ${where}
+         ORDER BY p.created_at DESC`,
+        params
+      );
+
+      const projectIds = projectsResult.rows.map((p) => p.id);
+      let tasksByProject = {};
+      if (projectIds.length) {
+        const tasksResult = await pool.query(
+          `SELECT * FROM project_tasks WHERE project_id = ANY($1::uuid[])`,
+          [projectIds]
+        );
+        tasksByProject = tasksResult.rows.reduce((acc, t) => {
+          (acc[t.project_id] ||= []).push(t);
+          return acc;
+        }, {});
+      }
+
+      const enriched = projectsResult.rows.map((p) => {
+        const tasks = tasksByProject[p.id] || [];
+        const base = {
+          id: p.id,
+          name: p.name,
+          description: p.description,
+          type: p.type,
+          status: p.status,
+          due_date: p.due_date,
+          tauxCompletude: completionRate(tasks)
+        };
+        if (role === 'client') return base;
+        return {
+          ...base,
+          client_name: p.client_name,
+          github_repo_url: p.github_repo_url,
+          chargeEstimeeH: tasks.reduce((s, t) => s + Number(t.estimated_hours), 0),
+          chargePasseeH: tasks.reduce((s, t) => s + Number(t.spent_hours), 0)
+        };
+      });
+
+      res.json(enriched);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Détail d'un projet
+  // -------------------------------------------------------------------
+  app.get('/api/projects/:id', requireAuth, async (req, res) => {
+    try {
+      const { id: accountId } = req.session.user;
+      const role = getModuleRole(req.session.user);
+      const projectId = req.params.id;
+
+      const projectResult = await pool.query(
+        `SELECT p.*, c.display_name AS client_name, c.email AS client_email
+         FROM projects p LEFT JOIN app_accounts c ON c.id = p.client_account_id
+         WHERE p.id = $1`,
+        [projectId]
+      );
+      if (projectResult.rowCount === 0) return res.status(404).json({ error: 'Projet introuvable' });
+      const project = projectResult.rows[0];
+
+      const canView =
+        role === 'manager' ||
+        role === 'directeur' ||
+        (role === 'client' && project.client_account_id === accountId) ||
+        (role === 'dev' && (await isAssignedToProject(accountId, projectId)));
+
+      if (!canView) return res.status(403).json({ error: 'Accès refusé à ce projet' });
+
+      const tasksResult = await pool.query(
+        `SELECT t.*, a.display_name AS assignee_name
+         FROM project_tasks t
+         LEFT JOIN app_accounts a ON a.id = t.assignee_account_id
+         WHERE t.project_id = $1 ORDER BY t.created_at`,
+        [projectId]
+      );
+
+      if (role === 'client') {
+        const requestsResult = await pool.query(
+          `SELECT * FROM project_client_requests WHERE project_id = $1 AND client_account_id = $2 ORDER BY created_at DESC`,
+          [projectId, accountId]
+        );
+        return res.json({
+          id: project.id,
+          name: project.name,
+          description: project.description,
+          type: project.type,
+          status: project.status,
+          due_date: project.due_date,
+          tauxCompletude: completionRate(tasksResult.rows),
+          clientRequests: requestsResult.rows
+        });
+      }
+
+      const assignmentsResult = await pool.query(
+        `SELECT pa.id, pa.project_role, a.id AS account_id, a.display_name, a.email, a.is_it, a.is_it_manager
+         FROM project_assignments pa
+         JOIN app_accounts a ON a.id = pa.account_id
+         WHERE pa.project_id = $1`,
+        [projectId]
+      );
+
+      res.json({
+        ...project,
+        tasks: tasksResult.rows,
+        assignments: assignmentsResult.rows,
+        tauxCompletude: completionRate(tasksResult.rows),
+        chargeEstimeeH: tasksResult.rows.reduce((s, t) => s + Number(t.estimated_hours), 0),
+        chargePasseeH: tasksResult.rows.reduce((s, t) => s + Number(t.spent_hours), 0),
+        estChefDeProjet: role === 'manager' ? true : await isChefDeProjet(accountId, projectId)
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // CRUD projet — manager uniquement
+  // -------------------------------------------------------------------
+  app.post('/api/projects', requireAuth, requireRole('manager'), async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      const {
+        name,
+        description,
+        type,
+        dueDate,
+        clientAccountId,
+        developerAssignments,
+        developerAccountIds,
+        githubRepoUrl
+      } = req.body;
+
+      if (!name || !type) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'name et type requis' });
+      }
+
+      const normalizedClientId = clientAccountId
+        ? await ensureProjectAccount(client, clientAccountId)
+        : null;
+
+      const result = await client.query(
+        `INSERT INTO projects (
+           name,
+           description,
+           type,
+           created_by,
+           client_account_id,
+           github_repo_url,
+           due_date
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`,
+        [
+          name,
+          description || null,
+          type,
+          req.session.user.id,
+          normalizedClientId,
+          githubRepoUrl || null,
+          dueDate || null
+        ]
+      );
+
+      const project = result.rows[0];
+
+      await replaceProjectDevelopers(
+        client,
+        project.id,
+        developerAssignments ?? developerAccountIds
+      );
+
+      await client.query('COMMIT');
+
+      res.status(201).json(project);
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('[Projets IT] Création projet', error);
+      res.status(500).json({ error: error.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.put('/api/projects/:id', requireAuth, requireRole('manager'), async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      const {
+        name,
+        description,
+        type,
+        status,
+        dueDate,
+        clientAccountId,
+        developerAssignments,
+        developerAccountIds,
+        githubRepoUrl
+      } = req.body;
+
+      let normalizedClientId;
+
+      if (clientAccountId !== undefined) {
+        normalizedClientId = clientAccountId
+          ? await ensureProjectAccount(client, clientAccountId)
+          : null;
+      }
+
+      const result = await client.query(
+        `UPDATE projects SET
+           name = COALESCE($1, name),
+           description = COALESCE($2, description),
+           type = COALESCE($3, type),
+           status = COALESCE($4, status),
+           due_date = COALESCE($5, due_date),
+           client_account_id = CASE
+             WHEN $6::boolean = true THEN $7::uuid
+             ELSE client_account_id
+           END,
+           github_repo_url = COALESCE($8, github_repo_url),
+           updated_at = now()
+         WHERE id = $9
+         RETURNING *`,
+        [
+          name,
+          description,
+          type,
+          status,
+          dueDate,
+          clientAccountId !== undefined,
+          normalizedClientId ?? null,
+          githubRepoUrl,
+          req.params.id
+        ]
+      );
+
+      if (result.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Projet introuvable' });
+      }
+
+      if (developerAccountIds !== undefined) {
+        await replaceProjectDevelopers(
+          client,
+          req.params.id,
+          developerAccountIds
+        );
+      }
+
+      await client.query('COMMIT');
+
+      res.json(result.rows[0]);
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('[Projets IT] Modification projet', error);
+      res.status(500).json({ error: error.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  app.delete('/api/projects/:id', requireAuth, requireRole('manager'), async (req, res) => {
+    try {
+      await pool.query(`UPDATE projects SET status = 'archive' WHERE id = $1`, [req.params.id]);
+      res.status(204).end();
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Affectations — manager ou chef de projet
+  // -------------------------------------------------------------------
+  app.post('/api/projects/:id/assignments', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      const projectId = req.params.id;
+      if (role !== 'manager' && !(await isChefDeProjet(req.session.user.id, projectId))) {
+        return res.status(403).json({ error: 'Seul le manager ou le chef de projet peut affecter' });
+      }
+      const { accountId, projectRole } = req.body;
+      const result = await pool.query(
+        `INSERT INTO project_assignments (project_id, account_id, project_role)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (project_id, account_id) DO UPDATE SET project_role = EXCLUDED.project_role
+         RETURNING *`,
+        [projectId, accountId, projectRole || 'contributeur']
+      );
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.delete('/api/projects/:id/assignments/:accountId', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      if (role !== 'manager' && !(await isChefDeProjet(req.session.user.id, req.params.id))) {
+        return res.status(403).json({ error: 'Seul le manager ou le chef de projet peut retirer un membre' });
+      }
+      await pool.query(`DELETE FROM project_assignments WHERE project_id = $1 AND account_id = $2`, [
+        req.params.id,
+        req.params.accountId
+      ]);
+      res.status(204).end();
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Tâches
+  // -------------------------------------------------------------------
+  app.post('/api/projects/tasks', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      const { projectId, title, description, assigneeAccountId, estimatedHours } = req.body;
+      if (!projectId || !title) return res.status(400).json({ error: 'projectId et title requis' });
+
+      if (role === 'client' || role === 'directeur') return res.status(403).json({ error: 'Accès refusé' });
+      if (role === 'dev' && !(await isChefDeProjet(req.session.user.id, projectId))) {
+        return res.status(403).json({ error: 'Seul le chef de projet peut ajouter une tâche' });
+      }
+
+      const result = await pool.query(
+        `INSERT INTO project_tasks (project_id, title, description, assignee_account_id, estimated_hours, origin)
+         VALUES ($1, $2, $3, $4, $5, 'manuelle') RETURNING *`,
+        [projectId, title, description || null, assigneeAccountId || null, estimatedHours || 0]
+      );
+      const task = result.rows[0];
+      try {
+        const githubIssueUrl = await createGitHubIssueForTask(task);
+        if (githubIssueUrl) task.github_issue_url = githubIssueUrl;
+      } catch (githubError) {
+        console.error('[Projets IT] Creation issue GitHub impossible', githubError.message || githubError);
+        task.github_sync_error = githubError.message || String(githubError);
+      }
+      res.status(201).json(task);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.put('/api/projects/tasks/:id', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      if (role === 'client' || role === 'directeur') return res.status(403).json({ error: 'Accès refusé' });
+
+      const taskResult = await pool.query(`SELECT * FROM project_tasks WHERE id = $1`, [req.params.id]);
+      if (taskResult.rowCount === 0) return res.status(404).json({ error: 'Tâche introuvable' });
+      const task = taskResult.rows[0];
+
+      if (role === 'dev' && !(await isAssignedToProject(req.session.user.id, task.project_id))) {
+        return res.status(403).json({ error: 'Accès refusé à cette tâche' });
+      }
+
+      const { status, spentHours, estimatedHours, assigneeAccountId } = req.body;
+      const result = await pool.query(
+        `UPDATE project_tasks SET
+           status = COALESCE($1, status),
+           spent_hours = COALESCE($2, spent_hours),
+           estimated_hours = COALESCE($3, estimated_hours),
+           assignee_account_id = COALESCE($4, assignee_account_id),
+           updated_at = now()
+         WHERE id = $5 RETURNING *`,
+        [status, spentHours, estimatedHours, assigneeAccountId, req.params.id]
+      );
+      const updatedTask = result.rows[0];
+      try {
+        await syncGitHubIssueState(updatedTask, status);
+      } catch (githubError) {
+        console.error('[Projets IT] Synchronisation statut GitHub impossible', githubError.message || githubError);
+        updatedTask.github_sync_error = githubError.message || String(githubError);
+      }
+      res.json(updatedTask);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Demandes client
+  // -------------------------------------------------------------------
+  app.post('/api/projects/requests', requireAuth, requireRole('client'), async (req, res) => {
+    try {
+      const { projectId, title, description } = req.body;
+      const accountId = req.session.user.id;
+
+      const projectResult = await pool.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
+      if (projectResult.rowCount === 0 || projectResult.rows[0].client_account_id !== accountId) {
+        return res.status(403).json({ error: "Ce projet ne vous appartient pas" });
+      }
+
+      const result = await pool.query(
+        `INSERT INTO project_client_requests (project_id, client_account_id, title, description)
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [projectId, accountId, title, description || null]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/projects/:id/requests', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      if (role === 'client' || role === 'directeur') return res.status(403).json({ error: 'Accès refusé' });
+      if (role === 'dev' && !(await isAssignedToProject(req.session.user.id, req.params.id))) {
+        return res.status(403).json({ error: 'Accès refusé' });
+      }
+      const result = await pool.query(
+        `SELECT r.*, c.display_name AS client_name, c.email AS client_email
+         FROM project_client_requests r JOIN app_accounts c ON c.id = r.client_account_id
+         WHERE r.project_id = $1 ORDER BY r.created_at DESC`,
+        [req.params.id]
+      );
+      res.json(result.rows);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/projects/requests/:id/valider', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      if (role === 'client' || role === 'directeur') return res.status(403).json({ error: 'Accès refusé' });
+
+      const { estimatedHours } = req.body;
+      if (!estimatedHours || Number(estimatedHours) <= 0) {
+        return res.status(400).json({ error: 'Une prévision de temps (estimatedHours > 0) est obligatoire' });
+      }
+
+      const requestResult = await pool.query(`SELECT * FROM project_client_requests WHERE id = $1`, [req.params.id]);
+      if (requestResult.rowCount === 0) return res.status(404).json({ error: 'Demande introuvable' });
+      const request = requestResult.rows[0];
+      if (request.status !== 'en_attente') return res.status(409).json({ error: 'Demande déjà traitée' });
+
+      if (role === 'dev' && !(await isChefDeProjet(req.session.user.id, request.project_id))) {
+        return res.status(403).json({ error: 'Seul le chef de projet peut traiter une demande client' });
+      }
+
+      const taskResult = await pool.query(
+        `INSERT INTO project_tasks (project_id, title, description, estimated_hours, origin)
+         VALUES ($1, $2, $3, $4, 'demande_client') RETURNING *`,
+        [request.project_id, request.title, request.description, Number(estimatedHours)]
+      );
+      const task = taskResult.rows[0];
+      try {
+        const githubIssueUrl = await createGitHubIssueForTask(task);
+        if (githubIssueUrl) task.github_issue_url = githubIssueUrl;
+      } catch (githubError) {
+        console.error('[Projets IT] Creation issue GitHub depuis demande client impossible', githubError.message || githubError);
+        task.github_sync_error = githubError.message || String(githubError);
+      }
+
+      await pool.query(`UPDATE project_client_requests SET status = 'validee', task_id = $1 WHERE id = $2`, [
+        task.id,
+        request.id
+      ]);
+
+      const clientResult = await pool.query(`SELECT * FROM app_accounts WHERE id = $1`, [request.client_account_id]);
+      const client = clientResult.rows[0];
+      if (client) {
+        await notifyClient({
+          email: client.email,
+          subject: `Votre demande "${request.title}" a été validée`,
+          html: `<p>Bonjour ${client.display_name},</p><p>Votre demande a été prise en compte et planifiée par l'équipe IT.</p>`
+        });
+      }
+
+      res.json({ request: { ...request, status: 'validee', task_id: task.id }, task });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/projects/requests/:id/rejeter', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      if (role === 'client' || role === 'directeur') return res.status(403).json({ error: 'Accès refusé' });
+
+      const requestResult = await pool.query(`SELECT * FROM project_client_requests WHERE id = $1`, [req.params.id]);
+      if (requestResult.rowCount === 0) return res.status(404).json({ error: 'Demande introuvable' });
+      const request = requestResult.rows[0];
+
+      if (role === 'dev' && !(await isChefDeProjet(req.session.user.id, request.project_id))) {
+        return res.status(403).json({ error: 'Seul le chef de projet peut traiter une demande client' });
+      }
+
+      await pool.query(`UPDATE project_client_requests SET status = 'rejetee' WHERE id = $1`, [req.params.id]);
+
+      const clientResult = await pool.query(`SELECT * FROM app_accounts WHERE id = $1`, [request.client_account_id]);
+      const client = clientResult.rows[0];
+      if (client) {
+        await notifyClient({
+          email: client.email,
+          subject: `Votre demande "${request.title}" a été rejetée`,
+          html: `<p>Bonjour ${client.display_name},</p><p>Votre demande n'a pas pu être retenue en l'état. N'hésitez pas à revenir vers l'équipe IT pour plus de détails.</p>`
+        });
+      }
+
+      res.json({ ok: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Messages / échanges — envoie un vrai e-mail via Microsoft Graph
+  // quand l'équipe écrit au client (server/graphMail.mjs).
+  // -------------------------------------------------------------------
+  app.get('/api/projects/:id/messages', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      const projectId = req.params.id;
+      const accountId = req.session.user.id;
+
+      if (role === 'client') {
+        const p = await pool.query(`SELECT client_account_id FROM projects WHERE id = $1`, [projectId]);
+        if (p.rowCount === 0 || p.rows[0].client_account_id !== accountId) {
+          return res.status(403).json({ error: 'Accès refusé' });
+        }
+      } else if (role === 'dev' && !(await isAssignedToProject(accountId, projectId))) {
+        return res.status(403).json({ error: 'Accès refusé' });
+      }
+
+      const result = await pool.query(
+        `SELECT m.*, a.display_name AS author_name, a.email AS author_email,
+                (SELECT json_agg(f.*) FROM project_files f WHERE f.message_id = m.id) AS files
+         FROM project_messages m JOIN app_accounts a ON a.id = m.author_account_id
+         WHERE m.project_id = $1 ORDER BY m.created_at ASC`,
+        [projectId]
+      );
+      res.json(result.rows);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/projects/messages', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      const { projectId, content } = req.body;
+      const accountId = req.session.user.id;
+      if (!projectId || !content) return res.status(400).json({ error: 'projectId et content requis' });
+
+      const projectResult = await pool.query(
+        `SELECT p.*, c.email AS client_email, c.display_name AS client_name
+         FROM projects p LEFT JOIN app_accounts c ON c.id = p.client_account_id WHERE p.id = $1`,
+        [projectId]
+      );
+      if (projectResult.rowCount === 0) return res.status(404).json({ error: 'Projet introuvable' });
+      const project = projectResult.rows[0];
+
+      if (role === 'client' && project.client_account_id !== accountId) {
+        return res.status(403).json({ error: 'Accès refusé' });
+      }
+      if (role === 'dev' && !(await isAssignedToProject(accountId, projectId))) {
+        return res.status(403).json({ error: 'Accès refusé' });
+      }
+      if (role === 'directeur') return res.status(403).json({ error: 'Accès refusé (lecture seule)' });
+
+      const recipientType = role === 'client' ? 'equipe' : 'client';
+      let emailSent = false;
+
+      if (recipientType === 'client' && project.client_email) {
+        emailSent = await notifyClient({
+          email: project.client_email,
+          subject: `Nouveau message sur votre projet "${project.name}"`,
+          html: `<p>Bonjour ${project.client_name},</p><p>${content.replace(/\n/g, '<br/>')}</p>`
+        });
+      }
+
+      const result = await pool.query(
+        `INSERT INTO project_messages (project_id, author_account_id, recipient_type, content, email_sent)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [projectId, accountId, recipientType, content, emailSent]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Fichiers
+  // -------------------------------------------------------------------
+  app.post('/api/projects/files', requireAuth, upload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'Fichier requis (champ "file")' });
+      const { projectId, messageId, clientRequestId } = req.body;
+
+      const result = await pool.query(
+        `INSERT INTO project_files (project_id, message_id, client_request_id, filename, storage_path, uploaded_by_account_id)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [projectId || null, messageId || null, clientRequestId || null, req.file.originalname, req.file.filename, req.session.user.id]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/projects/files/:id/download', requireAuth, async (req, res) => {
+    try {
+      const result = await pool.query(`SELECT * FROM project_files WHERE id = $1`, [req.params.id]);
+      if (result.rowCount === 0) return res.status(404).json({ error: 'Fichier introuvable' });
+      const file = result.rows[0];
+      const filePath = path.join(PROJECTS_DIR, file.storage_path);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Fichier introuvable sur le disque' });
+      res.download(filePath, file.filename);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Dashboard manager + reporting directeur
+  // -------------------------------------------------------------------
+  app.get('/api/projects-dashboard', requireAuth, requireRole('manager'), async (req, res) => {
+    try {
+      const projectsResult = await pool.query(`SELECT * FROM projects WHERE status != 'archive'`);
+      const projects = projectsResult.rows;
+
+      const tasksResult = await pool.query(
+        `SELECT * FROM project_tasks WHERE project_id = ANY($1::uuid[])`,
+        [projects.map((p) => p.id)]
+      );
+      const tasksByProject = tasksResult.rows.reduce((acc, t) => {
+        (acc[t.project_id] ||= []).push(t);
+        return acc;
+      }, {});
+
+      const nbParStatut = projects.reduce((acc, p) => {
+        acc[p.status] = (acc[p.status] || 0) + 1;
+        return acc;
+      }, {});
+
+      const chargeParProjet = projects.map((p) => {
+        const tasks = tasksByProject[p.id] || [];
+        return {
+          projetId: p.id,
+          nom: p.name,
+          tauxCompletude: completionRate(tasks),
+          chargeEstimeeH: tasks.reduce((s, t) => s + Number(t.estimated_hours), 0),
+          chargePasseeH: tasks.reduce((s, t) => s + Number(t.spent_hours), 0)
+        };
+      });
+
+      const membersResult = await pool.query(
+        `SELECT * FROM app_accounts ORDER BY display_name`
+      );
+      const allTasksResult = await pool.query(`SELECT * FROM project_tasks WHERE status != 'closed'`);
+      const chargeParTechnicien = membersResult.rows.map((u) => {
+        const tachesActives = allTasksResult.rows.filter((t) => t.assignee_account_id === u.id);
+        const chargeEstimeeH = tachesActives.reduce((s, t) => s + Number(t.estimated_hours), 0);
+        return {
+          userId: u.id,
+          nom: u.display_name,
+          chargeEstimeeH,
+          disponibilite: u.weekly_capacity_hours,
+          enSurcharge: chargeEstimeeH > u.weekly_capacity_hours
+        };
+      });
+
+      const demandesResult = await pool.query(`SELECT COUNT(*) FROM project_client_requests WHERE status = 'en_attente'`);
+
+      res.json({
+        nombreTotalProjets: projects.length,
+        nbParStatut,
+        chargeParProjet,
+        chargeParTechnicien,
+        chargeGlobaleEquipeH: chargeParTechnicien.reduce((s, u) => s + u.chargeEstimeeH, 0),
+        demandesEnAttente: Number(demandesResult.rows[0].count)
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/api/projects-reporting', requireAuth, requireRole('manager', 'directeur'), async (req, res) => {
+    try {
+      const projectsResult = await pool.query(
+        `SELECT p.*, c.display_name AS client_name
+         FROM projects p LEFT JOIN app_accounts c ON c.id = p.client_account_id
+         WHERE p.status != 'archive'`
+      );
+      const projects = projectsResult.rows;
+      const tasksResult = await pool.query(
+        `SELECT * FROM project_tasks WHERE project_id = ANY($1::uuid[])`,
+        [projects.map((p) => p.id)]
+      );
+      const tasksByProject = tasksResult.rows.reduce((acc, t) => {
+        (acc[t.project_id] ||= []).push(t);
+        return acc;
+      }, {});
+
+      const now = new Date();
+      const rapport = projects.map((p) => {
+        const tasks = tasksByProject[p.id] || [];
+        return {
+          id: p.id,
+          nom: p.name,
+          client: p.client_name,
+          statut: p.status,
+          tauxCompletude: completionRate(tasks),
+          chargeHoraireH: tasks.reduce((s, t) => s + Number(t.estimated_hours), 0),
+          dateEcheance: p.due_date,
+          enRetard: p.due_date ? new Date(p.due_date) < now && p.status !== 'closed' : false
+        };
+      });
+
+      res.json(rapport);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+}

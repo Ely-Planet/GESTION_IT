@@ -1,0 +1,127 @@
+export type ModuleRole = 'manager' | 'dev' | 'directeur' | 'client';
+
+export type Account = {
+  id: string;
+  email: string;
+  display_name: string;
+  is_it: boolean;
+  is_it_manager: boolean;
+  is_rh: boolean;
+  is_manager: boolean;
+  is_director: boolean;
+  weekly_capacity_hours: number;
+};
+
+export type ProjectListItem = {
+  id: string;
+  name: string;
+  description: string | null;
+  type: 'dev' | 'infra';
+  status: 'en_attente' | 'en_cours' | 'termine' | 'archive';
+  due_date: string | null;
+  tauxCompletude: number;
+  client_name?: string;
+  github_repo_url?: string | null;
+  chargeEstimeeH?: number;
+  chargePasseeH?: number;
+};
+
+export type Task = {
+  id: string;
+  project_id: string;
+  title: string;
+  description: string | null;
+  status: 'open' | 'closed';
+  assignee_account_id: string | null;
+  assignee_name?: string | null;
+  estimated_hours: string | number;
+  spent_hours: string | number;
+  origin: 'manuelle' | 'demande_client';
+  github_issue_url: string | null;
+};
+
+export type Assignment = {
+  id: string;
+  project_role: 'chef_de_projet' | 'contributeur';
+  account_id: string;
+  display_name: string;
+  email: string;
+  is_it: boolean;
+  is_it_manager: boolean;
+};
+
+export type ClientRequest = {
+  id: string;
+  project_id: string;
+  client_account_id: string;
+  title: string;
+  description: string | null;
+  status: 'en_attente' | 'validee' | 'rejetee';
+  task_id: string | null;
+  client_name?: string;
+};
+
+export type ProjectFile = {
+  id: string;
+  filename: string;
+};
+
+export type ProjectMessage = {
+  id: string;
+  author_account_id: string;
+  author_name: string;
+  recipient_type: 'equipe' | 'client';
+  content: string;
+  email_sent: boolean;
+  created_at: string;
+  files?: ProjectFile[] | null;
+};
+
+export type ProjectDetailData = ProjectListItem & {
+  tasks?: Task[];
+  assignments?: Assignment[];
+  clientRequests?: ClientRequest[];
+  estChefDeProjet?: boolean;
+};
+
+export type DashboardData = {
+  nombreTotalProjets: number;
+  nbParStatut: Record<string, number>;
+  chargeParProjet: { projetId: string; nom: string; tauxCompletude: number; chargeEstimeeH: number; chargePasseeH: number }[];
+  chargeParTechnicien: { userId: string; nom: string; chargeEstimeeH: number; disponibilite: number; enSurcharge: boolean }[];
+  chargeGlobaleEquipeH: number;
+  demandesEnAttente: number;
+};
+
+export type ReportingRow = {
+  id: string;
+  nom: string;
+  client: string | null;
+  statut: string;
+  tauxCompletude: number;
+  chargeHoraireH: number;
+  dateEcheance: string | null;
+  enRetard: boolean;
+};
+
+export const STATUS_LABELS: Record<string, string> = {
+  open: 'Ouverte',
+  closed: 'Fermée',
+  en_attente: 'En attente',
+  en_cours: 'En cours',
+  termine: 'Terminé',
+  archive: 'Archivé',
+  validee: 'Validée',
+  rejetee: 'Rejetée',
+};
+
+export const STATUS_BADGE_CLASSES: Record<string, string> = {
+  open: 'bg-emerald-100 text-emerald-700',
+  closed: 'bg-purple-100 text-purple-700',
+  en_attente: 'bg-ink-100 text-ink-700',
+  en_cours: 'bg-amber-100 text-amber-700',
+  termine: 'bg-emerald-100 text-emerald-700',
+  validee: 'bg-emerald-100 text-emerald-700',
+  rejettee: 'bg-red-100 text-red-700',
+  archive: 'bg-ink-100 text-ink-500',
+};

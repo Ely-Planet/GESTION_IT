@@ -7,12 +7,9 @@ type MicrosoftUser = {
   userPrincipalName: string;
 
   isIT: boolean;
-  isITManager: boolean;
   isRH: boolean;
   isManager: boolean;
   isDirector: boolean;
-  hasProjectAccess: boolean;
-  projectsOnly: boolean;
 };
 
 

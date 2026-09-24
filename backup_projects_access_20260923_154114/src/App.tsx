@@ -18,21 +18,13 @@ import { Building2 } from 'lucide-react';
 function Shell() {
   const { user, loading } = useAuth();
 const [page, setPage] = useState<PageKey>(
-  user?.projectsOnly
-    ? 'projects'
-    : (user?.isIT || user?.isITManager)
-      ? 'dashboard'
-      : 'onboardingrequest'
+  (user?.isIT || user?.isITManager)
+    ? 'dashboard'
+    : 'onboardingrequest'
 );
 
 if (
-  user?.projectsOnly &&
-  page !== 'projects'
-) {
-  setPage('projects');
-} else if (
   user &&
-  !user.projectsOnly &&
   !user.isIT &&
   !user.isITManager &&
   !user.isRH &&

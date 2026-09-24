@@ -39,14 +39,6 @@ const NAV_IT: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = 
   { key: 'audit', label: "Journal d'audit", icon: ScrollText },
 ];
 
-const NAV_PROJECTS_ONLY: {
-  key: PageKey;
-  label: string;
-  icon: typeof LayoutDashboard;
-}[] = [
-  { key: 'projects', label: 'Mes projets IT', icon: FolderKanban },
-];
-
 const NAV_LIMITED: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'projects', label: 'Mes projets IT', icon: FolderKanban },
   { key: 'onboardingrequest', label: "Demande d'onboarding", icon: FileSignature },
@@ -65,11 +57,15 @@ export default function Layout({
 const { profile, user, signOut } = useAuth();
 
 const navItems =
-  user?.projectsOnly
-    ? NAV_PROJECTS_ONLY
-    : (user?.isIT || user?.isITManager)
-      ? NAV_IT
-      : NAV_LIMITED;
+  (user?.isIT || user?.isITManager)
+    ? NAV_IT
+    : (
+        user?.isRH ||
+        user?.isManager ||
+        user?.isDirector
+      )
+        ? NAV_LIMITED
+        : NAV_LIMITED;
 
   return (
     <div className="min-h-screen flex bg-ink-50">

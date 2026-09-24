@@ -347,6 +347,40 @@ Service Informatique
   ]
 });
 
+await sendMailWithAttachments({
+  to: 'support@elyade.com',
+
+  subject: `OnBoarding de ${firstName} ${lastName}`,
+
+  html: `
+    <p>Bonjour,</p>
+
+    <p>
+      <strong>Onboarding de :</strong>
+      ${firstName} ${lastName}
+    </p>
+
+    <p>
+      <strong>Service :</strong>
+      ${
+        selectedGroups
+          .map(g => g.displayName)
+          .join(', ') || '-'
+      }
+    </p>
+
+    <p>
+      <strong>Date d'arrivée :</strong>
+      ${effectiveDate}
+    </p>
+
+    <p>
+      Cordialement,<br>
+      GESTION_IT
+    </p>
+  `
+});
+
 
 if (company_car === 'true' || company_car === true) {
 

@@ -954,50 +954,12 @@ const isITManager = Boolean(
 );
 
 const user = meResponse.data;
-
-let hasProjectAccess = false;
-
-try {
-  const projectAccessResult = await pool.query(
-    `
-    SELECT 1
-    FROM projects p
-    WHERE p.client_account_id = $1
-
-    UNION ALL
-
-    SELECT 1
-    FROM project_assignments pa
-    WHERE pa.account_id = $1
-
-    LIMIT 1
-    `,
-    [user.id]
-  );
-
-  hasProjectAccess = projectAccessResult.rowCount > 0;
-} catch (projectAccessError) {
-  console.error(
-    '[AUTH] Vérification accès aux projets impossible',
-    projectAccessError
-  );
-}
-
 const hasApplicationAccess =
   isIT ||
   isRH ||
   isManager ||
   isDirector ||
-  isITManager ||
-  hasProjectAccess;
-
-const projectsOnly =
-  hasProjectAccess &&
-  !isIT &&
-  !isRH &&
-  !isManager &&
-  !isDirector &&
-  !isITManager;
+  isITManager;
 
 if (!hasApplicationAccess) {
   console.warn('Accès refusé à GESTION_IT', {
@@ -1025,9 +987,7 @@ req.session.user = {
   isRH,
   isManager,
   isDirector,
-  isITManager,
-  hasProjectAccess,
-  projectsOnly
+  isITManager
 };
 
 try {
