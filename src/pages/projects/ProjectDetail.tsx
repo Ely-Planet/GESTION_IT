@@ -6,6 +6,7 @@ import { ProgressBar } from './ProjectUI';
 import TasksTab from './tabs/TasksTab';
 import RequestsTab from './tabs/RequestsTab';
 import TeamTab from './tabs/TeamTab';
+import ClientPicker from './ClientPicker';
 import type { Account, ProjectDetailData } from './types';
 
 export default function ProjectDetail({ projectId, onBack }: { projectId: string; onBack: () => void }) {
@@ -181,19 +182,15 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
           <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-ink-100">
             <span className="text-sm text-ink-600">Client :</span>
             {isManager ? (
-              <select
-                className="input w-72 text-sm py-1"
+              <ClientPicker
+                className="w-96"
+                clients={clients}
                 value={project.client_account_id || ''}
-                onChange={(e) => void changeClient(e.target.value)}
-              >
-                <option value="">Aucun client</option>
-                {project.client_account_id && !clients.some((c) => c.id === project.client_account_id) && (
-                  <option value={project.client_account_id}>{project.client_name || project.client_email}</option>
-                )}
-                {clients.map((client) => (
-                  <option key={client.id} value={client.id}>{client.display_name} ({client.email})</option>
-                ))}
-              </select>
+                currentLabel={project.client_name || project.client_email}
+                onChange={(clientAccountId) => {
+                  if (clientAccountId !== (project.client_account_id || '')) void changeClient(clientAccountId);
+                }}
+              />
             ) : (
               <span className="text-sm text-ink-900">{project.client_name || 'Aucun client'}</span>
             )}

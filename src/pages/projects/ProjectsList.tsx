@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react';
 import { projectsApi } from './api';
 import { useAuth } from '../../context/AuthContext';
 import { ProgressBar } from './ProjectUI';
+import ClientPicker from './ClientPicker';
 import type { Account, ProjectListItem } from './types';
 
 export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void }) {
@@ -105,18 +106,11 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
             onChange={(e) => setForm({ ...form, description: e.target.value })}
           />
           <div className="grid grid-cols-3 gap-3">
-            <select
-              className="input"
+            <ClientPicker
+              clients={clients}
               value={form.clientAccountId}
-              onChange={(e) => setForm({ ...form, clientAccountId: e.target.value })}
-            >
-              <option value="">Client interne (optionnel)</option>
-              {clients.map((client) => (
-                <option key={client.id} value={client.id}>
-                  {client.display_name} ({client.email})
-                </option>
-              ))}
-            </select>
+              onChange={(clientAccountId) => setForm({ ...form, clientAccountId })}
+            />
             <input
               className="input"
               type="date"
