@@ -518,8 +518,6 @@ app.use(
 app.use(cookieParser());
 app.use(express.json());
 
-app.post('/api/sync-microsoft-licenses', syncMicrosoftLicenses);
-
 // Synchronisation automatique des licences Microsoft toutes les 10 minutes.
 // Pas de node-cron : utilisation du scheduler natif de Node.js.
 let microsoftLicenseSyncRunning = false;
@@ -570,8 +568,6 @@ microsoftLicenseSyncTimer.unref();
 
 console.log('[LICENSE SYNC] Synchronisation automatique activée toutes les 10 minutes');
 
-app.post('/api/microsoft-users/sync', syncMicrosoftUsers);
-
 app.use(
   session({
     name: 'gestionit.sid',
@@ -586,6 +582,28 @@ app.use(
     }
   })
 );
+
+// Contrôle d'accès global des API. La connexion Microsoft n'admet que les
+// services IT et RH, les managers, les directeurs et les clients de projets
+// (voir /auth/callback). Un client de projet sans autre rôle (projectsOnly)
+// n'a accès qu'au module Projets IT, qui filtre lui-même ses projets.
+// Sans ce filtre, les API répondaient même sans connexion.
+const PROJECTS_ONLY_API = /^\/(projects(\/|-|$)|notifications(\/|$))/;
+
+app.use('/api', (req, res, next) => {
+  if (req.path === '/me') return next();
+  const user = req.session?.user;
+  if (!user) {
+    return res.status(401).json({ error: 'Non authentifié' });
+  }
+  if (user.projectsOnly && !PROJECTS_ONLY_API.test(req.path)) {
+    return res.status(403).json({ error: 'Accès réservé au module Projets IT' });
+  }
+  next();
+});
+
+app.post('/api/sync-microsoft-licenses', syncMicrosoftLicenses);
+app.post('/api/microsoft-users/sync', syncMicrosoftUsers);
 
 const msalClient = new ConfidentialClientApplication({
   auth: {

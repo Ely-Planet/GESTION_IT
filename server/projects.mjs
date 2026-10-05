@@ -167,6 +167,19 @@ async function syncItAccountsFromEntra() {
       );
     }
 
+    // Les personnes sorties du groupe Service Informatique ne sont plus
+    // comptées comme membres IT (les managers IT gardent leur statut).
+    const activeIds = members
+      .filter((member) => member?.id && member.accountEnabled !== false)
+      .map((member) => member.id);
+    if (activeIds.length > 0) {
+      await client.query(
+        `UPDATE app_accounts SET is_it = false
+         WHERE is_it = true AND is_it_manager = false AND NOT (id = ANY($1::uuid[]))`,
+        [activeIds]
+      );
+    }
+
     await client.query('COMMIT');
 
     console.log(
@@ -300,14 +313,20 @@ function projectLink(projectId) {
   return `${base}/?projet=${encodeURIComponent(projectId)}`;
 }
 
+// Charte de l'application (tailwind.config.js) : rose Elyade 600 #ca0088,
+// police Inter, boutons arrondis 8px (.btn-primary).
+const MAIL_FONT = "font-family:Inter,'Segoe UI',Arial,sans-serif";
+
 function clientMailHtml({ name, paragraphs, projectId, linkLabel = 'Ouvrir mon projet' }) {
   return [
+    `<div style="${MAIL_FONT};font-size:14px;line-height:1.6;color:#1f2937">`,
     `<p>Bonjour ${escapeHtml(name)},</p>`,
     ...paragraphs.map((paragraph) => `<p>${paragraph}</p>`),
     projectId
-      ? `<p><a href="${projectLink(projectId)}" style="display:inline-block;padding:10px 18px;background:#0f766e;color:#ffffff;border-radius:6px;text-decoration:none">${escapeHtml(linkLabel)}</a></p>`
+      ? `<p style="margin:24px 0"><a href="${projectLink(projectId)}" style="display:inline-block;padding:10px 20px;background:#ca0088;color:#ffffff;border-radius:8px;${MAIL_FONT};font-size:14px;font-weight:600;text-decoration:none">${escapeHtml(linkLabel)}</a></p>`
       : '',
-    `<p>L'équipe informatique</p>`
+    `<p>L'équipe informatique</p>`,
+    '</div>'
   ].join('');
 }
 
@@ -2027,12 +2046,16 @@ export function registerProjectRoutes(app) {
         return res.status(403).json({ error: 'Seul le chef de projet peut traiter une demande client' });
       }
 
+      const reason = String(req.body.reason || '').trim();
+      if (!reason) return res.status(400).json({ error: 'Le motif du rejet est obligatoire' });
+
       await pool.query(
-        `UPDATE project_client_requests SET status = 'rejetee', reviewed_by = $1, reviewed_at = now() WHERE id = $2`,
-        [req.session.user.id, req.params.id]
+        `UPDATE project_client_requests
+         SET status = 'rejetee', rejection_reason = $1, reviewed_by = $2, reviewed_at = now()
+         WHERE id = $3`,
+        [reason, req.session.user.id, req.params.id]
       );
 
-      const reason = String(req.body.reason || '').trim();
       const clientResult = await pool.query(`SELECT * FROM app_accounts WHERE id = $1`, [request.client_account_id]);
       const requester = clientResult.rows[0];
       if (requester) {
@@ -2043,9 +2066,8 @@ export function registerProjectRoutes(app) {
             name: requester.display_name,
             paragraphs: [
               `Votre demande <strong>« ${escapeHtml(request.title)} »</strong> n'a pas pu être retenue en l'état.`,
-              reason
-                ? `Motif : ${escapeHtml(reason).replace(/\n/g, '<br/>')}`
-                : "N'hésitez pas à revenir vers l'équipe informatique pour plus de détails."
+              `<strong>Motif :</strong> ${escapeHtml(reason).replace(/\n/g, '<br/>')}`,
+              "N'hésitez pas à revenir vers l'équipe informatique pour plus de détails."
             ],
             projectId: request.project_id
           })
@@ -2211,17 +2233,44 @@ export function registerProjectRoutes(app) {
         };
       });
 
+      // Techniciens = membres du service IT uniquement (app_accounts contient
+      // aussi les clients et toute personne s'étant connectée).
       const membersResult = await pool.query(
-        `SELECT * FROM app_accounts ORDER BY display_name`
+        `SELECT * FROM app_accounts WHERE is_it = true OR is_it_manager = true ORDER BY display_name`
       );
-      const allTasksResult = await pool.query(`SELECT * FROM project_tasks WHERE status <> 'done'`);
+      const assignmentsResult = await pool.query(
+        `SELECT account_id, project_id FROM project_assignments WHERE project_id = ANY($1::uuid[])`,
+        [projects.map((p) => p.id)]
+      );
+      const projectNames = Object.fromEntries(projects.map((p) => [p.id, p.name]));
+      const activeTasks = tasksResult.rows.filter((t) => t.status !== 'done');
       const chargeParTechnicien = membersResult.rows.map((u) => {
-        const tachesActives = allTasksResult.rows.filter((t) => t.assignee_account_id === u.id);
+        const tachesActives = activeTasks.filter((t) => t.assignee_account_id === u.id);
+        const parProjet = {};
+        for (const t of tachesActives) {
+          const entry = (parProjet[t.project_id] ||= {
+            projetId: t.project_id,
+            nom: projectNames[t.project_id],
+            chargeEstimeeH: 0,
+            chargePasseeH: 0,
+            nbTaches: 0
+          });
+          entry.chargeEstimeeH += Number(t.estimated_hours);
+          entry.chargePasseeH += Number(t.spent_hours);
+          entry.nbTaches += 1;
+        }
+        // Projets du technicien : ceux où il est dans l'équipe ou a une tâche active.
+        const projetIds = new Set([
+          ...assignmentsResult.rows.filter((a) => a.account_id === u.id).map((a) => a.project_id),
+          ...Object.keys(parProjet)
+        ]);
         const chargeEstimeeH = tachesActives.reduce((s, t) => s + Number(t.estimated_hours), 0);
         return {
           userId: u.id,
           nom: u.display_name,
           chargeEstimeeH,
+          nbProjets: projetIds.size,
+          chargeParProjet: Object.values(parProjet).sort((a, b) => b.chargeEstimeeH - a.chargeEstimeeH),
           disponibilite: u.weekly_capacity_hours,
           enSurcharge: chargeEstimeeH > u.weekly_capacity_hours
         };

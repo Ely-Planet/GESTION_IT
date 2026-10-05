@@ -87,6 +87,7 @@ export type ClientRequest = {
   task_status?: Task['status'] | null;
   original_title?: string | null;
   original_description?: string | null;
+  rejection_reason?: string | null;
   files?: ProjectFile[] | null;
   created_at?: string;
   client_name?: string;
@@ -124,7 +125,15 @@ export type DashboardData = {
   nombreTotalProjets: number;
   nbParStatut: Record<string, number>;
   chargeParProjet: { projetId: string; nom: string; tauxCompletude: number; chargeEstimeeH: number; chargePasseeH: number }[];
-  chargeParTechnicien: { userId: string; nom: string; chargeEstimeeH: number; disponibilite: number; enSurcharge: boolean }[];
+  chargeParTechnicien: {
+    userId: string;
+    nom: string;
+    chargeEstimeeH: number;
+    nbProjets: number;
+    chargeParProjet: { projetId: string; nom: string; chargeEstimeeH: number; chargePasseeH: number; nbTaches: number }[];
+    disponibilite: number;
+    enSurcharge: boolean;
+  }[];
   chargeGlobaleEquipeH: number;
   demandesEnAttente: number;
 };

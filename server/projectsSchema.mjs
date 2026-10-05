@@ -45,6 +45,7 @@ ALTER TABLE project_client_requests ADD COLUMN IF NOT EXISTS original_title text
 ALTER TABLE project_client_requests ADD COLUMN IF NOT EXISTS original_description text;
 ALTER TABLE project_client_requests ADD COLUMN IF NOT EXISTS reviewed_by uuid REFERENCES app_accounts(id);
 ALTER TABLE project_client_requests ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+ALTER TABLE project_client_requests ADD COLUMN IF NOT EXISTS rejection_reason text;
 
 -- Commentaires de tâche (miroir des commentaires d'issue GitHub)
 CREATE TABLE IF NOT EXISTS project_task_comments (

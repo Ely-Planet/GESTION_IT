@@ -63,18 +63,85 @@ export default function DashboardView() {
       </div>
 
       <div className="card p-5">
-        <h2 className="font-semibold text-ink-900 mb-4">Charge horaire par projet (estimée)</h2>
-        {data.chargeParProjet.map((p) => (
-          <BarRow key={p.projetId} label={p.nom} value={p.chargeEstimeeH} max={maxProjectCharge} />
-        ))}
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+          <h2 className="font-semibold text-ink-900">Temps par projet : estimé et réel</h2>
+          <div className="flex items-center gap-4 text-xs text-ink-500">
+            <span className="flex items-center gap-1"><span className="w-3 h-2 rounded-full bg-elyade-200" /> Estimé</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-2 rounded-full bg-elyade-600" /> Réel</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-2 rounded-full bg-red-500" /> Réel &gt; estimé</span>
+          </div>
+        </div>
+        {data.chargeParProjet.length === 0 && <p className="text-sm text-ink-500">Aucun projet actif.</p>}
+        {data.chargeParProjet.map((p) => {
+          const over = p.chargePasseeH > p.chargeEstimeeH;
+          return (
+            <div key={p.projetId} className="mb-4">
+              <div className="flex justify-between text-xs text-ink-600 mb-1">
+                <span className="font-medium text-ink-800">{p.nom}</span>
+                <span className={over ? 'text-red-600 font-medium' : ''}>
+                  Réel {p.chargePasseeH}h / estimé {p.chargeEstimeeH}h
+                </span>
+              </div>
+              <div className="w-full bg-ink-100 rounded-full h-2 mb-1">
+                <div className="h-2 rounded-full bg-elyade-200" style={{ width: `${(p.chargeEstimeeH / maxProjectCharge) * 100}%` }} />
+              </div>
+              <div className="w-full bg-ink-100 rounded-full h-2">
+                <div
+                  className={`h-2 rounded-full ${over ? 'bg-red-500' : 'bg-elyade-600'}`}
+                  style={{ width: `${(p.chargePasseeH / maxProjectCharge) * 100}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       <div className="card p-5">
         <h2 className="font-semibold text-ink-900 mb-4">Charge active par technicien / développeur</h2>
-        {data.chargeParTechnicien.map((u) => (
-          <BarRow key={u.userId} label={`${u.nom} (dispo. ${u.disponibilite}h)`} value={u.chargeEstimeeH} max={maxTechCharge} highlight={u.enSurcharge} />
-        ))}
-        <p className="text-xs text-ink-400 mt-1">En rouge : charge active supérieure à la disponibilité déclarée.</p>
+        {data.chargeParTechnicien.length === 0 && <p className="text-sm text-ink-500">Aucun membre du service IT.</p>}
+        <div className="space-y-5">
+          {data.chargeParTechnicien.map((u) => (
+            <div key={u.userId} className="border-b border-ink-100 pb-4 last:border-0 last:pb-0">
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <span className="font-medium text-ink-900">{u.nom}</span>
+                <span className="badge bg-ink-100 text-ink-700">
+                  {u.nbProjets} projet{u.nbProjets > 1 ? 's' : ''}
+                </span>
+              </div>
+              <BarRow
+                label={`Charge active (dispo. ${u.disponibilite}h)`}
+                value={u.chargeEstimeeH}
+                max={maxTechCharge}
+                highlight={u.enSurcharge}
+              />
+              {u.chargeParProjet.length > 0 ? (
+                <table className="w-full text-xs text-ink-600">
+                  <thead>
+                    <tr className="text-ink-400">
+                      <th className="text-left font-normal pb-1">Projet</th>
+                      <th className="text-right font-normal pb-1">Tâches actives</th>
+                      <th className="text-right font-normal pb-1">Estimé</th>
+                      <th className="text-right font-normal pb-1">Réel</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {u.chargeParProjet.map((p) => (
+                      <tr key={p.projetId} className="border-t border-ink-50">
+                        <td className="py-1">{p.nom}</td>
+                        <td className="py-1 text-right">{p.nbTaches}</td>
+                        <td className="py-1 text-right">{p.chargeEstimeeH}h</td>
+                        <td className={`py-1 text-right ${p.chargePasseeH > p.chargeEstimeeH ? 'text-red-600 font-medium' : ''}`}>{p.chargePasseeH}h</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="text-xs text-ink-400">Aucune tâche active affectée.</p>
+              )}
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-ink-400 mt-3">En rouge : charge active supérieure à la disponibilité déclarée, ou temps réel supérieur à l'estimé.</p>
       </div>
 
       <div className="card p-5">

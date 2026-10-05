@@ -131,8 +131,12 @@ export default function RequestsTab({
   }
 
   async function rejeter(r: ClientRequest) {
-    const reason = prompt('Motif du rejet (envoyé au client, facultatif) :');
+    const reason = prompt('Motif du rejet (obligatoire, envoyé au client) :');
     if (reason === null) return;
+    if (!reason.trim()) {
+      alert('Merci d’indiquer le motif du rejet.');
+      return;
+    }
     try {
       await projectsApi.rejectRequest(r.id, reason);
       void load();
@@ -225,6 +229,11 @@ export default function RequestsTab({
                       {teamView && r.original_title && (
                         <p className="text-xs text-ink-400 mt-1">
                           Demande d'origine : « {r.original_title} »
+                        </p>
+                      )}
+                      {r.status === 'rejetee' && r.rejection_reason && (
+                        <p className="text-sm text-red-700 bg-red-50 rounded px-2 py-1 mt-2 whitespace-pre-wrap">
+                          <span className="font-medium">Motif du rejet :</span> {r.rejection_reason}
                         </p>
                       )}
                     </>
