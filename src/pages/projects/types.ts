@@ -40,6 +40,7 @@ export type Task = {
   spent_hours: string | number;
   origin: 'manuelle' | 'demande_client';
   github_issue_url: string | null;
+  github_item_id?: string | null;
   completed_at?: string | null;
   comment_count?: number;
   files?: ProjectFile[] | null;

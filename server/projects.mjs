@@ -951,6 +951,42 @@ async function createGitHubItemForTask(task, { attachmentsCount = 0 } = {}) {
   return linkedTask;
 }
 
+// Retire la carte du tableau GitHub (un brouillon est ainsi supprimé) et
+// ferme l'issue liée comme "non planifiée".
+async function removeTaskFromGitHub(task) {
+  if (task.github_item_id) {
+    let boardId = null;
+    try {
+      const data = await githubGraphQL(
+        `query GestionItItemProject($itemId: ID!) {
+          node(id: $itemId) { ... on ProjectV2Item { project { id } } }
+        }`,
+        { itemId: task.github_item_id }
+      );
+      boardId = data.node?.project?.id || null;
+    } catch (error) {
+      // Carte déjà supprimée dans GitHub : rien à retirer.
+      if (!/NOT_FOUND/.test(error.message || '')) throw error;
+    }
+    if (boardId) {
+      await githubGraphQL(
+        `mutation DeleteGestionItItem($projectId: ID!, $itemId: ID!) {
+          deleteProjectV2Item(input: { projectId: $projectId, itemId: $itemId }) { deletedItemId }
+        }`,
+        { projectId: boardId, itemId: task.github_item_id }
+      );
+    }
+  }
+  const issue = parseGitHubIssueUrl(task.github_issue_url);
+  if (issue) {
+    await githubRequest(
+      `/repos/${encodeURIComponent(issue.owner)}/${encodeURIComponent(issue.repo)}/issues/${issue.number}`,
+      'PATCH',
+      { state: 'closed', state_reason: 'not_planned' }
+    );
+  }
+}
+
 // Commentaires de l'issue GitHub -> table project_task_comments.
 async function syncTaskCommentsFromGitHub(task) {
   const issue = parseGitHubIssueUrl(task.github_issue_url);
@@ -1800,6 +1836,46 @@ export function registerProjectRoutes(app) {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Suppression d'une tâche : manager ou chef de projet. La carte est d'abord
+  // retirée du tableau GitHub (sinon la synchro la recréerait) et l'issue fermée.
+  app.delete('/api/projects/tasks/:id', requireAuth, async (req, res) => {
+    try {
+      const task = await loadTaskForUser(req, res, { write: true });
+      if (!task) return;
+      const role = getModuleRole(req.session.user);
+      if (role !== 'manager' && !(await isChefDeProjet(req.session.user.id, task.project_id))) {
+        return res.status(403).json({ error: 'Seul le manager ou le chef de projet peut supprimer une tâche' });
+      }
+
+      try {
+        await removeTaskFromGitHub(task);
+      } catch (githubError) {
+        console.error('[Projets IT] Suppression GitHub impossible', githubError.message || githubError);
+        return res.status(502).json({
+          error: `Suppression annulée : la carte n'a pas pu être retirée de GitHub (${githubError.message || githubError})`
+        });
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        // La demande client d'origine reste validée, sans tâche liée.
+        await client.query(`UPDATE project_client_requests SET task_id = NULL WHERE task_id = $1`, [task.id]);
+        await client.query(`DELETE FROM project_tasks WHERE id = $1`, [task.id]);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+      res.status(204).end();
+    } catch (error) {
+      console.error(error);
+      if (!res.headersSent) res.status(500).json({ error: error.message });
     }
   });
 

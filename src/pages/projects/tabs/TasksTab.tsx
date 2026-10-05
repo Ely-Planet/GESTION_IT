@@ -338,6 +338,12 @@ export default function TasksTab({ project, team, onChanged }: {
       {detailTask && (
         <TaskDetail
           task={detailTask}
+          canDelete={canCreateTasks}
+          onDeleted={() => {
+            setLocalTasks((current) => current.filter((task) => task.id !== detailTask.id));
+            setDetailTaskId(null);
+            onChanged();
+          }}
           onClose={() => setDetailTaskId(null)}
           onCountChange={(count) =>
             setLocalTasks((current) =>

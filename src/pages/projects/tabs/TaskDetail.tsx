@@ -1,16 +1,35 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, Paperclip, X } from 'lucide-react';
+import { ExternalLink, Paperclip, Trash2, X } from 'lucide-react';
 import { projectsApi } from '../api';
 import { StatusBadge } from '../ProjectUI';
 import type { Task, TaskComment } from '../types';
 
 // Panneau latéral d'une tâche : description complète, pièces jointes et
 // commentaires (synchronisés avec l'issue GitHub liée).
-export default function TaskDetail({ task, onClose, onCountChange }: {
+export default function TaskDetail({ task, canDelete, onClose, onCountChange, onDeleted }: {
   task: Task;
+  canDelete: boolean;
   onClose: () => void;
   onCountChange: (count: number) => void;
+  onDeleted: () => void;
 }) {
+  const [deleting, setDeleting] = useState(false);
+
+  async function deleteTask() {
+    const githubNote = task.github_issue_url || task.github_item_id
+      ? '\n\nLa carte sera aussi retirée du tableau GitHub (et l’issue fermée).'
+      : '';
+    if (!confirm(`Supprimer définitivement la tâche « ${task.title} » ?\nSes commentaires et le temps passé saisi seront supprimés.${githubNote}`)) return;
+    setDeleting(true);
+    try {
+      await projectsApi.deleteTask(task.id);
+      onDeleted();
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors de la suppression');
+      setDeleting(false);
+    }
+  }
+
   const [comments, setComments] = useState<TaskComment[]>([]);
   const [githubError, setGithubError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,9 +106,21 @@ export default function TaskDetail({ task, onClose, onCountChange }: {
               </a>
             )}
           </div>
-          <button type="button" className="btn-ghost p-1" onClick={onClose} aria-label="Fermer">
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            {canDelete && (
+              <button
+                type="button"
+                className="btn-ghost text-sm text-red-600 hover:text-red-700"
+                disabled={deleting}
+                onClick={() => void deleteTask()}
+              >
+                <Trash2 className="w-4 h-4" /> {deleting ? 'Suppression…' : 'Supprimer'}
+              </button>
+            )}
+            <button type="button" className="btn-ghost p-1" onClick={onClose} aria-label="Fermer">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-6">
