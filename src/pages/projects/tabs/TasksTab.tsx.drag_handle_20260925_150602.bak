@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { GripVertical } from 'lucide-react';
 import { projectsApi } from '../api';
 import { StatusBadge } from '../ProjectUI';
 import type { Account, ProjectDetailData, Task } from '../types';
@@ -100,31 +99,20 @@ export default function TasksTab({ project, team, onChanged }: {
     const updating = updatingTaskId === task.id;
     return (
       <article
-        className={`card p-3 transition-all ${updating ? 'opacity-60 pointer-events-none' : 'hover:shadow-elevated'} ${draggedTaskId === task.id ? 'opacity-40 scale-[0.98]' : ''}`}
+        draggable={!updating}
+        onDragStart={(e) => {
+          setDraggedTaskId(task.id);
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', task.id);
+        }}
+        onDragEnd={() => {
+          setDraggedTaskId(null);
+          setDragOverStatus(null);
+        }}
+        className={`card p-3 transition-all ${updating ? 'opacity-60 pointer-events-none' : 'cursor-grab active:cursor-grabbing hover:shadow-elevated'} ${draggedTaskId === task.id ? 'opacity-40 scale-[0.98]' : ''}`}
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="flex items-start gap-2 min-w-0">
-            <button
-              type="button"
-              draggable={!updating}
-              aria-label="Déplacer la tâche"
-              title="Glisser pour déplacer"
-              className="mt-0.5 shrink-0 cursor-grab active:cursor-grabbing text-ink-400 hover:text-ink-700 touch-none"
-              onDragStart={(event) => {
-                event.stopPropagation();
-                setDraggedTaskId(task.id);
-                event.dataTransfer.effectAllowed = 'move';
-                event.dataTransfer.setData('text/plain', task.id);
-              }}
-              onDragEnd={() => {
-                setDraggedTaskId(null);
-                setDragOverStatus(null);
-              }}
-            >
-              <GripVertical className="w-4 h-4" />
-            </button>
-            <p className="font-medium text-ink-900 break-words">{task.title}</p>
-          </div>
+          <p className="font-medium text-ink-900">{task.title}</p>
           <StatusBadge status={task.status} />
         </div>
         {task.description && <p className="text-sm text-ink-500 mt-2 line-clamp-3">{task.description}</p>}

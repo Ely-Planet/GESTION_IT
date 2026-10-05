@@ -14,7 +14,7 @@ export default function ReportingView() {
   if (loading) return <div className="p-6 text-ink-500">Chargement...</div>;
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-6 w-full max-w-[1800px] mx-auto">
       <h1 className="text-xl font-semibold text-ink-900 mb-4">Reporting projets (lecture seule)</h1>
       <div className="card overflow-x-auto">
         <table className="table-base">

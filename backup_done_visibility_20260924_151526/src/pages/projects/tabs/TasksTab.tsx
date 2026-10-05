@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { GripVertical } from 'lucide-react';
+import { useState } from 'react';
 import { projectsApi } from '../api';
 import { StatusBadge } from '../ProjectUI';
 import type { Account, ProjectDetailData, Task } from '../types';
@@ -13,27 +12,12 @@ export default function TasksTab({ project, team, onChanged }: {
   onChanged: () => void;
 }) {
   const [showForm, setShowForm] = useState(false);
-  const [showOldDone, setShowOldDone] = useState(false);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
   const [updatingTaskId, setUpdatingTaskId] = useState<string | null>(null);
   const [form, setForm] = useState({ title: '', description: '', assigneeAccountId: '', estimatedHours: '' });
   const canCreateTasks = Boolean(project.estChefDeProjet);
-  const [localTasks, setLocalTasks] = useState<Task[]>(project.tasks || []);
-  const tasks = localTasks;
-
-  useEffect(() => {
-    setLocalTasks(project.tasks || []);
-  }, [project.tasks]);
-  const doneCutoff = Date.now() - 5 * 24 * 60 * 60 * 1000;
-  const oldDoneTasks = tasks.filter((task) =>
-    task.status === 'done' &&
-    Boolean(task.completed_at) &&
-    new Date(task.completed_at as string).getTime() < doneCutoff
-  );
-  const visibleTasks = showOldDone
-    ? tasks
-    : tasks.filter((task) => !oldDoneTasks.some((doneTask) => doneTask.id === task.id));
+  const tasks = project.tasks || [];
 
   async function createTask(e: React.FormEvent) {
     e.preventDefault();
@@ -54,19 +38,11 @@ export default function TasksTab({ project, team, onChanged }: {
   }
 
   async function updateStatus(taskId: string, status: TaskStatus) {
-    const previousTasks = localTasks;
-
-    setLocalTasks((current) =>
-      current.map((task) =>
-        task.id === taskId ? { ...task, status } : task
-      )
-    );
     setUpdatingTaskId(taskId);
-
     try {
       await projectsApi.updateTask(taskId, { status });
+      onChanged();
     } catch (err: any) {
-      setLocalTasks(previousTasks);
       alert(err.message || 'Erreur lors du changement de statut');
     } finally {
       setUpdatingTaskId(null);
@@ -82,17 +58,11 @@ export default function TasksTab({ project, team, onChanged }: {
     }
   }
 
-  async function dropTask(status: TaskStatus, taskId: string) {
-    const task = localTasks.find((item) => item.id === taskId);
-
-    if (!task || task.status === status) {
-      setDraggedTaskId(null);
-      setDragOverStatus(null);
-      return;
-    }
-
+  async function dropTask(status: TaskStatus) {
+    const task = tasks.find((item) => item.id === draggedTaskId);
     setDraggedTaskId(null);
     setDragOverStatus(null);
+    if (!task || task.status === status) return;
     await updateStatus(task.id, status);
   }
 
@@ -100,31 +70,17 @@ export default function TasksTab({ project, team, onChanged }: {
     const updating = updatingTaskId === task.id;
     return (
       <article
-        className={`card p-3 transition-all ${updating ? 'opacity-60 pointer-events-none' : 'hover:shadow-elevated'} ${draggedTaskId === task.id ? 'opacity-40 scale-[0.98]' : ''}`}
+        draggable={!updating}
+        onDragStart={(e) => {
+          setDraggedTaskId(task.id);
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', task.id);
+        }}
+        onDragEnd={() => { setDraggedTaskId(null); setDragOverStatus(null); }}
+        className={`card p-3 transition-all ${updating ? 'opacity-60 pointer-events-none' : 'cursor-grab active:cursor-grabbing hover:shadow-elevated'} ${draggedTaskId === task.id ? 'opacity-40 scale-[0.98]' : ''}`}
       >
         <div className="flex items-start justify-between gap-2">
-          <div className="flex items-start gap-2 min-w-0">
-            <button
-              type="button"
-              draggable={!updating}
-              aria-label="Déplacer la tâche"
-              title="Glisser pour déplacer"
-              className="mt-0.5 shrink-0 cursor-grab active:cursor-grabbing text-ink-400 hover:text-ink-700 touch-none"
-              onDragStart={(event) => {
-                event.stopPropagation();
-                setDraggedTaskId(task.id);
-                event.dataTransfer.effectAllowed = 'move';
-                event.dataTransfer.setData('text/plain', task.id);
-              }}
-              onDragEnd={() => {
-                setDraggedTaskId(null);
-                setDragOverStatus(null);
-              }}
-            >
-              <GripVertical className="w-4 h-4" />
-            </button>
-            <p className="font-medium text-ink-900 break-words">{task.title}</p>
-          </div>
+          <p className="font-medium text-ink-900">{task.title}</p>
           <StatusBadge status={task.status} />
         </div>
         {task.description && <p className="text-sm text-ink-500 mt-2 line-clamp-3">{task.description}</p>}
@@ -156,27 +112,7 @@ export default function TasksTab({ project, team, onChanged }: {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-semibold text-ink-900">Tâches ({tasks.length})</h3>
-        <div className="flex items-center gap-2">
-          {oldDoneTasks.length > 0 && (
-            <button
-              type="button"
-              className="btn-ghost text-sm"
-              onClick={() => setShowOldDone((value) => !value)}
-            >
-              {showOldDone
-                ? 'Masquer les Done anciens'
-                : `Afficher les Done anciens (${oldDoneTasks.length})`}
-            </button>
-          )}
-          {canCreateTasks && (
-            <button
-              className="btn-secondary text-sm"
-              onClick={() => setShowForm((value) => !value)}
-            >
-              + Ajouter une tâche
-            </button>
-          )}
-        </div>
+        {canCreateTasks && <button className="btn-secondary text-sm" onClick={() => setShowForm((v) => !v)}>+ Ajouter une tâche</button>}
       </div>
 
       {canCreateTasks && showForm && (
@@ -199,7 +135,7 @@ export default function TasksTab({ project, team, onChanged }: {
 
       <div className="flex gap-4 overflow-x-auto pb-4 gap-4 items-start">
         {STATUSES.map((status) => {
-          const columnTasks = visibleTasks.filter((task) => task.status === status);
+          const columnTasks = tasks.filter((task) => task.status === status);
           const columnConfig = {
             backlog: { title: 'BACKLOG', subtitle: 'Non démarré', style: 'border-emerald-200 bg-emerald-50/50' },
             ready: { title: 'READY', subtitle: 'Prêt à démarrer', style: 'border-blue-200 bg-blue-50/50' },
@@ -212,11 +148,7 @@ export default function TasksTab({ project, team, onChanged }: {
               key={status}
               onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverStatus(status); }}
               onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverStatus(null); }}
-              onDrop={(e) => {
-                e.preventDefault();
-                const taskId = e.dataTransfer.getData('text/plain');
-                if (taskId) void dropTask(status, taskId);
-              }}
+              onDrop={(e) => { e.preventDefault(); void dropTask(status); }}
               className={`rounded-xl border p-3 min-h-[360px] min-w-[320px] w-[320px] flex-shrink-0 transition-all ${columnConfig.style} ${dragOverStatus === status ? 'ring-2 ring-elyade-500 ring-offset-2 scale-[1.01]' : ''}`}
             >
               <div className="flex items-center justify-between mb-3 px-1">

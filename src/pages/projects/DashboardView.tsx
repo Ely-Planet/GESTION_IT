@@ -33,7 +33,7 @@ export default function DashboardView() {
   const maxTechCharge = Math.max(1, ...data.chargeParTechnicien.map((u) => Math.max(u.chargeEstimeeH, u.disponibilite)));
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    <div className="p-6 w-full max-w-[1800px] mx-auto space-y-6">
       <h1 className="text-xl font-semibold text-ink-900">Dashboard Projets IT</h1>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

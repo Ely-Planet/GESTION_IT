@@ -13,7 +13,7 @@ export type Account = {
 };
 
 export type ProjectListItem = {
-  project_state?: 'new' | 'in_progress' | 'maintenance' | 'closed';
+  project_state?: 'active' | 'maintenance' | 'closed';
   closed_at?: string | null;
   id: string;
   name: string;
@@ -81,7 +81,7 @@ export type ProjectMessage = {
 };
 
 export type ProjectDetailData = ProjectListItem & {
-  project_state?: 'new' | 'in_progress' | 'maintenance' | 'closed';
+  project_state?: 'active' | 'maintenance' | 'closed';
   closed_at?: string | null;
   tasks?: Task[];
   assignments?: Assignment[];

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { projectsApi } from './api';
 import { useAuth } from '../../context/AuthContext';
-import { ProgressBar } from './ProjectUI';
+import { ProgressBar, StatusBadge } from './ProjectUI';
 import type { Account, ProjectListItem } from './types';
 
 export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void }) {
@@ -58,8 +58,8 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
   const visibleProjects = projects
     .filter((p) => showClosedProjects || p.project_state !== 'closed')
     .sort((a, b) => {
-      const order = { new: 0, in_progress: 1, maintenance: 2, closed: 3 } as const;
-      return (order[a.project_state || 'new'] ?? 0) - (order[b.project_state || 'new'] ?? 0);
+      const order = { active: 0, maintenance: 1, closed: 2 } as const;
+      return (order[a.project_state || 'active'] ?? 0) - (order[b.project_state || 'active'] ?? 0);
     });
 
 
@@ -197,19 +197,13 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
                   <p className="text-sm text-ink-500">{p.type === 'dev' ? 'Développement' : 'Infrastructure'}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  {(p.project_state || 'new') === 'new' && (
-                    <span className="badge bg-blue-100 text-blue-700">Nouveau</span>
-                  )}
-                  {p.project_state === 'in_progress' && (
-                    <span className="badge bg-emerald-100 text-emerald-700">En cours</span>
-                  )}
                   {p.project_state === 'maintenance' && (
                     <span className="badge bg-amber-100 text-amber-700">Maintenance</span>
                   )}
                   {p.project_state === 'closed' && (
                     <span className="badge bg-ink-100 text-ink-600">Clôturé</span>
                   )}
-
+                  <StatusBadge status={p.status} />
                 </div>
               </div>
               {p.description && <p className="text-sm text-ink-600 mt-2 line-clamp-2">{p.description}</p>}

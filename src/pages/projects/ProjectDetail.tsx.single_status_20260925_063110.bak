@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { projectsApi } from './api';
 import { useAuth } from '../../context/AuthContext';
-import { ProgressBar } from './ProjectUI';
+import { ProgressBar, StatusBadge } from './ProjectUI';
 import TasksTab from './tabs/TasksTab';
 import RequestsTab from './tabs/RequestsTab';
 import MessagesTab from './tabs/MessagesTab';
@@ -98,7 +98,7 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
                     ? 'En cours'
                     : 'Nouveau'}
             </span>
-
+            <StatusBadge status={project.status} />
             {isManager && project.project_state !== 'closed' && (
               <button
                 className="btn-secondary text-sm"

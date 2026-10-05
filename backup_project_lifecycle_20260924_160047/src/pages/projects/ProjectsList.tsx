@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { projectsApi } from './api';
 import { useAuth } from '../../context/AuthContext';
-import { ProgressBar } from './ProjectUI';
+import { ProgressBar, StatusBadge } from './ProjectUI';
 import type { Account, ProjectListItem } from './types';
 
 export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void }) {
@@ -15,7 +15,6 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
   const [clients, setClients] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [showClosedProjects, setShowClosedProjects] = useState(false);
   const [form, setForm] = useState({
     name: '',
     description: '',
@@ -54,32 +53,15 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
 
   if (loading) return <div className="p-6 text-ink-500">Chargement...</div>;
 
-  const closedProjectsCount = projects.filter((p) => p.project_state === 'closed').length;
-  const visibleProjects = projects
-    .filter((p) => showClosedProjects || p.project_state !== 'closed')
-    .sort((a, b) => {
-      const order = { new: 0, in_progress: 1, maintenance: 2, closed: 3 } as const;
-      return (order[a.project_state || 'new'] ?? 0) - (order[b.project_state || 'new'] ?? 0);
-    });
-
-
-
   return (
     <div className="p-6 w-full max-w-[1800px] mx-auto">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-ink-900">{isClient ? 'Mes projets' : 'Projets IT'}</h1>
-        <div className="flex items-center gap-2">
-          {closedProjectsCount > 0 && (
-            <button className="btn-ghost text-sm" onClick={() => setShowClosedProjects((value) => !value)}>
-              {showClosedProjects ? 'Masquer les projets clôturés' : `Afficher les projets clôturés (${closedProjectsCount})`}
-            </button>
-          )}
-          {isManager && (
-            <button className="btn-primary" onClick={() => setShowForm((s) => !s)}>
-              <Plus className="w-4 h-4" /> Nouveau projet
-            </button>
-          )}
-        </div>
+        {isManager && (
+          <button className="btn-primary" onClick={() => setShowForm((s) => !s)}>
+            <Plus className="w-4 h-4" /> Nouveau projet
+          </button>
+        )}
       </div>
 
       {showForm && (
@@ -181,11 +163,11 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
         </form>
       )}
 
-      {visibleProjects.length === 0 ? (
+      {projects.length === 0 ? (
         <p className="text-sm text-ink-500">Aucun projet pour l'instant.</p>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {visibleProjects.map((p) => (
+          {projects.map((p) => (
             <button
               key={p.id}
               onClick={() => onOpen(p.id)}
@@ -196,21 +178,7 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
                   <h2 className="font-semibold text-ink-900">{p.name}</h2>
                   <p className="text-sm text-ink-500">{p.type === 'dev' ? 'Développement' : 'Infrastructure'}</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  {(p.project_state || 'new') === 'new' && (
-                    <span className="badge bg-blue-100 text-blue-700">Nouveau</span>
-                  )}
-                  {p.project_state === 'in_progress' && (
-                    <span className="badge bg-emerald-100 text-emerald-700">En cours</span>
-                  )}
-                  {p.project_state === 'maintenance' && (
-                    <span className="badge bg-amber-100 text-amber-700">Maintenance</span>
-                  )}
-                  {p.project_state === 'closed' && (
-                    <span className="badge bg-ink-100 text-ink-600">Clôturé</span>
-                  )}
-
-                </div>
+                <StatusBadge status={p.status} />
               </div>
               {p.description && <p className="text-sm text-ink-600 mt-2 line-clamp-2">{p.description}</p>}
               <div className="mt-3">

@@ -406,34 +406,26 @@ async function syncGitHubRepositoriesAndIssues() {
     );
     for (const issue of issues) {
       if (issue.pull_request) continue;
+      const status = issue.state === 'closed' ? 'closed' : 'open';
       const existing = await pool.query(
         `SELECT id FROM project_tasks WHERE github_issue_url = $1 LIMIT 1`,
         [issue.html_url]
       );
-
       if (existing.rowCount === 0) {
         await pool.query(
           `INSERT INTO project_tasks
            (project_id, title, description, status, origin, github_issue_url, updated_at)
-           VALUES ($1, $2, $3, 'backlog', 'manuelle', $4, now())`,
-          [project.id, issue.title, issue.body || null, issue.html_url]
+           VALUES ($1, $2, $3, $4, 'manuelle', $5, now())`,
+          [project.id, issue.title, issue.body || null, status, issue.html_url]
         );
         tasksCreated += 1;
       } else {
         await pool.query(
           `UPDATE project_tasks
-           SET project_id = $1,
-               title = $2,
-               description = $3,
-               updated_at = CASE
-                 WHEN title IS DISTINCT FROM $2
-                   OR description IS DISTINCT FROM $3
-                   OR project_id IS DISTINCT FROM $1
-                 THEN now()
-                 ELSE updated_at
-               END
-           WHERE id = $4`,
-          [project.id, issue.title, issue.body || null, existing.rows[0].id]
+           SET project_id = $1, title = $2, description = $3,
+               status = $4, updated_at = now()
+           WHERE id = $5`,
+          [project.id, issue.title, issue.body || null, status, existing.rows[0].id]
         );
         tasksUpdated += 1;
       }
@@ -513,7 +505,6 @@ async function loadGitHubProjectV2Data() {
                   nodes {
                     ... on ProjectV2ItemFieldSingleSelectValue {
                       name
-                      updatedAt
                       field { ... on ProjectV2SingleSelectField { id name } }
                     }
                   }
@@ -554,25 +545,11 @@ async function syncGitHubProjectV2ToGestionIt() {
       if (!issue?.url) continue;
       const statusValue = (item.fieldValues?.nodes || []).find((value) => value.field?.name === 'Status');
       const status = normalizeProjectV2Status(statusValue?.name);
-      const githubStatusUpdatedAt = statusValue?.updatedAt || null;
       const result = await pool.query(
         `UPDATE project_tasks
-         SET title = COALESCE($1, title),
-             description = $2,
-             completed_at = CASE
-               WHEN $3 = 'done' THEN COALESCE($5::timestamptz, completed_at, now())
-               ELSE NULL
-             END,
-             status = $3,
-             updated_at = CASE
-               WHEN title IS DISTINCT FROM $1
-                 OR description IS DISTINCT FROM $2
-                 OR status IS DISTINCT FROM $3
-               THEN now()
-               ELSE updated_at
-             END
+         SET title = COALESCE($1, title), description = $2, status = $3, updated_at = now()
          WHERE github_issue_url = $4`,
-        [issue.title, issue.body || null, status, issue.url, githubStatusUpdatedAt]
+        [issue.title, issue.body || null, status, issue.url]
       );
       updated += result.rowCount;
     }
@@ -648,7 +625,7 @@ export function registerProjectRoutes(app) {
     syncGitHubRepositoriesAndIssues().then(() => syncGitHubProjectV2ToGestionIt()).catch((error) =>
       console.error('[GitHub Sync] synchronisation periodique impossible', error.message || error)
     );
-  }, 60 * 1000);
+  }, 5 * 60 * 1000);
   githubSyncTimer.unref();
 
   // -------------------------------------------------------------------
@@ -843,7 +820,7 @@ export function registerProjectRoutes(app) {
          FROM projects p
          LEFT JOIN app_accounts c ON c.id = p.client_account_id
          ${where}
-         ORDER BY CASE p.project_state WHEN 'new' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'maintenance' THEN 3 ELSE 4 END, p.updated_at DESC, p.created_at DESC`,
+         ORDER BY p.created_at DESC`,
         params
       );
 
@@ -868,8 +845,6 @@ export function registerProjectRoutes(app) {
           description: p.description,
           type: p.type,
           status: p.status,
-          project_state: p.project_state || 'active',
-          closed_at: p.closed_at,
           due_date: p.due_date,
           tauxCompletude: completionRate(tasks)
         };
@@ -1167,30 +1142,6 @@ export function registerProjectRoutes(app) {
     }
   });
 
-
-  app.put('/api/projects/:id/state', requireAuth, requireRole('manager'), async (req, res) => {
-    try {
-      const { projectState } = req.body;
-      if (!['new', 'closed'].includes(projectState)) {
-        return res.status(400).json({ error: 'État de projet invalide' });
-      }
-      const result = await pool.query(
-        `UPDATE projects
-         SET project_state = $1,
-             closed_at = CASE WHEN $1 = 'closed' THEN COALESCE(closed_at, now()) ELSE NULL END,
-             updated_at = now()
-         WHERE id = $2
-         RETURNING *`,
-        [projectState, req.params.id]
-      );
-      if (result.rowCount === 0) return res.status(404).json({ error: 'Projet introuvable' });
-      res.json(result.rows[0]);
-    } catch (error) {
-      console.error('[Projets IT] Changement état projet', error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
   // -------------------------------------------------------------------
   // Tâches
   // -------------------------------------------------------------------
@@ -1242,11 +1193,6 @@ export function registerProjectRoutes(app) {
       const result = await pool.query(
         `UPDATE project_tasks SET
            status = COALESCE($1, status),
-           completed_at = CASE
-             WHEN $1 = 'done' AND status <> 'done' THEN now()
-             WHEN $1 IS NOT NULL AND $1 <> 'done' THEN NULL
-             ELSE completed_at
-           END,
            spent_hours = COALESCE($2, spent_hours),
            estimated_hours = COALESCE($3, estimated_hours),
            assignee_account_id = COALESCE($4, assignee_account_id),
@@ -1255,23 +1201,14 @@ export function registerProjectRoutes(app) {
         [status, spentHours, estimatedHours, assigneeAccountId, req.params.id]
       );
       const updatedTask = result.rows[0];
-      res.json(updatedTask);
-
-      if (status) {
-        Promise.allSettled([
-          syncGitHubIssueState(updatedTask, status),
-          updateGitHubProjectV2Status(updatedTask, status),
-        ]).then((results) => {
-          for (const result of results) {
-            if (result.status === 'rejected') {
-              console.error(
-                '[Projets IT] Synchronisation statut GitHub impossible',
-                result.reason?.message || result.reason
-              );
-            }
-          }
-        });
+      try {
+        await syncGitHubIssueState(updatedTask, status);
+        if (status) await updateGitHubProjectV2Status(updatedTask, status);
+      } catch (githubError) {
+        console.error('[Projets IT] Synchronisation statut GitHub impossible', githubError.message || githubError);
+        updatedTask.github_sync_error = githubError.message || String(githubError);
       }
+      res.json(updatedTask);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: error.message });
@@ -1528,7 +1465,7 @@ export function registerProjectRoutes(app) {
   // -------------------------------------------------------------------
   app.get('/api/projects-dashboard', requireAuth, requireRole('manager'), async (req, res) => {
     try {
-      const projectsResult = await pool.query(`SELECT * FROM projects WHERE status != 'archive' AND project_state != 'closed'`);
+      const projectsResult = await pool.query(`SELECT * FROM projects WHERE status != 'archive'`);
       const projects = projectsResult.rows;
 
       const tasksResult = await pool.query(
@@ -1593,7 +1530,7 @@ export function registerProjectRoutes(app) {
       const projectsResult = await pool.query(
         `SELECT p.*, c.display_name AS client_name
          FROM projects p LEFT JOIN app_accounts c ON c.id = p.client_account_id
-         WHERE p.status != 'archive' AND p.project_state != 'closed'`
+         WHERE p.status != 'archive'`
       );
       const projects = projectsResult.rows;
       const tasksResult = await pool.query(

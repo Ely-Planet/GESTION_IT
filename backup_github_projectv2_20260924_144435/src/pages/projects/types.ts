@@ -13,8 +13,6 @@ export type Account = {
 };
 
 export type ProjectListItem = {
-  project_state?: 'new' | 'in_progress' | 'maintenance' | 'closed';
-  closed_at?: string | null;
   id: string;
   name: string;
   description: string | null;
@@ -33,14 +31,13 @@ export type Task = {
   project_id: string;
   title: string;
   description: string | null;
-  status: 'backlog' | 'ready' | 'in_progress' | 'in_review' | 'done';
+  status: 'open' | 'closed';
   assignee_account_id: string | null;
   assignee_name?: string | null;
   estimated_hours: string | number;
   spent_hours: string | number;
   origin: 'manuelle' | 'demande_client';
   github_issue_url: string | null;
-  completed_at?: string | null;
 };
 
 export type Assignment = {
@@ -81,8 +78,6 @@ export type ProjectMessage = {
 };
 
 export type ProjectDetailData = ProjectListItem & {
-  project_state?: 'new' | 'in_progress' | 'maintenance' | 'closed';
-  closed_at?: string | null;
   tasks?: Task[];
   assignments?: Assignment[];
   clientRequests?: ClientRequest[];
@@ -110,11 +105,6 @@ export type ReportingRow = {
 };
 
 export const STATUS_LABELS: Record<string, string> = {
-  done: 'Done',
-  in_review: 'In review',
-  in_progress: 'In progress',
-  ready: 'Ready',
-  backlog: 'Backlog',
   open: 'Ouverte',
   closed: 'Fermée',
   en_attente: 'En attente',
@@ -126,12 +116,6 @@ export const STATUS_LABELS: Record<string, string> = {
 };
 
 export const STATUS_BADGE_CLASSES: Record<string, string> = {
-  backlog: 'bg-slate-100 text-slate-700',
-  ready: 'bg-blue-100 text-blue-700',
-  in_progress: 'bg-amber-100 text-amber-700',
-  in_review: 'bg-purple-100 text-purple-700',
-  done: 'bg-orange-100 text-orange-700',
-
   open: 'bg-emerald-100 text-emerald-700',
   closed: 'bg-purple-100 text-purple-700',
   en_attente: 'bg-ink-100 text-ink-700',

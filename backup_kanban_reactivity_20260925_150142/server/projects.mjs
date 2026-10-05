@@ -648,7 +648,7 @@ export function registerProjectRoutes(app) {
     syncGitHubRepositoriesAndIssues().then(() => syncGitHubProjectV2ToGestionIt()).catch((error) =>
       console.error('[GitHub Sync] synchronisation periodique impossible', error.message || error)
     );
-  }, 60 * 1000);
+  }, 5 * 60 * 1000);
   githubSyncTimer.unref();
 
   // -------------------------------------------------------------------
@@ -1255,23 +1255,14 @@ export function registerProjectRoutes(app) {
         [status, spentHours, estimatedHours, assigneeAccountId, req.params.id]
       );
       const updatedTask = result.rows[0];
-      res.json(updatedTask);
-
-      if (status) {
-        Promise.allSettled([
-          syncGitHubIssueState(updatedTask, status),
-          updateGitHubProjectV2Status(updatedTask, status),
-        ]).then((results) => {
-          for (const result of results) {
-            if (result.status === 'rejected') {
-              console.error(
-                '[Projets IT] Synchronisation statut GitHub impossible',
-                result.reason?.message || result.reason
-              );
-            }
-          }
-        });
+      try {
+        await syncGitHubIssueState(updatedTask, status);
+        if (status) await updateGitHubProjectV2Status(updatedTask, status);
+      } catch (githubError) {
+        console.error('[Projets IT] Synchronisation statut GitHub impossible', githubError.message || githubError);
+        updatedTask.github_sync_error = githubError.message || String(githubError);
       }
+      res.json(updatedTask);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: error.message });

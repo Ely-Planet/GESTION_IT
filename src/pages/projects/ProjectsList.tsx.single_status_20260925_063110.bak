@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { projectsApi } from './api';
 import { useAuth } from '../../context/AuthContext';
-import { ProgressBar } from './ProjectUI';
+import { ProgressBar, StatusBadge } from './ProjectUI';
 import type { Account, ProjectListItem } from './types';
 
 export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void }) {
@@ -209,7 +209,7 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
                   {p.project_state === 'closed' && (
                     <span className="badge bg-ink-100 text-ink-600">Clôturé</span>
                   )}
-
+                  <StatusBadge status={p.status} />
                 </div>
               </div>
               {p.description && <p className="text-sm text-ink-600 mt-2 line-clamp-2">{p.description}</p>}

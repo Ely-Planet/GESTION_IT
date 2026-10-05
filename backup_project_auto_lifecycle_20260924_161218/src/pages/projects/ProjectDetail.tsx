@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { projectsApi } from './api';
 import { useAuth } from '../../context/AuthContext';
-import { ProgressBar } from './ProjectUI';
+import { ProgressBar, StatusBadge } from './ProjectUI';
 import TasksTab from './tabs/TasksTab';
 import RequestsTab from './tabs/RequestsTab';
 import MessagesTab from './tabs/MessagesTab';
@@ -22,7 +22,7 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
     setProject(await projectsApi.getProject(projectId));
   }
 
-  async function changeProjectState(projectState: 'new' | 'closed') {
+  async function changeProjectState(projectState: 'active' | 'maintenance' | 'closed') {
     const response = await fetch(`/api/projects/${projectId}/state`, {
       method: 'PUT',
       credentials: 'include',
@@ -32,16 +32,6 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || 'Erreur lors du changement d’état');
     await load();
-  }
-
-  async function deleteProject() {
-    const response = await fetch(`/api/projects/${projectId}`, {
-      method: 'DELETE',
-      credentials: 'include',
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.error || 'Erreur lors de la suppression');
-    onBack();
   }
 
   useEffect(() => {
@@ -80,61 +70,25 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
             <h1 className="text-xl font-semibold text-ink-900">{project.name}</h1>
             {project.description && <p className="text-sm text-ink-500 mt-1">{project.description}</p>}
           </div>
-          <div className="flex items-center gap-2 flex-wrap justify-end">
-            <span className={`badge ${
-              project.project_state === 'closed'
-                ? 'bg-ink-100 text-ink-600'
-                : project.project_state === 'maintenance'
-                  ? 'bg-amber-100 text-amber-700'
-                  : project.project_state === 'in_progress'
-                    ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-blue-100 text-blue-700'
-            }`}>
-              {project.project_state === 'closed'
-                ? 'Clôturé'
-                : project.project_state === 'maintenance'
-                  ? 'Maintenance'
-                  : project.project_state === 'in_progress'
-                    ? 'En cours'
-                    : 'Nouveau'}
-            </span>
-
-            {isManager && project.project_state !== 'closed' && (
-              <button
-                className="btn-secondary text-sm"
-                onClick={() => {
-                  if (confirm('Clôturer ce projet ? Il sera masqué de la liste principale.')) {
-                    void changeProjectState('closed').catch((error) => alert(error.message));
-                  }
-                }}
-              >
-                Clôturer
-              </button>
-            )}
-            {isManager && project.project_state === 'closed' && (
-              <button
-                className="btn-secondary text-sm"
-                onClick={() => {
-                  if (confirm('Réactiver ce projet ? Son état sera recalculé depuis ses tâches.')) {
-                    void changeProjectState('new').then(load).catch((error) => alert(error.message));
-                  }
-                }}
-              >
-                Réactiver
-              </button>
-            )}
+          <div className="flex items-center gap-2">
             {isManager && (
-              <button
-                className="btn-ghost text-sm text-red-600 hover:text-red-700"
-                onClick={() => {
-                  if (confirm(`Supprimer définitivement le projet "${project.name}" et toutes ses données ? Cette action est irréversible.`)) {
-                    void deleteProject().catch((error) => alert(error.message));
+              <select
+                className="input py-1 text-sm w-36"
+                value={project.project_state || 'active'}
+                onChange={(event) => {
+                  const nextState = event.target.value as 'active' | 'maintenance' | 'closed';
+                  const label = nextState === 'closed' ? 'clôturer' : nextState === 'maintenance' ? 'mettre en maintenance' : 'réactiver';
+                  if (confirm(`Voulez-vous ${label} ce projet ?`)) {
+                    void changeProjectState(nextState).catch((error) => alert(error.message));
                   }
                 }}
               >
-                Supprimer
-              </button>
+                <option value="active">Actif</option>
+                <option value="maintenance">Maintenance</option>
+                <option value="closed">Clôturé</option>
+              </select>
             )}
+            <StatusBadge status={project.status} />
           </div>
         </div>
         <div className="mt-4">

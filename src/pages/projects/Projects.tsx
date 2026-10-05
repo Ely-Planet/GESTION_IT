@@ -25,7 +25,7 @@ export default function Projects() {
   return (
     <div>
       {isManager && (
-        <div className="px-6 pt-6 max-w-5xl mx-auto flex gap-2">
+        <div className="px-6 pt-6 w-full max-w-[1800px] mx-auto flex gap-2">
           <button
             onClick={() => setView('list')}
             className={`btn-ghost text-sm ${view === 'list' ? 'bg-ink-100' : ''}`}
