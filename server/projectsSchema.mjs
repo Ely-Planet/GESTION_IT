@@ -59,6 +59,11 @@ CREATE TABLE IF NOT EXISTS project_task_comments (
 );
 CREATE INDEX IF NOT EXISTS idx_project_task_comments_task ON project_task_comments(task_id);
 
+-- Nettoyage (014) : ancien pied technique recopié depuis GitHub dans la description
+UPDATE project_tasks
+SET description = NULLIF(btrim(regexp_replace(description, '\\s*Projet GESTION_IT : [^\\n]*\\nIdentifiant de tâche : .*$', '')), '')
+WHERE description LIKE '%Identifiant de tâche : %';
+
 -- Notifications affichées sur la page d'accueil
 CREATE TABLE IF NOT EXISTS user_notifications (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

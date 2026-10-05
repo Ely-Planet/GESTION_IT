@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { GripVertical, MessageSquare, Paperclip } from 'lucide-react';
 import { projectsApi } from '../api';
 import { StatusBadge } from '../ProjectUI';
-import TaskComments from './TaskComments';
+import TaskDetail from './TaskDetail';
 import type { Account, ProjectDetailData, Task } from '../types';
 
 const STATUSES = ['backlog', 'ready', 'in_progress', 'in_review', 'done'] as const;
@@ -27,7 +27,7 @@ type TaskCardProps = {
   onStatusChange: (taskId: string, status: TaskStatus) => void;
   onSpentHoursChange: (taskId: string, spentHours: string) => void;
   onAssigneeChange: (taskId: string, assigneeAccountId: string) => void;
-  onOpenComments: (task: Task) => void;
+  onOpen: (task: Task) => void;
 };
 
 // Composant déclaré hors de TasksTab : défini à l'intérieur, React le
@@ -44,12 +44,17 @@ function TaskCard({
   onStatusChange,
   onSpentHoursChange,
   onAssigneeChange,
-  onOpenComments,
+  onOpen,
 }: TaskCardProps) {
   const files = task.files || [];
   return (
     <article
-      className={`card p-3 transition-all ${updating ? 'opacity-60 pointer-events-none' : 'hover:shadow-elevated'} ${dragged ? 'opacity-40 scale-[0.98]' : ''}`}
+      onClick={(event) => {
+        // Les champs de la carte (statut, affectation, temps, liens) gardent leur propre action.
+        if ((event.target as HTMLElement).closest('button, select, input, a, textarea')) return;
+        onOpen(task);
+      }}
+      className={`card p-3 cursor-pointer transition-all ${updating ? 'opacity-60 pointer-events-none' : 'hover:shadow-elevated'} ${dragged ? 'opacity-40 scale-[0.98]' : ''}`}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-start gap-2 min-w-0">
@@ -113,7 +118,7 @@ function TaskCard({
         <button
           type="button"
           className="flex items-center gap-1 text-xs text-ink-500 hover:text-elyade-700"
-          onClick={() => onOpenComments(task)}
+          onClick={() => onOpen(task)}
           title="Commentaires"
         >
           <MessageSquare className="w-3.5 h-3.5" /> {task.comment_count || 0}
@@ -138,11 +143,12 @@ export default function TasksTab({ project, team, onChanged }: {
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
   const [updatingTaskId, setUpdatingTaskId] = useState<string | null>(null);
-  const [commentsTask, setCommentsTask] = useState<Task | null>(null);
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const [form, setForm] = useState({ title: '', description: '', assigneeAccountId: '', estimatedHours: '' });
   const canCreateTasks = Boolean(project.estChefDeProjet);
   const [localTasks, setLocalTasks] = useState<Task[]>(project.tasks || []);
   const tasks = localTasks;
+  const detailTask = tasks.find((task) => task.id === detailTaskId) || null;
 
   useEffect(() => {
     setLocalTasks(project.tasks || []);
@@ -319,7 +325,7 @@ export default function TasksTab({ project, team, onChanged }: {
                     onStatusChange={(taskId, nextStatus) => void updateStatus(taskId, nextStatus)}
                     onSpentHoursChange={(taskId, spentHours) => void updateSpentHours(taskId, spentHours)}
                     onAssigneeChange={(taskId, assigneeAccountId) => void updateAssignee(taskId, assigneeAccountId)}
-                    onOpenComments={setCommentsTask}
+                    onOpen={(openedTask) => setDetailTaskId(openedTask.id)}
                   />
                 ))}
                 {columnTasks.length === 0 && <div className="border-2 border-dashed border-ink-200 rounded-lg p-8 text-center text-sm text-ink-400">Déposez une tâche ici</div>}
@@ -329,13 +335,13 @@ export default function TasksTab({ project, team, onChanged }: {
         })}
       </div>
 
-      {commentsTask && (
-        <TaskComments
-          task={commentsTask}
-          onClose={() => setCommentsTask(null)}
+      {detailTask && (
+        <TaskDetail
+          task={detailTask}
+          onClose={() => setDetailTaskId(null)}
           onCountChange={(count) =>
             setLocalTasks((current) =>
-              current.map((task) => (task.id === commentsTask.id ? { ...task, comment_count: count } : task))
+              current.map((task) => (task.id === detailTask.id ? { ...task, comment_count: count } : task))
             )
           }
         />

@@ -5,21 +5,18 @@ import { useAuth } from '../../context/AuthContext';
 import { ProgressBar } from './ProjectUI';
 import TasksTab from './tabs/TasksTab';
 import RequestsTab from './tabs/RequestsTab';
-import MessagesTab from './tabs/MessagesTab';
 import TeamTab from './tabs/TeamTab';
 import type { Account, ProjectDetailData } from './types';
 
 export default function ProjectDetail({ projectId, onBack }: { projectId: string; onBack: () => void }) {
   const { user } = useAuth();
   const isManager = Boolean(user?.isITManager);
-  const isClient = !user?.isIT && !user?.isITManager && !user?.isDirector;
 
   const [project, setProject] = useState<ProjectDetailData | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [clients, setClients] = useState<Account[]>([]);
   const [sendingLink, setSendingLink] = useState(false);
-  // Le client arrive directement sur ses demandes (il n'a pas d'onglet Tâches).
-  const [tab, setTab] = useState(isClient ? 'requests' : 'tasks');
+  const [tab, setTab] = useState('tasks');
 
   async function load() {
     setProject(await projectsApi.getProject(projectId));
@@ -85,18 +82,15 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
   if (!project) return <div className="p-6 text-ink-500">Chargement...</div>;
 
   const canManageTeam = isManager || Boolean(project.estChefDeProjet);
+  // Le serveur n'envoie les tâches qu'à l'équipe : sans elles, c'est la vue
+  // client du projet (uniquement ses demandes).
+  const clientView = !Array.isArray(project.tasks);
 
-  const tabs: [string, string][] = isClient
-    ? [
-        ['requests', 'Mes demandes'],
-        ['messages', 'Échanges'],
-      ]
-    : [
-        ['tasks', 'Tâches'],
-        ['requests', 'Demandes clients'],
-        ['messages', 'Échanges'],
-        ['team', 'Équipe'],
-      ];
+  const tabs: [string, string][] = [
+    ['tasks', 'Tâches'],
+    ['requests', 'Demandes clients'],
+    ['team', 'Équipe'],
+  ];
 
   return (
     <div className="p-6 w-full max-w-[1800px] mx-auto">
@@ -174,7 +168,7 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
           </div>
           <ProgressBar value={project.tauxCompletude} />
         </div>
-        {!isClient && (
+        {!clientView && (
           <p className="text-xs text-ink-400 mt-2">
             Charge estimée : {project.chargeEstimeeH}h · Charge passée : {project.chargePasseeH}h
             {project.github_project_url && (
@@ -213,25 +207,30 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
         )}
       </div>
 
-      <div className="flex gap-1 mb-4 border-b border-ink-100">
-        {tabs.map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              tab === key ? 'border-elyade-600 text-elyade-700' : 'border-transparent text-ink-500 hover:text-ink-700'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {clientView ? (
+        <RequestsTab project={project} team={accounts} onChanged={load} />
+      ) : (
+        <>
+          <div className="flex gap-1 mb-4 border-b border-ink-100">
+            {tabs.map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                  tab === key ? 'border-elyade-600 text-elyade-700' : 'border-transparent text-ink-500 hover:text-ink-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
-      {tab === 'tasks' && !isClient && <TasksTab project={project} team={accounts} onChanged={load} />}
-      {tab === 'requests' && <RequestsTab project={project} team={accounts} onChanged={load} />}
-      {tab === 'messages' && <MessagesTab projectId={project.id} />}
-      {tab === 'team' && !isClient && (
-        <TeamTab project={project} allAccounts={accounts} canManage={canManageTeam} onChanged={load} />
+          {tab === 'tasks' && <TasksTab project={project} team={accounts} onChanged={load} />}
+          {tab === 'requests' && <RequestsTab project={project} team={accounts} onChanged={load} />}
+          {tab === 'team' && (
+            <TeamTab project={project} allAccounts={accounts} canManage={canManageTeam} onChanged={load} />
+          )}
+        </>
       )}
     </div>
   );

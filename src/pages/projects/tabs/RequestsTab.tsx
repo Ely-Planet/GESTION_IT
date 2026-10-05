@@ -41,8 +41,10 @@ export default function RequestsTab({
   onChanged: () => void;
 }) {
   const { user } = useAuth();
-  const isClient = !user?.isIT && !user?.isITManager && !user?.isDirector;
-  const canProcess = !isClient && Boolean(project.estChefDeProjet);
+  // Vue équipe si le serveur a envoyé les tâches ; être client est propre au projet.
+  const teamView = Array.isArray(project.tasks);
+  const canSubmit = Boolean(user?.id) && project.client_account_id === user?.id;
+  const canProcess = teamView && Boolean(project.estChefDeProjet);
   const [requests, setRequests] = useState<ClientRequest[]>([]);
   const [newRequest, setNewRequest] = useState({ title: '', description: '' });
   const [files, setFiles] = useState<File[]>([]);
@@ -51,7 +53,7 @@ export default function RequestsTab({
   const fileInput = useRef<HTMLInputElement>(null);
 
   async function load() {
-    if (isClient) {
+    if (!teamView) {
       const detail = await projectsApi.getProject(project.id);
       setRequests(detail.clientRequests || []);
     } else {
@@ -60,7 +62,7 @@ export default function RequestsTab({
   }
 
   useEffect(() => {
-    if (isClient) setRequests(project.clientRequests || []);
+    if (!teamView) setRequests(project.clientRequests || []);
     else void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
@@ -141,9 +143,9 @@ export default function RequestsTab({
 
   return (
     <div>
-      <h3 className="font-semibold text-ink-900 mb-3">{isClient ? 'Mes demandes' : 'Demandes client'}</h3>
+      <h3 className="font-semibold text-ink-900 mb-3">{teamView ? 'Demandes client' : 'Mes demandes'}</h3>
 
-      {isClient && (
+      {canSubmit && (
         <form onSubmit={submitRequest} className="card p-4 mb-4 space-y-2">
           <p className="label mb-0">Nouvelle demande</p>
           <input
@@ -220,7 +222,7 @@ export default function RequestsTab({
                     <>
                       <p className="font-medium text-ink-900">{r.title}</p>
                       {r.description && <p className="text-sm text-ink-500 whitespace-pre-wrap">{r.description}</p>}
-                      {!isClient && r.original_title && (
+                      {teamView && r.original_title && (
                         <p className="text-xs text-ink-400 mt-1">
                           Demande d'origine : « {r.original_title} »
                         </p>
@@ -268,7 +270,15 @@ export default function RequestsTab({
             </div>
           );
         })}
-        {requests.length === 0 && <p className="text-sm text-ink-500">Aucune demande pour l'instant.</p>}
+        {requests.length === 0 && (
+          <p className="text-sm text-ink-500">
+            {teamView && !project.client_account_id
+              ? "Aucun client n'est défini pour ce projet. Choisissez-en un en haut de la page : il recevra le lien pour déposer ses demandes ici."
+              : teamView && !canSubmit
+                ? `Aucune demande pour l'instant. Les demandes sont rédigées par le client du projet${project.client_name ? ` (${project.client_name})` : ''}.`
+                : "Aucune demande pour l'instant."}
+          </p>
+        )}
       </div>
     </div>
   );

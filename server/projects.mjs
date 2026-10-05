@@ -438,7 +438,7 @@ async function canAccessProject(user, projectId) {
   if (!projectId) return false;
   const role = getModuleRole(user);
   if (role === 'manager' || role === 'directeur') return true;
-  if (role === 'dev') return isAssignedToProject(user.id, projectId);
+  if (role === 'dev' && (await isAssignedToProject(user.id, projectId))) return true;
   const result = await pool.query(`SELECT 1 FROM projects WHERE id = $1 AND client_account_id = $2`, [projectId, user.id]);
   return result.rowCount > 0;
 }
@@ -463,6 +463,19 @@ function parseGitHubRepositoryUrl(value) {
   } catch {
     return null;
   }
+}
+
+const GITHUB_NOTE_SEPARATOR = '\n\n---\n_GESTION_IT : ';
+
+// Retire de la description d'une carte GitHub les ajouts de GESTION_IT :
+// la note de pièces jointes et l'ancien pied "Projet GESTION_IT : …".
+function cleanGitHubBody(body) {
+  if (!body) return null;
+  let text = String(body);
+  const noteIndex = text.indexOf(GITHUB_NOTE_SEPARATOR.trimStart());
+  if (noteIndex !== -1) text = text.slice(0, noteIndex);
+  text = text.replace(/\s*Projet GESTION_IT : [^\n]*\nIdentifiant de tâche : [\s\S]*$/, '');
+  return text.trim() || null;
 }
 
 function parseGitHubIssueUrl(value) {
@@ -703,7 +716,7 @@ async function upsertTaskFromBoardItem(projectId, item) {
   const content = item.content || {};
   const issueUrl = item.type === 'ISSUE' ? content.url || null : null;
   const title = content.title || '(sans titre)';
-  const description = content.body || null;
+  const description = cleanGitHubBody(content.body);
   const githubStatus = item.status?.name ? normalizeProjectV2Status(item.status.name) : null;
   const githubStatusAt = item.status?.updatedAt ? new Date(item.status.updatedAt) : null;
   const commentCount = content.comments?.totalCount || 0;
@@ -871,15 +884,10 @@ async function createGitHubItemForTask(task, { attachmentsCount = 0 } = {}) {
   const project = projectResult.rows[0];
   if (!project) return null;
 
-  const lines = [
-    task.description || '',
-    '',
-    `Projet GESTION_IT : ${project.name}`,
-    `Identifiant de tâche : ${task.id}`,
-    `Temps estimé : ${Number(task.estimated_hours || 0)} h`
-  ];
-  if (attachmentsCount) lines.push(`Pièces jointes : ${attachmentsCount} (consultables dans GESTION_IT)`);
-  const body = lines.join('\n');
+  // La carte GitHub reprend la description telle quelle : la synchro la
+  // recopie dans GESTION_IT, tout ajout technique finirait dans la description.
+  let body = task.description || '';
+  if (attachmentsCount) body += `${GITHUB_NOTE_SEPARATOR}${attachmentsCount} pièce(s) jointe(s) dans GESTION_IT_`;
 
   let issue = null;
   const repository = parseGitHubRepositoryUrl(project.github_repo_url);
@@ -1221,7 +1229,8 @@ export function registerProjectRoutes(app) {
         where += ' AND p.client_account_id = $1';
         params = [accountId];
       } else if (role === 'dev') {
-        where += ' AND EXISTS (SELECT 1 FROM project_assignments pa WHERE pa.project_id = p.id AND pa.account_id = $1)';
+        where += ` AND (p.client_account_id = $1
+                   OR EXISTS (SELECT 1 FROM project_assignments pa WHERE pa.project_id = p.id AND pa.account_id = $1))`;
         params = [accountId];
       }
 
@@ -1295,13 +1304,15 @@ export function registerProjectRoutes(app) {
       if (projectResult.rowCount === 0) return res.status(404).json({ error: 'Projet introuvable' });
       const project = projectResult.rows[0];
 
-      const canView =
+      // Être client est propre au projet : un membre IT choisi comme client
+      // d'un projet où il n'est pas dans l'équipe a la vue client.
+      const isProjectClient = project.client_account_id === accountId;
+      const hasTeamView =
         role === 'manager' ||
         role === 'directeur' ||
-        (role === 'client' && project.client_account_id === accountId) ||
         (role === 'dev' && (await isAssignedToProject(accountId, projectId)));
 
-      if (!canView) return res.status(403).json({ error: 'Accès refusé à ce projet' });
+      if (!hasTeamView && !isProjectClient) return res.status(403).json({ error: 'Accès refusé à ce projet' });
 
       const tasksResult = await pool.query(
         `SELECT t.*, a.display_name AS assignee_name,
@@ -1317,7 +1328,7 @@ export function registerProjectRoutes(app) {
         [projectId]
       );
 
-      if (role === 'client') {
+      if (!hasTeamView) {
         const requestsResult = await pool.query(
           `${CLIENT_REQUESTS_SELECT}
            WHERE r.project_id = $1 AND r.client_account_id = $2
@@ -1331,6 +1342,8 @@ export function registerProjectRoutes(app) {
           type: project.type,
           status: project.status,
           due_date: project.due_date,
+          project_state: project.project_state,
+          client_account_id: project.client_account_id,
           tauxCompletude: completionRate(tasksResult.rows),
           clientRequests: requestsResult.rows
         });
@@ -1822,7 +1835,8 @@ export function registerProjectRoutes(app) {
     });
   }
 
-  app.post('/api/projects/requests', requireAuth, requireRole('client'), uploadRequestFiles, async (req, res) => {
+  // Ouvert à quiconque est le client du projet (vérifié ci-dessous), même membre IT.
+  app.post('/api/projects/requests', requireAuth, uploadRequestFiles, async (req, res) => {
     const files = req.files || [];
     try {
       const { projectId } = req.body;
