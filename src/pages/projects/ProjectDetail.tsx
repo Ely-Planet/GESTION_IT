@@ -11,12 +11,15 @@ import type { Account, ProjectDetailData } from './types';
 
 export default function ProjectDetail({ projectId, onBack }: { projectId: string; onBack: () => void }) {
   const { user } = useAuth();
-  const [project, setProject] = useState<ProjectDetailData | null>(null);
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [tab, setTab] = useState('tasks');
-
   const isManager = Boolean(user?.isITManager);
   const isClient = !user?.isIT && !user?.isITManager && !user?.isDirector;
+
+  const [project, setProject] = useState<ProjectDetailData | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [clients, setClients] = useState<Account[]>([]);
+  const [sendingLink, setSendingLink] = useState(false);
+  // Le client arrive directement sur ses demandes (il n'a pas d'onglet Tâches).
+  const [tab, setTab] = useState(isClient ? 'requests' : 'tasks');
 
   async function load() {
     setProject(await projectsApi.getProject(projectId));
@@ -44,10 +47,37 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
     onBack();
   }
 
+  async function changeClient(clientAccountId: string) {
+    try {
+      const updated = await projectsApi.updateProject(projectId, { clientAccountId: clientAccountId || null });
+      if (updated?.client_account_id && updated.client_link_sent === false) {
+        alert("Client enregistré, mais l'e-mail avec le lien du projet n'a pas pu être envoyé.");
+      }
+      await load();
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors du changement de client');
+    }
+  }
+
+  async function sendClientLink() {
+    setSendingLink(true);
+    try {
+      await projectsApi.sendClientLink(projectId);
+      alert('Le lien du projet a été envoyé au client.');
+    } catch (err: any) {
+      alert(err.message || "Erreur lors de l'envoi du lien");
+    } finally {
+      setSendingLink(false);
+    }
+  }
+
   useEffect(() => {
     void load();
     if (isManager || user?.isIT) {
       projectsApi.listAccounts().then(setAccounts).catch(() => {});
+    }
+    if (isManager) {
+      projectsApi.listClients().then(setClients).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
@@ -147,8 +177,39 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
         {!isClient && (
           <p className="text-xs text-ink-400 mt-2">
             Charge estimée : {project.chargeEstimeeH}h · Charge passée : {project.chargePasseeH}h
-            {project.github_repo_url && <> · Dépôt GitHub lié</>}
+            {project.github_project_url && (
+              <> · <a href={project.github_project_url} target="_blank" rel="noreferrer" className="text-elyade-700 hover:underline">Tableau GitHub</a></>
+            )}
+            {!project.github_project_url && project.github_repo_url && <> · Dépôt GitHub lié</>}
           </p>
+        )}
+        {canManageTeam && (
+          <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-ink-100">
+            <span className="text-sm text-ink-600">Client :</span>
+            {isManager ? (
+              <select
+                className="input w-72 text-sm py-1"
+                value={project.client_account_id || ''}
+                onChange={(e) => void changeClient(e.target.value)}
+              >
+                <option value="">Aucun client</option>
+                {project.client_account_id && !clients.some((c) => c.id === project.client_account_id) && (
+                  <option value={project.client_account_id}>{project.client_name || project.client_email}</option>
+                )}
+                {clients.map((client) => (
+                  <option key={client.id} value={client.id}>{client.display_name} ({client.email})</option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-sm text-ink-900">{project.client_name || 'Aucun client'}</span>
+            )}
+            {project.client_account_id && (
+              <button className="btn-ghost text-sm" disabled={sendingLink} onClick={() => void sendClientLink()}>
+                {sendingLink ? 'Envoi…' : 'Renvoyer le lien au client'}
+              </button>
+            )}
+            {isManager && <span className="text-xs text-ink-400">Le client reçoit le lien du projet par e-mail dès qu'il est choisi.</span>}
+          </div>
         )}
       </div>
 
@@ -167,7 +228,7 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
       </div>
 
       {tab === 'tasks' && !isClient && <TasksTab project={project} team={accounts} onChanged={load} />}
-      {tab === 'requests' && <RequestsTab project={project} onChanged={load} />}
+      {tab === 'requests' && <RequestsTab project={project} team={accounts} onChanged={load} />}
       {tab === 'messages' && <MessagesTab projectId={project.id} />}
       {tab === 'team' && !isClient && (
         <TeamTab project={project} allAccounts={accounts} canManage={canManageTeam} onChanged={load} />

@@ -1,5 +1,6 @@
 import { pool } from './db.mjs';
 import { sendMailWithAttachments } from './graphMail.mjs';
+import { ensureProjectsSchema } from './projectsSchema.mjs';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -274,7 +275,183 @@ async function notifyClient({ email, subject, html }) {
 }
 
 
-// === SYNCHRONISATION DES TACHES AVEC LES ISSUES GITHUB ===
+// Demandes client avec leurs pièces jointes et l'avancement de la tâche créée.
+const CLIENT_REQUESTS_SELECT = `
+  SELECT r.*, c.display_name AS client_name, c.email AS client_email,
+         t.status AS task_status,
+         (SELECT COALESCE(json_agg(json_build_object('id', f.id, 'filename', f.filename) ORDER BY f.created_at), '[]'::json)
+          FROM project_files f WHERE f.client_request_id = r.id) AS files
+  FROM project_client_requests r
+  JOIN app_accounts c ON c.id = r.client_account_id
+  LEFT JOIN project_tasks t ON t.id = r.task_id
+`;
+
+// === NOTIFICATIONS (page d'accueil) ET MAILS CLIENT ===
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function projectLink(projectId) {
+  const base = String(process.env.APP_URL || '').replace(/\/+$/, '');
+  return `${base}/?projet=${encodeURIComponent(projectId)}`;
+}
+
+function clientMailHtml({ name, paragraphs, projectId, linkLabel = 'Ouvrir mon projet' }) {
+  return [
+    `<p>Bonjour ${escapeHtml(name)},</p>`,
+    ...paragraphs.map((paragraph) => `<p>${paragraph}</p>`),
+    projectId
+      ? `<p><a href="${projectLink(projectId)}" style="display:inline-block;padding:10px 18px;background:#0f766e;color:#ffffff;border-radius:6px;text-decoration:none">${escapeHtml(linkLabel)}</a></p>`
+      : '',
+    `<p>L'équipe informatique</p>`
+  ].join('');
+}
+
+async function createNotification({ accountId, type, title, body = null, projectId = null, taskId = null }) {
+  if (!accountId) return;
+  try {
+    await pool.query(
+      `INSERT INTO user_notifications (account_id, type, title, body, project_id, task_id)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [accountId, type, title, body, projectId, taskId]
+    );
+  } catch (error) {
+    console.error('[Projets IT] Notification impossible', error.message || error);
+  }
+}
+
+async function notifyTaskAssignee(task, actorId) {
+  if (!task?.assignee_account_id || task.assignee_account_id === actorId) return;
+  const projectResult = await pool.query(`SELECT name FROM projects WHERE id = $1`, [task.project_id]);
+  await createNotification({
+    accountId: task.assignee_account_id,
+    type: 'task_assigned',
+    title: `Nouvelle tâche : ${task.title}`,
+    body: `Projet ${projectResult.rows[0]?.name || ''}`.trim(),
+    projectId: task.project_id,
+    taskId: task.id
+  });
+}
+
+async function notifyProjectLeads(projectId, { type, title, body }) {
+  const leads = await pool.query(
+    `SELECT account_id FROM project_assignments WHERE project_id = $1 AND project_role = 'chef_de_projet'`,
+    [projectId]
+  );
+  // Sans chef de projet, ce sont les managers IT qui sont prévenus.
+  const recipients = leads.rowCount
+    ? leads.rows.map((row) => row.account_id)
+    : (await pool.query(`SELECT id FROM app_accounts WHERE is_it_manager = true`)).rows.map((row) => row.id);
+  for (const accountId of recipients) {
+    await createNotification({ accountId, type, title, body, projectId });
+  }
+}
+
+// Mail au client du projet quand une tâche passe en "In progress" ou "Done".
+// Un seul mail par statut et par tâche, même si l'appli et la synchro
+// GitHub voient le changement en même temps.
+async function handleTaskStatusChange(task, previousStatus) {
+  if (!task || task.status === previousStatus) return;
+  if (task.status !== 'in_progress' && task.status !== 'done') return;
+
+  try {
+    const projectResult = await pool.query(
+      `SELECT p.id, p.name, c.email AS client_email, c.display_name AS client_name
+       FROM projects p JOIN app_accounts c ON c.id = p.client_account_id
+       WHERE p.id = $1`,
+      [task.project_id]
+    );
+    const project = projectResult.rows[0];
+    if (!project?.client_email) return;
+
+    const column = task.status === 'done' ? 'client_notified_done_at' : 'client_notified_in_progress_at';
+    const claim = await pool.query(
+      `UPDATE project_tasks SET ${column} = now() WHERE id = $1 AND ${column} IS NULL RETURNING id`,
+      [task.id]
+    );
+    if (claim.rowCount === 0) return;
+
+    const title = escapeHtml(task.title);
+    const projectName = escapeHtml(project.name);
+    const isDone = task.status === 'done';
+    await notifyClient({
+      email: project.client_email,
+      subject: isDone
+        ? `[${project.name}] Tâche terminée : ${task.title}`
+        : `[${project.name}] Nous travaillons sur : ${task.title}`,
+      html: clientMailHtml({
+        name: project.client_name,
+        paragraphs: isDone
+          ? [`La tâche <strong>« ${title} »</strong> du projet <strong>${projectName}</strong> est terminée.`]
+          : [`L'équipe informatique a commencé à travailler sur la tâche <strong>« ${title} »</strong> du projet <strong>${projectName}</strong>.`],
+        projectId: project.id
+      })
+    });
+  } catch (error) {
+    console.error('[Projets IT] Mail de statut client impossible', error.message || error);
+  }
+}
+
+// Mail au client avec le lien de son projet, pour qu'il puisse y déposer ses demandes.
+async function sendClientProjectLink(projectId) {
+  const result = await pool.query(
+    `SELECT p.id, p.name, c.email AS client_email, c.display_name AS client_name
+     FROM projects p JOIN app_accounts c ON c.id = p.client_account_id
+     WHERE p.id = $1`,
+    [projectId]
+  );
+  const project = result.rows[0];
+  if (!project?.client_email) return false;
+  return notifyClient({
+    email: project.client_email,
+    subject: `Votre projet "${project.name}" : déposez vos demandes`,
+    html: clientMailHtml({
+      name: project.client_name,
+      paragraphs: [
+        `Vous êtes désormais le client du projet <strong>${escapeHtml(project.name)}</strong> dans l'application de gestion IT.`,
+        `Depuis le lien ci-dessous, vous pouvez rédiger vos demandes (avec pièces jointes si besoin) et suivre leur avancement. Connectez-vous avec votre compte Microsoft Elyade.`
+      ],
+      projectId: project.id,
+      linkLabel: 'Accéder au projet et déposer une demande'
+    })
+  });
+}
+
+async function loadFileWithProject(fileId) {
+  const result = await pool.query(
+    `SELECT f.*, COALESCE(f.project_id, r.project_id, m.project_id, t.project_id) AS resolved_project_id
+     FROM project_files f
+     LEFT JOIN project_client_requests r ON r.id = f.client_request_id
+     LEFT JOIN project_messages m ON m.id = f.message_id
+     LEFT JOIN project_tasks t ON t.id = f.task_id
+     WHERE f.id = $1`,
+    [fileId]
+  );
+  return result.rows[0] || null;
+}
+
+async function canAccessProject(user, projectId) {
+  if (!projectId) return false;
+  const role = getModuleRole(user);
+  if (role === 'manager' || role === 'directeur') return true;
+  if (role === 'dev') return isAssignedToProject(user.id, projectId);
+  const result = await pool.query(`SELECT 1 FROM projects WHERE id = $1 AND client_account_id = $2`, [projectId, user.id]);
+  return result.rowCount > 0;
+}
+
+async function removeUploadedFiles(files) {
+  for (const file of files || []) {
+    await fsp.unlink(file.path).catch(() => {});
+  }
+}
+
+// === SYNCHRONISATION AVEC GITHUB PROJECTS (V2) ===
+// 1 GitHub Project = 1 projet GESTION_IT, chaque carte (issue ou brouillon)
+// du tableau = 1 tâche. Les dépôts sans tableau ne créent plus de projet.
 function parseGitHubRepositoryUrl(value) {
   if (!value) return null;
   try {
@@ -286,6 +463,12 @@ function parseGitHubRepositoryUrl(value) {
   } catch {
     return null;
   }
+}
+
+function parseGitHubIssueUrl(value) {
+  const match = String(value || '').match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/i);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2], number: match[3] };
 }
 
 async function githubRequest(pathname, method = 'GET', body = undefined) {
@@ -309,47 +492,6 @@ async function githubRequest(pathname, method = 'GET', body = undefined) {
   return response.json();
 }
 
-async function createGitHubIssueForTask(task) {
-  const projectResult = await pool.query(
-    `SELECT name, github_repo_url FROM projects WHERE id = $1`,
-    [task.project_id]
-  );
-  const project = projectResult.rows[0];
-  const repository = parseGitHubRepositoryUrl(project?.github_repo_url);
-  if (!repository) return null;
-  const issue = await githubRequest(
-    `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/issues`,
-    'POST',
-    {
-      title: task.title,
-      body: [
-        task.description || '',
-        '',
-        `Projet GESTION_IT : ${project.name}`,
-        `Identifiant de tâche : ${task.id}`,
-        `Temps estimé : ${Number(task.estimated_hours || 0)} h`
-      ].join('\n')
-    }
-  );
-  await pool.query(
-    `UPDATE project_tasks SET github_issue_url = $1, updated_at = now() WHERE id = $2`,
-    [issue.html_url, task.id]
-  );
-  return issue.html_url;
-}
-
-async function syncGitHubIssueState(task, status) {
-  if (!task.github_issue_url || status === undefined || status === null) return;
-  const match = String(task.github_issue_url).match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/i);
-  if (!match) return;
-  await githubRequest(
-    `/repos/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}/issues/${match[3]}`,
-    'PATCH',
-    { state: status === 'done' ? 'closed' : 'open' }
-  );
-}
-
-
 async function githubRequestAll(pathname) {
   const rows = [];
   let page = 1;
@@ -364,90 +506,19 @@ async function githubRequestAll(pathname) {
   return rows;
 }
 
-async function syncGitHubRepositoriesAndIssues() {
-  if (!process.env.GITHUB_TOKEN) throw new Error('GITHUB_TOKEN absent');
-  const repositories = await githubRequestAll('/user/repos?affiliation=owner,organization_member,collaborator&sort=updated');
-  let projectsCreated = 0;
-  let projectsUpdated = 0;
-  let tasksCreated = 0;
-  let tasksUpdated = 0;
-
-  for (const repository of repositories) {
-    if (repository.archived) continue;
-    const repoUrl = repository.html_url;
-    let projectResult = await pool.query(
-      `SELECT * FROM projects WHERE github_repo_url = $1 LIMIT 1`,
-      [repoUrl]
-    );
-    let project;
-    if (projectResult.rowCount === 0) {
-      const inserted = await pool.query(
-        `INSERT INTO projects (name, description, type, status, github_repo_url)
-         VALUES ($1, $2, 'dev', 'en_cours', $3)
-         RETURNING *`,
-        [repository.name, repository.description || null, repoUrl]
-      );
-      project = inserted.rows[0];
-      projectsCreated += 1;
-    } else {
-      const updated = await pool.query(
-        `UPDATE projects
-         SET name = $1, description = $2, type = 'dev', updated_at = now()
-         WHERE id = $3 RETURNING *`,
-        [repository.name, repository.description || null, projectResult.rows[0].id]
-      );
-      project = updated.rows[0];
-      projectsUpdated += 1;
-    }
-
-    if (repository.has_issues === false) continue;
-    const issues = await githubRequestAll(
-      `/repos/${encodeURIComponent(repository.owner.login)}/${encodeURIComponent(repository.name)}/issues?state=all`
-    );
-    for (const issue of issues) {
-      if (issue.pull_request) continue;
-      const existing = await pool.query(
-        `SELECT id FROM project_tasks WHERE github_issue_url = $1 LIMIT 1`,
-        [issue.html_url]
-      );
-
-      if (existing.rowCount === 0) {
-        await pool.query(
-          `INSERT INTO project_tasks
-           (project_id, title, description, status, origin, github_issue_url, updated_at)
-           VALUES ($1, $2, $3, 'backlog', 'manuelle', $4, now())`,
-          [project.id, issue.title, issue.body || null, issue.html_url]
-        );
-        tasksCreated += 1;
-      } else {
-        await pool.query(
-          `UPDATE project_tasks
-           SET project_id = $1,
-               title = $2,
-               description = $3,
-               updated_at = CASE
-                 WHEN title IS DISTINCT FROM $2
-                   OR description IS DISTINCT FROM $3
-                   OR project_id IS DISTINCT FROM $1
-                 THEN now()
-                 ELSE updated_at
-               END
-           WHERE id = $4`,
-          [project.id, issue.title, issue.body || null, existing.rows[0].id]
-        );
-        tasksUpdated += 1;
-      }
-    }
-  }
-  const summary = { repositories: repositories.length, projectsCreated, projectsUpdated, tasksCreated, tasksUpdated };
-  console.log('[GitHub Sync]', summary);
-  return summary;
+async function syncGitHubIssueState(task, status) {
+  const issue = parseGitHubIssueUrl(task.github_issue_url);
+  if (!issue || status === undefined || status === null) return;
+  await githubRequest(
+    `/repos/${encodeURIComponent(issue.owner)}/${encodeURIComponent(issue.repo)}/issues/${issue.number}`,
+    'PATCH',
+    { state: status === 'done' ? 'closed' : 'open' }
+  );
 }
 
-
-// === GITHUB PROJECTS V2 : STATUTS KANBAN ===
 const PROJECT_V2_STATUS_SLUGS = {
   'backlog': 'backlog',
+  'todo': 'backlog',
   'ready': 'ready',
   'in progress': 'in_progress',
   'in_progress': 'in_progress',
@@ -489,131 +560,396 @@ async function githubGraphQL(query, variables = {}) {
   return payload.data;
 }
 
-async function loadGitHubProjectV2Data() {
-  const data = await githubGraphQL(`
-    query GestionItProjects($login: String!) {
-      user(login: $login) {
-        projectsV2(first: 50) {
-          nodes {
-            id
-            title
-            fields(first: 50) {
-              nodes {
-                ... on ProjectV2SingleSelectField {
-                  id
-                  name
-                  options { id name }
-                }
+const BOARD_FIELDS = `
+  id
+  title
+  shortDescription
+  url
+  closed
+  repositories(first: 5) { nodes { url } }
+`;
+
+// Tous les tableaux du propriétaire (compte utilisateur ou organisation),
+// avec pagination : l'ancienne requête s'arrêtait à 50 tableaux.
+async function loadGitHubBoards() {
+  const login = process.env.GITHUB_PROJECT_OWNER || 'Ely-Planet';
+  let lastError = null;
+  for (const ownerType of ['user', 'organization']) {
+    try {
+      const boards = [];
+      let cursor = null;
+      do {
+        const data = await githubGraphQL(
+          `query GestionItBoards($login: String!, $cursor: String) {
+            owner: ${ownerType}(login: $login) {
+              projectsV2(first: 20, after: $cursor) {
+                pageInfo { hasNextPage endCursor }
+                nodes { ${BOARD_FIELDS} }
               }
             }
-            items(first: 100) {
+          }`,
+          { login, cursor }
+        );
+        const page = data.owner?.projectsV2;
+        if (!page) break;
+        boards.push(...(page.nodes || []).filter(Boolean));
+        cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+      } while (cursor);
+      return boards;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error(`Aucun tableau GitHub Projects trouvé pour ${login}`);
+}
+
+// Toutes les cartes d'un tableau, avec pagination : l'ancienne requête
+// ignorait silencieusement tout ce qui dépassait 100 cartes.
+async function loadGitHubBoardItems(boardId) {
+  const items = [];
+  let cursor = null;
+  do {
+    const data = await githubGraphQL(
+      `query GestionItBoardItems($id: ID!, $cursor: String) {
+        node(id: $id) {
+          ... on ProjectV2 {
+            items(first: 100, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
               nodes {
                 id
-                fieldValues(first: 30) {
-                  nodes {
-                    ... on ProjectV2ItemFieldSingleSelectValue {
-                      name
-                      updatedAt
-                      field { ... on ProjectV2SingleSelectField { id name } }
-                    }
-                  }
+                type
+                status: fieldValueByName(name: "Status") {
+                  ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
                 }
                 content {
-                  ... on Issue {
-                    id
-                    url
-                    title
-                    body
-                    state
-                    repository { nameWithOwner }
-                  }
+                  ... on Issue { url title body comments { totalCount } }
+                  ... on DraftIssue { title body }
                 }
               }
             }
           }
         }
+      }`,
+      { id: boardId, cursor }
+    );
+    const page = data.node?.items;
+    if (!page) break;
+    items.push(...(page.nodes || []).filter(Boolean));
+    cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (cursor);
+  return items;
+}
+
+async function upsertProjectFromBoard(board) {
+  const repoUrls = (board.repositories?.nodes || []).map((repo) => repo.url).filter(Boolean);
+  const singleRepoUrl = repoUrls.length === 1 ? repoUrls[0] : null;
+
+  let existing = await pool.query(`SELECT * FROM projects WHERE github_project_id = $1`, [board.id]);
+
+  // Reprise d'un ancien projet créé automatiquement pour le dépôt du tableau :
+  // il garde son équipe, ses demandes et ses échanges.
+  if (existing.rowCount === 0 && singleRepoUrl) {
+    existing = await pool.query(
+      `SELECT * FROM projects
+       WHERE github_project_id IS NULL AND created_by IS NULL AND github_repo_url = $1
+       ORDER BY created_at
+       LIMIT 1`,
+      [singleRepoUrl]
+    );
+  }
+
+  if (existing.rowCount === 0) {
+    const inserted = await pool.query(
+      `INSERT INTO projects
+         (name, description, type, status, github_project_id, github_project_url, github_repo_url, project_state, closed_at)
+       VALUES ($1, $2, 'dev', 'en_cours', $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [
+        board.title,
+        board.shortDescription || null,
+        board.id,
+        board.url,
+        singleRepoUrl,
+        board.closed ? 'closed' : 'new',
+        board.closed ? new Date() : null
+      ]
+    );
+    return inserted.rows[0];
+  }
+
+  const updated = await pool.query(
+    `UPDATE projects SET
+       name = $1,
+       description = COALESCE(NULLIF($2, ''), description),
+       github_project_id = $3,
+       github_project_url = $4,
+       github_repo_url = COALESCE(github_repo_url, $5),
+       status = CASE WHEN status = 'archive' THEN 'en_cours' ELSE status END,
+       project_state = CASE WHEN $6::boolean THEN 'closed' ELSE project_state END,
+       closed_at = CASE WHEN $6::boolean THEN COALESCE(closed_at, now()) ELSE closed_at END,
+       updated_at = CASE
+         WHEN name IS DISTINCT FROM $1 OR github_project_id IS DISTINCT FROM $3 THEN now()
+         ELSE updated_at
+       END
+     WHERE id = $7
+     RETURNING *`,
+    [board.title, board.shortDescription || '', board.id, board.url, singleRepoUrl, Boolean(board.closed), existing.rows[0].id]
+  );
+  return updated.rows[0];
+}
+
+async function upsertTaskFromBoardItem(projectId, item) {
+  if (item.type !== 'ISSUE' && item.type !== 'DRAFT_ISSUE') return null;
+  const content = item.content || {};
+  const issueUrl = item.type === 'ISSUE' ? content.url || null : null;
+  const title = content.title || '(sans titre)';
+  const description = content.body || null;
+  const githubStatus = item.status?.name ? normalizeProjectV2Status(item.status.name) : null;
+  const githubStatusAt = item.status?.updatedAt ? new Date(item.status.updatedAt) : null;
+  const commentCount = content.comments?.totalCount || 0;
+
+  const existingResult = await pool.query(
+    `SELECT t.*, p.created_by AS project_created_by
+     FROM project_tasks t
+     JOIN projects p ON p.id = t.project_id
+     WHERE t.github_item_id = $1
+        OR ($2::text IS NOT NULL AND t.github_issue_url = $2 AND t.github_item_id IS NULL)
+     ORDER BY (t.github_item_id = $1) DESC NULLS LAST
+     LIMIT 1`,
+    [item.id, issueUrl]
+  );
+
+  if (existingResult.rowCount === 0) {
+    const status = githubStatus || 'backlog';
+    // Carte déjà avancée à son arrivée : pas de mail client rétroactif.
+    await pool.query(
+      `INSERT INTO project_tasks
+         (project_id, title, description, status, origin, github_issue_url, github_item_id,
+          github_comment_count, status_updated_at, completed_at,
+          client_notified_in_progress_at, client_notified_done_at)
+       VALUES ($1, $2, $3, $4, 'manuelle', $5, $6, $7, $8,
+               CASE WHEN $4 = 'done' THEN COALESCE($8, now()) END,
+               CASE WHEN $4 IN ('in_progress', 'in_review', 'done') THEN now() END,
+               CASE WHEN $4 = 'done' THEN now() END)`,
+      [projectId, title, description, status, issueUrl, item.id, commentCount, githubStatusAt]
+    );
+    return 'created';
+  }
+
+  const task = existingResult.rows[0];
+  // Les tâches d'un projet créé à la main restent dans ce projet.
+  const targetProjectId = task.project_created_by ? task.project_id : projectId;
+  const githubIsNewer =
+    githubStatus &&
+    githubStatus !== task.status &&
+    githubStatusAt &&
+    (!task.status_updated_at || githubStatusAt > new Date(task.status_updated_at));
+  const nextStatus = githubIsNewer ? githubStatus : task.status;
+
+  const unchanged =
+    task.project_id === targetProjectId &&
+    task.title === title &&
+    (task.description || null) === description &&
+    task.status === nextStatus &&
+    task.github_item_id === item.id &&
+    Number(task.github_comment_count || 0) === commentCount;
+  if (unchanged) return null;
+
+  const result = await pool.query(
+    `UPDATE project_tasks SET
+       project_id = $1,
+       title = $2,
+       description = $3,
+       status = $4,
+       completed_at = CASE
+         WHEN $4 = 'done' AND status <> 'done' THEN COALESCE($5, now())
+         WHEN $4 <> 'done' THEN NULL
+         ELSE completed_at
+       END,
+       status_updated_at = CASE WHEN status IS DISTINCT FROM $4 THEN $5 ELSE status_updated_at END,
+       github_item_id = $6,
+       github_comment_count = $7,
+       updated_at = now()
+     WHERE id = $8
+     RETURNING *`,
+    [targetProjectId, title, description, nextStatus, githubStatusAt, item.id, commentCount, task.id]
+  );
+
+  if (nextStatus !== task.status) {
+    await handleTaskStatusChange(result.rows[0], task.status);
+  }
+  return 'updated';
+}
+
+let githubSyncRunning = false;
+
+async function syncGitHubBoards() {
+  if (!process.env.GITHUB_TOKEN) throw new Error('GITHUB_TOKEN absent');
+  if (githubSyncRunning) return { skipped: true };
+  githubSyncRunning = true;
+  try {
+    const boards = await loadGitHubBoards();
+    let tasksCreated = 0;
+    let tasksUpdated = 0;
+
+    for (const board of boards) {
+      const project = await upsertProjectFromBoard(board);
+      const items = await loadGitHubBoardItems(board.id);
+      for (const item of items) {
+        const outcome = await upsertTaskFromBoardItem(project.id, item);
+        if (outcome === 'created') tasksCreated += 1;
+        if (outcome === 'updated') tasksUpdated += 1;
       }
     }
-  `, { login: process.env.GITHUB_PROJECT_OWNER || 'Ely-Planet' });
-  return data.user?.projectsV2?.nodes || [];
-}
 
-function findProjectV2Status(projectNode, issueUrl) {
-  const item = (projectNode.items?.nodes || []).find((node) => node.content?.url === issueUrl);
-  if (!item) return null;
-  const statusValue = (item.fieldValues?.nodes || []).find((value) => value.field?.name === 'Status');
-  return { item, status: normalizeProjectV2Status(statusValue?.name) };
-}
-
-async function syncGitHubProjectV2ToGestionIt() {
-  const projectsV2 = await loadGitHubProjectV2Data();
-  let updated = 0;
-  for (const projectNode of projectsV2) {
-    for (const item of projectNode.items?.nodes || []) {
-      const issue = item.content;
-      if (!issue?.url) continue;
-      const statusValue = (item.fieldValues?.nodes || []).find((value) => value.field?.name === 'Status');
-      const status = normalizeProjectV2Status(statusValue?.name);
-      const githubStatusUpdatedAt = statusValue?.updatedAt || null;
-      const result = await pool.query(
-        `UPDATE project_tasks
-         SET title = COALESCE($1, title),
-             description = $2,
-             completed_at = CASE
-               WHEN $3 = 'done' THEN COALESCE($5::timestamptz, completed_at, now())
-               ELSE NULL
-             END,
-             status = $3,
-             updated_at = CASE
-               WHEN title IS DISTINCT FROM $1
-                 OR description IS DISTINCT FROM $2
-                 OR status IS DISTINCT FROM $3
-               THEN now()
-               ELSE updated_at
-             END
-         WHERE github_issue_url = $4`,
-        [issue.title, issue.body || null, status, issue.url, githubStatusUpdatedAt]
+    // Anciens projets créés automatiquement par dépôt, sans tableau GitHub :
+    // masqués (archivés), sauf s'ils ont un client.
+    let projectsArchived = 0;
+    if (boards.length > 0) {
+      const archived = await pool.query(
+        `UPDATE projects SET status = 'archive', updated_at = now()
+         WHERE created_by IS NULL
+           AND github_project_id IS NULL
+           AND client_account_id IS NULL
+           AND status <> 'archive'`
       );
-      updated += result.rowCount;
+      projectsArchived = archived.rowCount;
     }
+
+    const summary = { boards: boards.length, tasksCreated, tasksUpdated, projectsArchived };
+    if (tasksCreated || tasksUpdated || projectsArchived) console.log('[GitHub Sync]', summary);
+    return summary;
+  } finally {
+    githubSyncRunning = false;
   }
-  console.log('[GitHub ProjectV2 Sync]', { projects: projectsV2.length, tasksUpdated: updated });
-  return { projects: projectsV2.length, tasksUpdated: updated };
 }
 
 async function updateGitHubProjectV2Status(task, status) {
-  if (!task.github_issue_url) return;
-  const projectsV2 = await loadGitHubProjectV2Data();
-  for (const projectNode of projectsV2) {
-    const found = findProjectV2Status(projectNode, task.github_issue_url);
-    if (!found) continue;
-    const statusField = (projectNode.fields?.nodes || []).find((field) => field?.name === 'Status');
-    const option = (statusField?.options || []).find(
-      (entry) => normalizeProjectV2Status(entry.name) === status
-    );
-    if (!statusField || !option) {
-      throw new Error(`Statut GitHub ProjectV2 introuvable : ${projectV2StatusLabel(status)}`);
-    }
-    await githubGraphQL(`
-      mutation UpdateGestionItStatus(
-        $projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!
-      ) {
-        updateProjectV2ItemFieldValue(input: {
-          projectId: $projectId,
-          itemId: $itemId,
-          fieldId: $fieldId,
-          value: { singleSelectOptionId: $optionId }
-        }) { projectV2Item { id } }
+  if (!task.github_item_id) return;
+  const data = await githubGraphQL(
+    `query GestionItItemStatusField($itemId: ID!) {
+      node(id: $itemId) {
+        ... on ProjectV2Item {
+          project {
+            id
+            field(name: "Status") {
+              ... on ProjectV2SingleSelectField { id options { id name } }
+            }
+          }
+        }
       }
-    `, {
-      projectId: projectNode.id,
-      itemId: found.item.id,
-      fieldId: statusField.id,
-      optionId: option.id
-    });
-    return;
+    }`,
+    { itemId: task.github_item_id }
+  );
+  const board = data.node?.project;
+  const option = (board?.field?.options || []).find(
+    (entry) => normalizeProjectV2Status(entry.name) === status
+  );
+  if (!board?.field || !option) {
+    throw new Error(`Statut GitHub ProjectV2 introuvable : ${projectV2StatusLabel(status)}`);
   }
+  await githubGraphQL(
+    `mutation UpdateGestionItStatus($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+      updateProjectV2ItemFieldValue(input: {
+        projectId: $projectId,
+        itemId: $itemId,
+        fieldId: $fieldId,
+        value: { singleSelectOptionId: $optionId }
+      }) { projectV2Item { id } }
+    }`,
+    { projectId: board.id, itemId: task.github_item_id, fieldId: board.field.id, optionId: option.id }
+  );
 }
+
+// Nouvelle tâche GESTION_IT -> issue dans le dépôt du projet (s'il y en a un),
+// ajoutée au tableau GitHub du projet ; sinon carte brouillon dans le tableau.
+async function createGitHubItemForTask(task, { attachmentsCount = 0 } = {}) {
+  const projectResult = await pool.query(
+    `SELECT name, github_repo_url, github_project_id FROM projects WHERE id = $1`,
+    [task.project_id]
+  );
+  const project = projectResult.rows[0];
+  if (!project) return null;
+
+  const lines = [
+    task.description || '',
+    '',
+    `Projet GESTION_IT : ${project.name}`,
+    `Identifiant de tâche : ${task.id}`,
+    `Temps estimé : ${Number(task.estimated_hours || 0)} h`
+  ];
+  if (attachmentsCount) lines.push(`Pièces jointes : ${attachmentsCount} (consultables dans GESTION_IT)`);
+  const body = lines.join('\n');
+
+  let issue = null;
+  const repository = parseGitHubRepositoryUrl(project.github_repo_url);
+  if (repository) {
+    issue = await githubRequest(
+      `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/issues`,
+      'POST',
+      { title: task.title, body }
+    );
+  }
+
+  let itemId = null;
+  if (project.github_project_id) {
+    if (issue) {
+      const data = await githubGraphQL(
+        `mutation AddGestionItIssue($projectId: ID!, $contentId: ID!) {
+          addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) { item { id } }
+        }`,
+        { projectId: project.github_project_id, contentId: issue.node_id }
+      );
+      itemId = data.addProjectV2ItemById?.item?.id || null;
+    } else {
+      const data = await githubGraphQL(
+        `mutation AddGestionItDraft($projectId: ID!, $title: String!, $body: String) {
+          addProjectV2DraftIssue(input: { projectId: $projectId, title: $title, body: $body }) { projectItem { id } }
+        }`,
+        { projectId: project.github_project_id, title: task.title, body }
+      );
+      itemId = data.addProjectV2DraftIssue?.projectItem?.id || null;
+    }
+  }
+
+  if (!issue && !itemId) return null;
+
+  const updated = await pool.query(
+    `UPDATE project_tasks SET github_issue_url = $1, github_item_id = $2, updated_at = now()
+     WHERE id = $3 RETURNING *`,
+    [issue?.html_url || null, itemId, task.id]
+  );
+  const linkedTask = updated.rows[0];
+  if (itemId) await updateGitHubProjectV2Status(linkedTask, linkedTask.status);
+  return linkedTask;
+}
+
+// Commentaires de l'issue GitHub -> table project_task_comments.
+async function syncTaskCommentsFromGitHub(task) {
+  const issue = parseGitHubIssueUrl(task.github_issue_url);
+  if (!issue) return;
+  const comments = await githubRequestAll(
+    `/repos/${encodeURIComponent(issue.owner)}/${encodeURIComponent(issue.repo)}/issues/${issue.number}/comments`
+  );
+  for (const comment of comments) {
+    // Les commentaires écrits depuis GESTION_IT gardent leur auteur et leur texte d'origine.
+    await pool.query(
+      `INSERT INTO project_task_comments (task_id, author_name, body, github_comment_id, github_comment_url, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (github_comment_id) DO UPDATE SET
+         body = CASE WHEN project_task_comments.author_account_id IS NULL THEN EXCLUDED.body ELSE project_task_comments.body END`,
+      [task.id, comment.user?.login || 'GitHub', comment.body || '', comment.id, comment.html_url, comment.created_at]
+    );
+  }
+  const ids = comments.map((comment) => comment.id);
+  await pool.query(
+    `DELETE FROM project_task_comments
+     WHERE task_id = $1 AND github_comment_id IS NOT NULL AND NOT (github_comment_id = ANY($2::bigint[]))`,
+    [task.id, ids]
+  );
+  await pool.query(`UPDATE project_tasks SET github_comment_count = $1 WHERE id = $2`, [comments.length, task.id]);
+}
+
 
 export function registerProjectRoutes(app) {
   ensureProjectsDir().catch((err) => console.error('[PROJECTS] Impossible de créer le dossier storage/projects', err));
@@ -627,11 +963,13 @@ export function registerProjectRoutes(app) {
   });
 
 
+  const schemaReady = ensureProjectsSchema().catch((error) =>
+    console.error('[Projets IT] Mise à jour du schéma impossible', error.message || error)
+  );
+
   app.post('/api/projects/github/sync', requireAuth, requireRole('manager'), async (req, res) => {
     try {
-      const repositories = await syncGitHubRepositoriesAndIssues();
-      const projectsV2 = await syncGitHubProjectV2ToGestionIt();
-      res.json({ repositories, projectsV2 });
+      res.json(await syncGitHubBoards());
     } catch (error) {
       console.error('[GitHub Sync] erreur', error);
       res.status(500).json({ error: error.message });
@@ -639,17 +977,66 @@ export function registerProjectRoutes(app) {
   });
 
   setTimeout(() => {
-    syncGitHubRepositoriesAndIssues().then(() => syncGitHubProjectV2ToGestionIt()).catch((error) =>
+    schemaReady.then(() => syncGitHubBoards()).catch((error) =>
       console.error('[GitHub Sync] synchronisation initiale impossible', error.message || error)
     );
   }, 15000).unref();
 
   const githubSyncTimer = setInterval(() => {
-    syncGitHubRepositoriesAndIssues().then(() => syncGitHubProjectV2ToGestionIt()).catch((error) =>
+    syncGitHubBoards().catch((error) =>
       console.error('[GitHub Sync] synchronisation periodique impossible', error.message || error)
     );
   }, 60 * 1000);
   githubSyncTimer.unref();
+
+  // -------------------------------------------------------------------
+  // Notifications de l'utilisateur connecté (page d'accueil)
+  // -------------------------------------------------------------------
+  app.get('/api/notifications', requireAuth, async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT n.id, n.type, n.title, n.body, n.project_id, n.task_id, n.read_at, n.created_at,
+                p.name AS project_name
+         FROM user_notifications n
+         LEFT JOIN projects p ON p.id = n.project_id
+         WHERE n.account_id = $1
+           AND (n.read_at IS NULL OR n.created_at > now() - interval '7 days')
+         ORDER BY n.read_at IS NULL DESC, n.created_at DESC
+         LIMIT 30`,
+        [req.session.user.id]
+      );
+      res.json(result.rows);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
+    try {
+      await pool.query(
+        `UPDATE user_notifications SET read_at = now() WHERE account_id = $1 AND read_at IS NULL`,
+        [req.session.user.id]
+      );
+      res.json({ ok: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
+    try {
+      await pool.query(
+        `UPDATE user_notifications SET read_at = COALESCE(read_at, now()) WHERE id = $1 AND account_id = $2`,
+        [req.params.id, req.session.user.id]
+      );
+      res.json({ ok: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
 
   // -------------------------------------------------------------------
   // Comptes disponibles pour affectation (manager uniquement)
@@ -825,16 +1212,16 @@ export function registerProjectRoutes(app) {
       const { id: accountId } = req.session.user;
       const role = getModuleRole(req.session.user);
 
-      let where = '';
+      // Les projets archivés (supprimés, ou anciens projets "dépôt" sans
+      // tableau GitHub) ne sont plus affichés.
+      let where = `WHERE p.status <> 'archive'`;
       let params = [];
 
-      if (role === 'manager' || role === 'directeur') {
-        where = '';
-      } else if (role === 'client') {
-        where = 'WHERE p.client_account_id = $1';
+      if (role === 'client') {
+        where += ' AND p.client_account_id = $1';
         params = [accountId];
-      } else {
-        where = 'WHERE EXISTS (SELECT 1 FROM project_assignments pa WHERE pa.project_id = p.id AND pa.account_id = $1)';
+      } else if (role === 'dev') {
+        where += ' AND EXISTS (SELECT 1 FROM project_assignments pa WHERE pa.project_id = p.id AND pa.account_id = $1)';
         params = [accountId];
       }
 
@@ -917,7 +1304,13 @@ export function registerProjectRoutes(app) {
       if (!canView) return res.status(403).json({ error: 'Accès refusé à ce projet' });
 
       const tasksResult = await pool.query(
-        `SELECT t.*, a.display_name AS assignee_name
+        `SELECT t.*, a.display_name AS assignee_name,
+                GREATEST(
+                  t.github_comment_count,
+                  (SELECT COUNT(*) FROM project_task_comments c WHERE c.task_id = t.id)
+                )::int AS comment_count,
+                (SELECT COALESCE(json_agg(json_build_object('id', f.id, 'filename', f.filename) ORDER BY f.created_at), '[]'::json)
+                 FROM project_files f WHERE f.task_id = t.id) AS files
          FROM project_tasks t
          LEFT JOIN app_accounts a ON a.id = t.assignee_account_id
          WHERE t.project_id = $1 ORDER BY t.created_at`,
@@ -926,7 +1319,9 @@ export function registerProjectRoutes(app) {
 
       if (role === 'client') {
         const requestsResult = await pool.query(
-          `SELECT * FROM project_client_requests WHERE project_id = $1 AND client_account_id = $2 ORDER BY created_at DESC`,
+          `${CLIENT_REQUESTS_SELECT}
+           WHERE r.project_id = $1 AND r.client_account_id = $2
+           ORDER BY r.created_at DESC`,
           [projectId, accountId]
         );
         return res.json({
@@ -1026,6 +1421,10 @@ export function registerProjectRoutes(app) {
 
       await client.query('COMMIT');
 
+      if (project.client_account_id) {
+        project.client_link_sent = await sendClientProjectLink(project.id);
+      }
+
       res.status(201).json(project);
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
@@ -1055,6 +1454,11 @@ export function registerProjectRoutes(app) {
       } = req.body;
 
       let normalizedClientId;
+      const previousResult = await client.query(
+        `SELECT client_account_id FROM projects WHERE id = $1`,
+        [req.params.id]
+      );
+      const previousClientId = previousResult.rows[0]?.client_account_id || null;
 
       if (clientAccountId !== undefined) {
         normalizedClientId = clientAccountId
@@ -1105,7 +1509,12 @@ export function registerProjectRoutes(app) {
 
       await client.query('COMMIT');
 
-      res.json(result.rows[0]);
+      const updatedProject = result.rows[0];
+      if (updatedProject.client_account_id && updatedProject.client_account_id !== previousClientId) {
+        updatedProject.client_link_sent = await sendClientProjectLink(updatedProject.id);
+      }
+
+      res.json(updatedProject);
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
       console.error('[Projets IT] Modification projet', error);
@@ -1168,6 +1577,21 @@ export function registerProjectRoutes(app) {
   });
 
 
+  app.post('/api/projects/:id/send-client-link', requireAuth, async (req, res) => {
+    try {
+      const role = getModuleRole(req.session.user);
+      if (role !== 'manager' && !(await isChefDeProjet(req.session.user.id, req.params.id))) {
+        return res.status(403).json({ error: 'Seul le manager ou le chef de projet peut envoyer le lien' });
+      }
+      const sent = await sendClientProjectLink(req.params.id);
+      if (!sent) return res.status(400).json({ error: "Aucun client avec une adresse e-mail sur ce projet, ou échec de l'envoi" });
+      res.json({ ok: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.put('/api/projects/:id/state', requireAuth, requireRole('manager'), async (req, res) => {
     try {
       const { projectState } = req.body;
@@ -1194,6 +1618,36 @@ export function registerProjectRoutes(app) {
   // -------------------------------------------------------------------
   // Tâches
   // -------------------------------------------------------------------
+  const TASK_STATUSES = ['backlog', 'ready', 'in_progress', 'in_review', 'done'];
+
+  // Tâche accessible à l'utilisateur ; envoie l'erreur HTTP et renvoie null sinon.
+  async function loadTaskForUser(req, res, { write }) {
+    const role = getModuleRole(req.session.user);
+    if (role === 'client' || (write && role === 'directeur')) {
+      res.status(403).json({ error: 'Accès refusé' });
+      return null;
+    }
+    const taskResult = await pool.query(`SELECT * FROM project_tasks WHERE id = $1`, [req.params.id]);
+    if (taskResult.rowCount === 0) {
+      res.status(404).json({ error: 'Tâche introuvable' });
+      return null;
+    }
+    const task = taskResult.rows[0];
+    if (role === 'dev' && !(await isAssignedToProject(req.session.user.id, task.project_id))) {
+      res.status(403).json({ error: 'Accès refusé à cette tâche' });
+      return null;
+    }
+    return task;
+  }
+
+  function logGitHubFailures(results) {
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.error('[Projets IT] Synchronisation statut GitHub impossible', result.reason?.message || result.reason);
+      }
+    }
+  }
+
   app.post('/api/projects/tasks', requireAuth, async (req, res) => {
     try {
       const role = getModuleRole(req.session.user);
@@ -1210,12 +1664,12 @@ export function registerProjectRoutes(app) {
          VALUES ($1, $2, $3, $4, $5, 'manuelle') RETURNING *`,
         [projectId, title, description || null, assigneeAccountId || null, estimatedHours || 0]
       );
-      const task = result.rows[0];
+      let task = result.rows[0];
+      await notifyTaskAssignee(task, req.session.user.id);
       try {
-        const githubIssueUrl = await createGitHubIssueForTask(task);
-        if (githubIssueUrl) task.github_issue_url = githubIssueUrl;
+        task = (await createGitHubItemForTask(task)) || task;
       } catch (githubError) {
-        console.error('[Projets IT] Creation issue GitHub impossible', githubError.message || githubError);
+        console.error('[Projets IT] Creation carte GitHub impossible', githubError.message || githubError);
         task.github_sync_error = githubError.message || String(githubError);
       }
       res.status(201).json(task);
@@ -1227,18 +1681,19 @@ export function registerProjectRoutes(app) {
 
   app.put('/api/projects/tasks/:id', requireAuth, async (req, res) => {
     try {
+      const task = await loadTaskForUser(req, res, { write: true });
+      if (!task) return;
       const role = getModuleRole(req.session.user);
-      if (role === 'client' || role === 'directeur') return res.status(403).json({ error: 'Accès refusé' });
-
-      const taskResult = await pool.query(`SELECT * FROM project_tasks WHERE id = $1`, [req.params.id]);
-      if (taskResult.rowCount === 0) return res.status(404).json({ error: 'Tâche introuvable' });
-      const task = taskResult.rows[0];
-
-      if (role === 'dev' && !(await isAssignedToProject(req.session.user.id, task.project_id))) {
-        return res.status(403).json({ error: 'Accès refusé à cette tâche' });
-      }
 
       const { status, spentHours, estimatedHours, assigneeAccountId } = req.body;
+      if (status != null && !TASK_STATUSES.includes(status)) {
+        return res.status(400).json({ error: 'Statut de tâche invalide' });
+      }
+      const assigneeProvided = assigneeAccountId !== undefined;
+      if (assigneeProvided && role === 'dev' && !(await isChefDeProjet(req.session.user.id, task.project_id))) {
+        return res.status(403).json({ error: 'Seul le chef de projet peut affecter une tâche' });
+      }
+
       const result = await pool.query(
         `UPDATE project_tasks SET
            status = COALESCE($1, status),
@@ -1247,31 +1702,96 @@ export function registerProjectRoutes(app) {
              WHEN $1 IS NOT NULL AND $1 <> 'done' THEN NULL
              ELSE completed_at
            END,
+           status_updated_at = CASE
+             WHEN $1 IS NOT NULL AND $1 IS DISTINCT FROM status THEN now()
+             ELSE status_updated_at
+           END,
            spent_hours = COALESCE($2, spent_hours),
            estimated_hours = COALESCE($3, estimated_hours),
-           assignee_account_id = COALESCE($4, assignee_account_id),
+           assignee_account_id = CASE WHEN $6::boolean THEN $4::uuid ELSE assignee_account_id END,
            updated_at = now()
          WHERE id = $5 RETURNING *`,
-        [status, spentHours, estimatedHours, assigneeAccountId, req.params.id]
+        [status ?? null, spentHours ?? null, estimatedHours ?? null, assigneeAccountId || null, req.params.id, assigneeProvided]
       );
       const updatedTask = result.rows[0];
       res.json(updatedTask);
 
-      if (status) {
+      if (updatedTask.assignee_account_id && updatedTask.assignee_account_id !== task.assignee_account_id) {
+        await notifyTaskAssignee(updatedTask, req.session.user.id);
+      }
+      if (status && status !== task.status) {
+        await handleTaskStatusChange(updatedTask, task.status);
         Promise.allSettled([
           syncGitHubIssueState(updatedTask, status),
           updateGitHubProjectV2Status(updatedTask, status),
-        ]).then((results) => {
-          for (const result of results) {
-            if (result.status === 'rejected') {
-              console.error(
-                '[Projets IT] Synchronisation statut GitHub impossible',
-                result.reason?.message || result.reason
-              );
-            }
-          }
-        });
+        ]).then(logGitHubFailures);
       }
+    } catch (error) {
+      console.error(error);
+      if (!res.headersSent) res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Commentaires de tâche — synchronisés avec l'issue GitHub liée
+  // -------------------------------------------------------------------
+  app.get('/api/projects/tasks/:id/comments', requireAuth, async (req, res) => {
+    try {
+      const task = await loadTaskForUser(req, res, { write: false });
+      if (!task) return;
+      let githubError = null;
+      if (task.github_issue_url) {
+        try {
+          await syncTaskCommentsFromGitHub(task);
+        } catch (error) {
+          githubError = error.message || String(error);
+          console.error('[Projets IT] Lecture commentaires GitHub impossible', githubError);
+        }
+      }
+      const result = await pool.query(
+        `SELECT id, author_account_id, author_name, body, github_comment_url, created_at
+         FROM project_task_comments WHERE task_id = $1 ORDER BY created_at`,
+        [task.id]
+      );
+      res.json({ comments: result.rows, githubError });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/projects/tasks/:id/comments', requireAuth, async (req, res) => {
+    try {
+      const task = await loadTaskForUser(req, res, { write: true });
+      if (!task) return;
+      const body = String(req.body.body || '').trim();
+      if (!body) return res.status(400).json({ error: 'Commentaire vide' });
+
+      const author = req.session.user;
+      let githubComment = null;
+      const issue = parseGitHubIssueUrl(task.github_issue_url);
+      if (issue) {
+        // Le token GitHub est commun : on indique l'auteur réel dans le texte.
+        githubComment = await githubRequest(
+          `/repos/${encodeURIComponent(issue.owner)}/${encodeURIComponent(issue.repo)}/issues/${issue.number}/comments`,
+          'POST',
+          { body: `**${author.displayName}** (via GESTION_IT) :\n\n${body}` }
+        );
+      }
+
+      const result = await pool.query(
+        `INSERT INTO project_task_comments (task_id, author_account_id, author_name, body, github_comment_id, github_comment_url)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, author_account_id, author_name, body, github_comment_url, created_at`,
+        [task.id, author.id, author.displayName, body, githubComment?.id || null, githubComment?.html_url || null]
+      );
+      if (githubComment) {
+        await pool.query(
+          `UPDATE project_tasks SET github_comment_count = github_comment_count + 1 WHERE id = $1`,
+          [task.id]
+        );
+      }
+      res.status(201).json(result.rows[0]);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: error.message });
@@ -1281,23 +1801,81 @@ export function registerProjectRoutes(app) {
   // -------------------------------------------------------------------
   // Demandes client
   // -------------------------------------------------------------------
-  app.post('/api/projects/requests', requireAuth, requireRole('client'), async (req, res) => {
+  function decodeUploadName(name) {
+    // busboy décode les noms de fichiers en latin1 : on restaure les accents.
     try {
-      const { projectId, title, description } = req.body;
+      return Buffer.from(name, 'latin1').toString('utf8');
+    } catch {
+      return name;
+    }
+  }
+
+  function uploadRequestFiles(req, res, next) {
+    upload.array('files', 10)(req, res, (error) => {
+      if (!error) return next();
+      const message = error.code === 'LIMIT_FILE_SIZE'
+        ? 'Fichier trop volumineux (25 Mo maximum par fichier)'
+        : error.code === 'LIMIT_UNEXPECTED_FILE'
+          ? '10 pièces jointes maximum'
+          : error.message;
+      res.status(400).json({ error: message });
+    });
+  }
+
+  app.post('/api/projects/requests', requireAuth, requireRole('client'), uploadRequestFiles, async (req, res) => {
+    const files = req.files || [];
+    try {
+      const { projectId } = req.body;
+      const title = String(req.body.title || '').trim();
+      const description = String(req.body.description || '').trim();
       const accountId = req.session.user.id;
+
+      if (!projectId || !title) {
+        await removeUploadedFiles(files);
+        return res.status(400).json({ error: 'Le titre de la demande est obligatoire' });
+      }
 
       const projectResult = await pool.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
       if (projectResult.rowCount === 0 || projectResult.rows[0].client_account_id !== accountId) {
+        await removeUploadedFiles(files);
         return res.status(403).json({ error: "Ce projet ne vous appartient pas" });
       }
+      const project = projectResult.rows[0];
 
-      const result = await pool.query(
-        `INSERT INTO project_client_requests (project_id, client_account_id, title, description)
-         VALUES ($1, $2, $3, $4) RETURNING *`,
-        [projectId, accountId, title, description || null]
-      );
-      res.status(201).json(result.rows[0]);
+      const client = await pool.connect();
+      let request;
+      try {
+        await client.query('BEGIN');
+        const result = await client.query(
+          `INSERT INTO project_client_requests (project_id, client_account_id, title, description)
+           VALUES ($1, $2, $3, $4) RETURNING *`,
+          [projectId, accountId, title, description || null]
+        );
+        request = result.rows[0];
+        for (const file of files) {
+          await client.query(
+            `INSERT INTO project_files (project_id, client_request_id, filename, storage_path, uploaded_by_account_id)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [projectId, request.id, decodeUploadName(file.originalname), file.filename, accountId]
+          );
+        }
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      await notifyProjectLeads(projectId, {
+        type: 'client_request',
+        title: `Nouvelle demande client : ${title}`,
+        body: `${req.session.user.displayName} — projet ${project.name}`
+      });
+
+      res.status(201).json({ ...request, filesCount: files.length });
     } catch (error) {
+      await removeUploadedFiles(files);
       console.error(error);
       res.status(500).json({ error: error.message });
     }
@@ -1311,9 +1889,7 @@ export function registerProjectRoutes(app) {
         return res.status(403).json({ error: 'Accès refusé' });
       }
       const result = await pool.query(
-        `SELECT r.*, c.display_name AS client_name, c.email AS client_email
-         FROM project_client_requests r JOIN app_accounts c ON c.id = r.client_account_id
-         WHERE r.project_id = $1 ORDER BY r.created_at DESC`,
+        `${CLIENT_REQUESTS_SELECT} WHERE r.project_id = $1 ORDER BY r.created_at DESC`,
         [req.params.id]
       );
       res.json(result.rows);
@@ -1323,12 +1899,14 @@ export function registerProjectRoutes(app) {
     }
   });
 
+  // Validation par le chef de projet : il peut reformuler la demande
+  // (titre, description) et l'affecter ; elle devient une tâche.
   app.post('/api/projects/requests/:id/valider', requireAuth, async (req, res) => {
     try {
       const role = getModuleRole(req.session.user);
       if (role === 'client' || role === 'directeur') return res.status(403).json({ error: 'Accès refusé' });
 
-      const { estimatedHours } = req.body;
+      const { estimatedHours, title, description, assigneeAccountId } = req.body;
       if (!estimatedHours || Number(estimatedHours) <= 0) {
         return res.status(400).json({ error: 'Une prévision de temps (estimatedHours > 0) est obligatoire' });
       }
@@ -1342,36 +1920,79 @@ export function registerProjectRoutes(app) {
         return res.status(403).json({ error: 'Seul le chef de projet peut traiter une demande client' });
       }
 
-      const taskResult = await pool.query(
-        `INSERT INTO project_tasks (project_id, title, description, estimated_hours, origin)
-         VALUES ($1, $2, $3, $4, 'demande_client') RETURNING *`,
-        [request.project_id, request.title, request.description, Number(estimatedHours)]
-      );
-      const task = taskResult.rows[0];
+      const finalTitle = String(title ?? request.title).trim() || request.title;
+      const finalDescription = description === undefined
+        ? request.description
+        : String(description).trim() || null;
+      const edited =
+        finalTitle !== request.title || (finalDescription || null) !== (request.description || null);
+
+      const client = await pool.connect();
+      let task;
+      let attachmentsCount = 0;
       try {
-        const githubIssueUrl = await createGitHubIssueForTask(task);
-        if (githubIssueUrl) task.github_issue_url = githubIssueUrl;
+        await client.query('BEGIN');
+        const taskResult = await client.query(
+          `INSERT INTO project_tasks (project_id, title, description, estimated_hours, origin, assignee_account_id)
+           VALUES ($1, $2, $3, $4, 'demande_client', $5) RETURNING *`,
+          [request.project_id, finalTitle, finalDescription, Number(estimatedHours), assigneeAccountId || null]
+        );
+        task = taskResult.rows[0];
+        await client.query(
+          `UPDATE project_client_requests SET
+             status = 'validee',
+             task_id = $1,
+             original_title = CASE WHEN $2::boolean THEN COALESCE(original_title, title) ELSE original_title END,
+             original_description = CASE WHEN $2::boolean THEN COALESCE(original_description, description) ELSE original_description END,
+             title = $3,
+             description = $4,
+             reviewed_by = $5,
+             reviewed_at = now()
+           WHERE id = $6`,
+          [task.id, edited, finalTitle, finalDescription, req.session.user.id, request.id]
+        );
+        const filesResult = await client.query(
+          `UPDATE project_files SET task_id = $1 WHERE client_request_id = $2`,
+          [task.id, request.id]
+        );
+        attachmentsCount = filesResult.rowCount;
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      await notifyTaskAssignee(task, req.session.user.id);
+      try {
+        task = (await createGitHubItemForTask(task, { attachmentsCount })) || task;
       } catch (githubError) {
-        console.error('[Projets IT] Creation issue GitHub depuis demande client impossible', githubError.message || githubError);
+        console.error('[Projets IT] Creation carte GitHub depuis demande client impossible', githubError.message || githubError);
         task.github_sync_error = githubError.message || String(githubError);
       }
 
-      await pool.query(`UPDATE project_client_requests SET status = 'validee', task_id = $1 WHERE id = $2`, [
-        task.id,
-        request.id
-      ]);
-
       const clientResult = await pool.query(`SELECT * FROM app_accounts WHERE id = $1`, [request.client_account_id]);
-      const client = clientResult.rows[0];
-      if (client) {
+      const requester = clientResult.rows[0];
+      if (requester) {
+        const paragraphs = [
+          `Votre demande <strong>« ${escapeHtml(request.title)} »</strong> a été acceptée et ajoutée aux tâches de l'équipe informatique.`
+        ];
+        if (edited) {
+          paragraphs.push(`Elle a été reformulée ainsi : <strong>« ${escapeHtml(finalTitle)} »</strong>${finalDescription ? `<br/>${escapeHtml(finalDescription).replace(/\n/g, '<br/>')}` : ''}`);
+        }
+        paragraphs.push('Vous recevrez un e-mail quand nous commencerons à travailler dessus, puis quand elle sera terminée.');
         await notifyClient({
-          email: client.email,
-          subject: `Votre demande "${request.title}" a été validée`,
-          html: `<p>Bonjour ${client.display_name},</p><p>Votre demande a été prise en compte et planifiée par l'équipe IT.</p>`
+          email: requester.email,
+          subject: `Votre demande "${request.title}" a été acceptée`,
+          html: clientMailHtml({ name: requester.display_name, paragraphs, projectId: request.project_id })
         });
       }
 
-      res.json({ request: { ...request, status: 'validee', task_id: task.id }, task });
+      res.json({
+        request: { ...request, status: 'validee', task_id: task.id, title: finalTitle, description: finalDescription },
+        task
+      });
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: error.message });
@@ -1386,20 +2007,34 @@ export function registerProjectRoutes(app) {
       const requestResult = await pool.query(`SELECT * FROM project_client_requests WHERE id = $1`, [req.params.id]);
       if (requestResult.rowCount === 0) return res.status(404).json({ error: 'Demande introuvable' });
       const request = requestResult.rows[0];
+      if (request.status !== 'en_attente') return res.status(409).json({ error: 'Demande déjà traitée' });
 
       if (role === 'dev' && !(await isChefDeProjet(req.session.user.id, request.project_id))) {
         return res.status(403).json({ error: 'Seul le chef de projet peut traiter une demande client' });
       }
 
-      await pool.query(`UPDATE project_client_requests SET status = 'rejetee' WHERE id = $1`, [req.params.id]);
+      await pool.query(
+        `UPDATE project_client_requests SET status = 'rejetee', reviewed_by = $1, reviewed_at = now() WHERE id = $2`,
+        [req.session.user.id, req.params.id]
+      );
 
+      const reason = String(req.body.reason || '').trim();
       const clientResult = await pool.query(`SELECT * FROM app_accounts WHERE id = $1`, [request.client_account_id]);
-      const client = clientResult.rows[0];
-      if (client) {
+      const requester = clientResult.rows[0];
+      if (requester) {
         await notifyClient({
-          email: client.email,
+          email: requester.email,
           subject: `Votre demande "${request.title}" a été rejetée`,
-          html: `<p>Bonjour ${client.display_name},</p><p>Votre demande n'a pas pu être retenue en l'état. N'hésitez pas à revenir vers l'équipe IT pour plus de détails.</p>`
+          html: clientMailHtml({
+            name: requester.display_name,
+            paragraphs: [
+              `Votre demande <strong>« ${escapeHtml(request.title)} »</strong> n'a pas pu être retenue en l'état.`,
+              reason
+                ? `Motif : ${escapeHtml(reason).replace(/\n/g, '<br/>')}`
+                : "N'hésitez pas à revenir vers l'équipe informatique pour plus de détails."
+            ],
+            projectId: request.project_id
+          })
         });
       }
 
@@ -1496,11 +2131,15 @@ export function registerProjectRoutes(app) {
     try {
       if (!req.file) return res.status(400).json({ error: 'Fichier requis (champ "file")' });
       const { projectId, messageId, clientRequestId } = req.body;
+      if (!(await canAccessProject(req.session.user, projectId))) {
+        await removeUploadedFiles([req.file]);
+        return res.status(403).json({ error: 'Accès refusé à ce projet' });
+      }
 
       const result = await pool.query(
         `INSERT INTO project_files (project_id, message_id, client_request_id, filename, storage_path, uploaded_by_account_id)
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [projectId || null, messageId || null, clientRequestId || null, req.file.originalname, req.file.filename, req.session.user.id]
+        [projectId, messageId || null, clientRequestId || null, decodeUploadName(req.file.originalname), req.file.filename, req.session.user.id]
       );
       res.status(201).json(result.rows[0]);
     } catch (error) {
@@ -1511,9 +2150,11 @@ export function registerProjectRoutes(app) {
 
   app.get('/api/projects/files/:id/download', requireAuth, async (req, res) => {
     try {
-      const result = await pool.query(`SELECT * FROM project_files WHERE id = $1`, [req.params.id]);
-      if (result.rowCount === 0) return res.status(404).json({ error: 'Fichier introuvable' });
-      const file = result.rows[0];
+      const file = await loadFileWithProject(req.params.id);
+      if (!file) return res.status(404).json({ error: 'Fichier introuvable' });
+      if (!(await canAccessProject(req.session.user, file.resolved_project_id))) {
+        return res.status(403).json({ error: 'Accès refusé à ce fichier' });
+      }
       const filePath = path.join(PROJECTS_DIR, file.storage_path);
       if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Fichier introuvable sur le disque' });
       res.download(filePath, file.filename);
@@ -1559,7 +2200,7 @@ export function registerProjectRoutes(app) {
       const membersResult = await pool.query(
         `SELECT * FROM app_accounts ORDER BY display_name`
       );
-      const allTasksResult = await pool.query(`SELECT * FROM project_tasks WHERE status != 'closed'`);
+      const allTasksResult = await pool.query(`SELECT * FROM project_tasks WHERE status <> 'done'`);
       const chargeParTechnicien = membersResult.rows.map((u) => {
         const tachesActives = allTasksResult.rows.filter((t) => t.assignee_account_id === u.id);
         const chargeEstimeeH = tachesActives.reduce((s, t) => s + Number(t.estimated_hours), 0);

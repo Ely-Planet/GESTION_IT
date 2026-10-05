@@ -41,6 +41,29 @@ export type Task = {
   origin: 'manuelle' | 'demande_client';
   github_issue_url: string | null;
   completed_at?: string | null;
+  comment_count?: number;
+  files?: ProjectFile[] | null;
+};
+
+export type TaskComment = {
+  id: string;
+  author_account_id: string | null;
+  author_name: string;
+  body: string;
+  github_comment_url: string | null;
+  created_at: string;
+};
+
+export type AppNotification = {
+  id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  project_id: string | null;
+  task_id: string | null;
+  project_name: string | null;
+  read_at: string | null;
+  created_at: string;
 };
 
 export type Assignment = {
@@ -61,6 +84,11 @@ export type ClientRequest = {
   description: string | null;
   status: 'en_attente' | 'validee' | 'rejetee';
   task_id: string | null;
+  task_status?: Task['status'] | null;
+  original_title?: string | null;
+  original_description?: string | null;
+  files?: ProjectFile[] | null;
+  created_at?: string;
   client_name?: string;
 };
 
@@ -87,6 +115,9 @@ export type ProjectDetailData = ProjectListItem & {
   assignments?: Assignment[];
   clientRequests?: ClientRequest[];
   estChefDeProjet?: boolean;
+  client_account_id?: string | null;
+  client_email?: string | null;
+  github_project_url?: string | null;
 };
 
 export type DashboardData = {
@@ -138,6 +169,6 @@ export const STATUS_BADGE_CLASSES: Record<string, string> = {
   en_cours: 'bg-amber-100 text-amber-700',
   termine: 'bg-emerald-100 text-emerald-700',
   validee: 'bg-emerald-100 text-emerald-700',
-  rejettee: 'bg-red-100 text-red-700',
+  rejetee: 'bg-red-100 text-red-700',
   archive: 'bg-ink-100 text-ink-500',
 };

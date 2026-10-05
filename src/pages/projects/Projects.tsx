@@ -6,9 +6,10 @@ import ProjectDetail from './ProjectDetail';
 import DashboardView from './DashboardView';
 import ReportingView from './ReportingView';
 
-export default function Projects() {
+export default function Projects({ initialProjectId = null }: { initialProjectId?: string | null }) {
   const { user } = useAuth();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // initialProjectId : projet ouvert depuis une notification ou le lien reçu par e-mail.
+  const [selectedId, setSelectedId] = useState<string | null>(initialProjectId);
   const [view, setView] = useState<'list' | 'dashboard'>('list');
 
   const isManager = Boolean(user?.isITManager);
