@@ -136,6 +136,16 @@ export type DashboardData = {
   }[];
   chargeGlobaleEquipeH: number;
   demandesEnAttente: number;
+  tempsParMois: TimeByMonthRow[];
+};
+
+export type TimeByMonthRow = {
+  mois: string; // AAAA-MM
+  userId: string | null;
+  nom: string;
+  projetId: string;
+  projet: string;
+  heures: number;
 };
 
 export type ReportingRow = {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { projectsApi } from './api';
+import TimeByMonth from './TimeByMonth';
 import type { DashboardData } from './types';
 
 function BarRow({ label, value, max, highlight }: { label: string; value: number; max: number; highlight?: boolean }) {
@@ -143,6 +144,8 @@ export default function DashboardView() {
         </div>
         <p className="text-xs text-ink-400 mt-3">En rouge : charge active supérieure à la disponibilité déclarée, ou temps réel supérieur à l'estimé.</p>
       </div>
+
+      <TimeByMonth rows={data.tempsParMois || []} />
 
       <div className="card p-5">
         <h2 className="font-semibold text-ink-900 mb-4">Taux de complétude par projet</h2>

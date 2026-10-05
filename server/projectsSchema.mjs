@@ -24,6 +24,32 @@ BEGIN
   END IF;
 END $$;
 
+-- Journal du temps passé (015) : chaque saisie de "Temps passé" y est datée,
+-- pour le suivi mois par mois et technicien par technicien.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.tables WHERE table_name = 'project_time_entries'
+  ) THEN
+    CREATE TABLE project_time_entries (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      task_id uuid NOT NULL REFERENCES project_tasks(id) ON DELETE CASCADE,
+      account_id uuid REFERENCES app_accounts(id),
+      hours numeric NOT NULL,
+      entered_by uuid REFERENCES app_accounts(id),
+      logged_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX idx_project_time_entries_logged ON project_time_entries(logged_at);
+    CREATE INDEX idx_project_time_entries_task ON project_time_entries(task_id);
+    -- Reprise de l'existant : le temps déjà saisi n'était pas daté, il est
+    -- rattaché au mois de la dernière modification de la tâche.
+    INSERT INTO project_time_entries (task_id, account_id, hours, logged_at)
+    SELECT id, assignee_account_id, spent_hours, COALESCE(completed_at, updated_at, created_at, now())
+    FROM project_tasks
+    WHERE spent_hours > 0;
+  END IF;
+END $$;
+
 -- 1 GitHub Project (V2) = 1 projet GESTION_IT
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_project_id text UNIQUE;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_project_url text;

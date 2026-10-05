@@ -1746,6 +1746,17 @@ export function registerProjectRoutes(app) {
         [status ?? null, spentHours ?? null, estimatedHours ?? null, assigneeAccountId || null, req.params.id, assigneeProvided]
       );
       const updatedTask = result.rows[0];
+
+      // Journal daté : l'écart saisi est attribué au technicien affecté
+      // (à défaut, à la personne qui saisit).
+      const spentDelta = Number(updatedTask.spent_hours) - Number(task.spent_hours);
+      if (spentHours != null && spentDelta !== 0) {
+        await pool.query(
+          `INSERT INTO project_time_entries (task_id, account_id, hours, entered_by) VALUES ($1, $2, $3, $4)`,
+          [task.id, updatedTask.assignee_account_id || req.session.user.id, spentDelta, req.session.user.id]
+        );
+      }
+
       res.json(updatedTask);
 
       if (updatedTask.assignee_account_id && updatedTask.assignee_account_id !== task.assignee_account_id) {
@@ -2278,13 +2289,34 @@ export function registerProjectRoutes(app) {
 
       const demandesResult = await pool.query(`SELECT COUNT(*) FROM project_client_requests WHERE status = 'en_attente'`);
 
+      // Temps passé sur les 12 derniers mois, par mois, technicien et projet
+      // (projets clôturés compris : le temps a bien été passé).
+      const tempsResult = await pool.query(
+        `SELECT to_char(date_trunc('month', e.logged_at AT TIME ZONE 'Europe/Paris'), 'YYYY-MM') AS mois,
+                e.account_id AS "userId",
+                COALESCE(a.display_name, 'Non affecté') AS nom,
+                t.project_id AS "projetId",
+                p.name AS projet,
+                SUM(e.hours)::float AS heures
+         FROM project_time_entries e
+         JOIN project_tasks t ON t.id = e.task_id
+         JOIN projects p ON p.id = t.project_id
+         LEFT JOIN app_accounts a ON a.id = e.account_id
+         WHERE e.logged_at >= date_trunc('month', now() AT TIME ZONE 'Europe/Paris') - interval '11 months'
+           AND p.status <> 'archive'
+         GROUP BY 1, 2, 3, 4, 5
+         HAVING SUM(e.hours) <> 0
+         ORDER BY 1`
+      );
+
       res.json({
         nombreTotalProjets: projects.length,
         nbParStatut,
         chargeParProjet,
         chargeParTechnicien,
         chargeGlobaleEquipeH: chargeParTechnicien.reduce((s, u) => s + u.chargeEstimeeH, 0),
-        demandesEnAttente: Number(demandesResult.rows[0].count)
+        demandesEnAttente: Number(demandesResult.rows[0].count),
+        tempsParMois: tempsResult.rows
       });
     } catch (error) {
       console.error(error);
