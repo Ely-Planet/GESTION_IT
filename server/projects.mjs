@@ -2324,6 +2324,44 @@ export function registerProjectRoutes(app) {
     }
   });
 
+  // Indicateurs Projets IT du tableau de bord principal de l'application.
+  app.get('/api/projects-indicators', requireAuth, requireRole('manager', 'dev', 'directeur'), async (req, res) => {
+    try {
+      const result = await pool.query(
+        `WITH actifs AS (
+           SELECT id, project_state FROM projects
+           WHERE status <> 'archive' AND project_state <> 'closed'
+         ),
+         taches AS (
+           SELECT t.* FROM project_tasks t JOIN actifs a ON a.id = t.project_id
+         ),
+         mois AS (
+           SELECT date_trunc('month', now() AT TIME ZONE 'Europe/Paris') AS debut
+         )
+         SELECT
+           (SELECT COUNT(*) FROM actifs)::int AS "projetsActifs",
+           (SELECT COUNT(*) FROM actifs WHERE project_state = 'new')::int AS "projetsNouveaux",
+           (SELECT COUNT(*) FROM actifs WHERE project_state = 'in_progress')::int AS "projetsEnCours",
+           (SELECT COUNT(*) FROM actifs WHERE project_state = 'maintenance')::int AS "projetsMaintenance",
+           (SELECT COUNT(*) FROM taches WHERE status <> 'done')::int AS "tachesOuvertes",
+           (SELECT COUNT(*) FROM taches WHERE status IN ('in_progress', 'in_review'))::int AS "tachesEnCours",
+           (SELECT COUNT(*) FROM taches WHERE status <> 'done' AND assignee_account_id IS NULL)::int AS "tachesNonAffectees",
+           (SELECT COUNT(*) FROM taches WHERE status <> 'done' AND assignee_account_id = $1)::int AS "mesTaches",
+           (SELECT COUNT(*) FROM project_tasks, mois
+             WHERE status = 'done' AND completed_at AT TIME ZONE 'Europe/Paris' >= mois.debut)::int AS "tachesTermineesMois",
+           (SELECT COUNT(*) FROM project_client_requests r JOIN actifs a ON a.id = r.project_id
+             WHERE r.status = 'en_attente')::int AS "demandesEnAttente",
+           (SELECT COALESCE(SUM(e.hours), 0) FROM project_time_entries e, mois
+             WHERE e.logged_at AT TIME ZONE 'Europe/Paris' >= mois.debut)::float AS "heuresMois"`,
+        [req.session.user.id]
+      );
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.get('/api/projects-reporting', requireAuth, requireRole('manager', 'directeur'), async (req, res) => {
     try {
       const projectsResult = await pool.query(

@@ -1,10 +1,12 @@
 import type {
+  Employee,
   HardwareItem,
   License,
   LicenseType,
   Movement,
   MovementItem,
   MovementLicense,
+  SubscribedSku,
 } from './supabase';
 
 export type CategoryStock = {
@@ -40,6 +42,10 @@ export type HardwareCategoryLite = {
   label: string;
   tracked_for_person: boolean;
 };
+
+// Licences libérées par chaque départ à venir, lues dans Microsoft 365
+// (identifiant du mouvement -> types de licence de la personne).
+export type OffboardingLicenses = Record<string, string[]>;
 
 export function computeStockByCategory(
   hardware: HardwareItem[],
@@ -82,206 +88,239 @@ export function computeStockByCategory(
   return map;
 }
 
+function findMicrosoftSku(licenseType: LicenseType, subscribedSkus: SubscribedSku[]) {
+  // Les types de licence Microsoft ont pour code le SKU, stocké en display_name.
+  return subscribedSkus.find((sku) => sku.display_name === licenseType.code);
+}
+
+// Même calcul que la page Licences : pour une licence Microsoft, le nombre
+// utilisé est celui de Microsoft 365 (consumed_units) ; la table licenses
+// ne contient pas les attributions Microsoft.
 export function computeLicenseStock(
   licenses: License[],
   licenseTypes: LicenseType[],
+  subscribedSkus: SubscribedSku[] = [],
 ): Map<string, LicenseStock> {
   const map = new Map<string, LicenseStock>();
   for (const lt of licenseTypes) {
+    const seats = licenses.filter((l) => l.license_type_id === lt.id);
+    const reserved = seats.filter((l) => l.status === 'reserved').length;
+    const resiliated = seats.filter((l) => l.status === 'resiliated').length;
+    const sku = findMicrosoftSku(lt, subscribedSkus);
+    const total = sku ? sku.enabled_units ?? lt.total_seats : Math.max(lt.total_seats, seats.length);
+    const assigned = sku ? sku.consumed_units ?? 0 : seats.filter((l) => l.status === 'assigned').length;
     map.set(lt.id, {
       licenseTypeId: lt.id,
-      total: lt.total_seats,
-      available: lt.total_seats,
-      assigned: 0,
-      reserved: 0,
-      resiliated: 0,
+      total,
+      assigned,
+      reserved,
+      resiliated,
+      available: Math.max(0, total - assigned),
     });
-  }
-  for (const lic of licenses) {
-    const entry = map.get(lic.license_type_id);
-    if (!entry) continue;
-    if (lic.status === 'assigned') {
-      entry.assigned++;
-      entry.available = Math.max(0, entry.available - 1);
-    } else if (lic.status === 'reserved') {
-      entry.reserved++;
-      entry.available = Math.max(0, entry.available - 1);
-    } else if (lic.status === 'resiliated') {
-      entry.resiliated++;
-      entry.available = Math.max(0, entry.available - 1);
-    }
   }
   return map;
 }
 
-const TRACKED_FOR_ONBOARDING = ['PC', 'PHONE', 'HEADSET'];
+export type SupplyForecastInput = {
+  hardware: HardwareItem[];
+  licenses: License[];
+  licenseTypes: LicenseType[];
+  subscribedSkus: SubscribedSku[];
+  movements: Movement[];
+  movementItems: MovementItem[];
+  movementLicenses: MovementLicense[];
+  hardwareCategories: HardwareCategoryLite[];
+  employees: Employee[];
+  offboardingLicenses: OffboardingLicenses | null;
+  asOf: string;
+};
 
-export function computeForecast(
-  hardware: HardwareItem[],
-  licenses: License[],
-  licenseTypes: LicenseType[],
-  movements: Movement[],
-  hardwareCategories: HardwareCategoryLite[],
-  asOf: string,
-): ForecastAlert[] {
-  const alerts = computeForecastV2(hardware, licenses, licenseTypes, movements, hardwareCategories, asOf);
-  const timeSeries = computeStockTimeSeries(hardware, movements, hardwareCategories, asOf);
-  return [...alerts, ...timeSeries];
+type Resource = { key: string; label: string; code?: string; level: number; kind: 'hw' | 'lic' };
+
+/**
+ * Projection chronologique du matériel et des licences :
+ * stock disponible aujourd'hui, + ce que rendent les départs à leur date,
+ * − ce que demandent les arrivées à leur date. Une alerte par ressource,
+ * à la première date où le stock devient nul ou négatif.
+ * Les mouvements en retard (date passée, non terminés) comptent dès aujourd'hui.
+ */
+export function computeSupplyForecast(input: SupplyForecastInput): ForecastAlert[] {
+  const today = new Date().toISOString().slice(0, 10);
+  const hardwareById = new Map(input.hardware.map((h) => [h.id, h]));
+  const licenseById = new Map(input.licenses.map((l) => [l.id, l]));
+  const categoryById = new Map(input.hardwareCategories.map((c) => [c.id, c]));
+  const licenseTypeById = new Map(input.licenseTypes.map((lt) => [lt.id, lt]));
+  const employeeById = new Map(input.employees.map((e) => [e.id, e]));
+  const licenseStock = computeLicenseStock(input.licenses, input.licenseTypes, input.subscribedSkus);
+
+  const resources = new Map<string, Resource>();
+  const hwResource = (categoryId: string) => {
+    const key = `hw-${categoryId}`;
+    let resource = resources.get(key);
+    if (!resource) {
+      const category = categoryById.get(categoryId);
+      const level = input.hardware.filter(
+        (h) => h.category_id === categoryId && (h.status === 'in_stock' || h.status === 'being_reinstalled'),
+      ).length;
+      resource = { key, label: category?.label ?? 'matériel', code: category?.code, level, kind: 'hw' };
+      resources.set(key, resource);
+    }
+    return resource;
+  };
+  const licResource = (licenseTypeId: string) => {
+    const key = `lic-${licenseTypeId}`;
+    let resource = resources.get(key);
+    if (!resource) {
+      const licenseType = licenseTypeById.get(licenseTypeId);
+      resource = {
+        key,
+        label: licenseType ? `licence(s) ${licenseType.label}` : 'licence(s)',
+        code: licenseType?.code,
+        level: licenseStock.get(licenseTypeId)?.available ?? 0,
+        kind: 'lic',
+      };
+      resources.set(key, resource);
+    }
+    return resource;
+  };
+  const isMicrosoft = (licenseTypeId: string) => {
+    const licenseType = licenseTypeById.get(licenseTypeId);
+    return Boolean(licenseType && findMicrosoftSku(licenseType, input.subscribedSkus));
+  };
+
+  const pending = input.movements
+    .filter((m) => m.status !== 'done' && m.status !== 'cancelled' && m.effective_date <= input.asOf)
+    .map((m) => ({ movement: m, date: m.effective_date < today ? today : m.effective_date }))
+    // Le même jour, les départs passent avant les arrivées.
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.movement.type === 'offboarding' ? -1 : 1));
+
+  const itemsByMovement = new Map<string, MovementItem[]>();
+  for (const item of input.movementItems) {
+    const list = itemsByMovement.get(item.movement_id) ?? [];
+    list.push(item);
+    itemsByMovement.set(item.movement_id, list);
+  }
+  const licensesByMovement = new Map<string, MovementLicense[]>();
+  for (const item of input.movementLicenses) {
+    const list = licensesByMovement.get(item.movement_id) ?? [];
+    list.push(item);
+    licensesByMovement.set(item.movement_id, list);
+  }
+
+  // worst < 0 : manque ; worst = 0 : plus aucune marge.
+  type Shortfall = { date: string; worst: number; firstPerson: string };
+  const shortfalls = new Map<string, Shortfall>();
+  const onboardingsWithoutNeeds: string[] = [];
+
+  for (const { movement, date } of pending) {
+    const items = itemsByMovement.get(movement.id) ?? [];
+    const movementLicenses = licensesByMovement.get(movement.id) ?? [];
+    const employee = movement.employee_id ? employeeById.get(movement.employee_id) : undefined;
+    const person = employee ? `${employee.first_name} ${employee.last_name}` : 'arrivée';
+
+    if (movement.type === 'offboarding') {
+      // Matériel rendu : celui encore attribué à la personne.
+      for (const item of items) {
+        const hardware = item.hardware_item_id ? hardwareById.get(item.hardware_item_id) : undefined;
+        if (hardware?.status === 'assigned') hwResource(hardware.category_id).level += 1;
+      }
+      // Licences libérées : Microsoft 365 fait foi pour les licences Microsoft.
+      const microsoftTypes = input.offboardingLicenses?.[movement.id];
+      for (const item of movementLicenses) {
+        if (!item.license_type_id) continue;
+        if (microsoftTypes && isMicrosoft(item.license_type_id)) continue;
+        licResource(item.license_type_id).level += 1;
+      }
+      for (const licenseTypeId of microsoftTypes ?? []) {
+        if (licenseTypeById.has(licenseTypeId)) licResource(licenseTypeId).level += 1;
+      }
+      continue;
+    }
+
+    if (items.length === 0 && movementLicenses.length === 0) {
+      onboardingsWithoutNeeds.push(person);
+      continue;
+    }
+
+    const touched = new Set<Resource>();
+    for (const item of items) {
+      if (!item.category_id) continue;
+      // Matériel déjà sorti du stock pour cette arrivée : rien à prévoir.
+      const hardware = item.hardware_item_id ? hardwareById.get(item.hardware_item_id) : undefined;
+      if (hardware && hardware.status !== 'in_stock' && hardware.status !== 'being_reinstalled') continue;
+      const resource = hwResource(item.category_id);
+      resource.level -= 1;
+      touched.add(resource);
+    }
+    for (const item of movementLicenses) {
+      if (!item.license_type_id) continue;
+      // Une licence non Microsoft déjà attribuée ne compte plus comme besoin.
+      const license = item.license_id ? licenseById.get(item.license_id) : undefined;
+      if (!isMicrosoft(item.license_type_id) && license?.status === 'assigned') continue;
+      const resource = licResource(item.license_type_id);
+      resource.level -= 1;
+      touched.add(resource);
+    }
+
+    for (const resource of touched) {
+      const current = shortfalls.get(resource.key);
+      if (resource.level < 0) {
+        if (!current || current.worst >= 0) {
+          shortfalls.set(resource.key, { date, worst: resource.level, firstPerson: person });
+        } else {
+          current.worst = Math.min(current.worst, resource.level);
+        }
+      } else if (resource.level === 0 && !current) {
+        shortfalls.set(resource.key, { date, worst: 0, firstPerson: person });
+      }
+    }
+  }
+
+  const alerts: ForecastAlert[] = [];
+  for (const [key, shortfall] of shortfalls) {
+    const resource = resources.get(key);
+    if (!resource) continue;
+    if (shortfall.worst < 0) {
+      alerts.push({
+        id: `forecast-${key}`,
+        severity: 'critical',
+        message:
+          `${formatForecastDate(shortfall.date)} : il manquera ${Math.abs(shortfall.worst)} ${resource.label}` +
+          ` (dès l'arrivée de ${shortfall.firstPerson}), départs prévus d'ici là compris`,
+        category: resource.code,
+        date: shortfall.date,
+      });
+    } else {
+      alerts.push({
+        id: `forecast-${key}`,
+        severity: 'warning',
+        message:
+          `${formatForecastDate(shortfall.date)} : plus aucun stock de ${resource.label} après l'arrivée de ${shortfall.firstPerson}` +
+          ', départs prévus d\'ici là compris',
+        category: resource.code,
+        date: shortfall.date,
+      });
+    }
+  }
+  alerts.sort((a, b) => (a.severity === b.severity ? (a.date ?? '').localeCompare(b.date ?? '') : a.severity === 'critical' ? -1 : 1));
+
+  if (onboardingsWithoutNeeds.length) {
+    alerts.push({
+      id: 'forecast-no-needs',
+      severity: 'warning',
+      message:
+        `${onboardingsWithoutNeeds.length} arrivée(s) sans matériel ni licence renseignés, non prises en compte : ` +
+        onboardingsWithoutNeeds.slice(0, 5).join(', ') +
+        (onboardingsWithoutNeeds.length > 5 ? '…' : ''),
+    });
+  }
+
+  return alerts;
 }
 
-function computeForecastV2(
-  hardware: HardwareItem[],
-  licenses: License[],
-  licenseTypes: LicenseType[],
-  movements: Movement[],
-  hardwareCategories: HardwareCategoryLite[],
-  asOf: string,
-): ForecastAlert[] {
+// Licences arrivant à échéance (date d'expiration renseignée).
+export function computeRenewalAlerts(licenses: License[], licenseTypes: LicenseType[]): ForecastAlert[] {
   const alerts: ForecastAlert[] = [];
-  const asOfDate = new Date(asOf);
-
-  const catIdByCode = new Map<string, string>();
-  const catLabelById = new Map<string, string>();
-  for (const c of hardwareCategories) {
-    catIdByCode.set(c.code, c.id);
-    catLabelById.set(c.id, c.label);
-  }
-
-  const stockByCat = new Map<string, number>();
-  for (const h of hardware) {
-    if (h.status === 'in_stock' || h.status === 'being_reinstalled') {
-      stockByCat.set(h.category_id, (stockByCat.get(h.category_id) ?? 0) + 1);
-    }
-  }
-
-  const upcomingOnboardings = movements.filter(
-    (m) =>
-      m.type === 'onboarding' &&
-      m.status !== 'done' &&
-      m.status !== 'cancelled' &&
-      new Date(m.effective_date) <= asOfDate,
-  );
-
-  const upcomingOffboardings = movements.filter(
-    (m) =>
-      m.type === 'offboarding' &&
-      m.status !== 'done' &&
-      m.status !== 'cancelled' &&
-      new Date(m.effective_date) <= asOfDate,
-  );
-
-  const neededByCatCode = new Map<string, number>();
-  for (const _ of upcomingOnboardings) {
-    for (const code of TRACKED_FOR_ONBOARDING) {
-      neededByCatCode.set(code, (neededByCatCode.get(code) ?? 0) + 1);
-    }
-  }
-
-  const recoveredByCatCode = new Map<string, number>();
-  for (const _ of upcomingOffboardings) {
-    for (const code of TRACKED_FOR_ONBOARDING) {
-      recoveredByCatCode.set(code, (recoveredByCatCode.get(code) ?? 0) + 1);
-    }
-  }
-
-  for (const [code, needed] of neededByCatCode) {
-    const catId = catIdByCode.get(code);
-    if (!catId) continue;
-    const available = stockByCat.get(catId) ?? 0;
-    const recovered = recoveredByCatCode.get(code) ?? 0;
-    const net = available + recovered - needed;
-    const label = catLabelById.get(catId) ?? code;
-    if (net < 0) {
-      alerts.push({
-        id: `hw-${code}`,
-        severity: 'critical',
-        message: `Manque ${Math.abs(net)} ${label} pour les arrivées à venir`,
-        category: code,
-        date: asOf,
-      });
-    } else if (net === 0) {
-      alerts.push({
-        id: `hw-${code}`,
-        severity: 'warning',
-        message: `Stock de ${label} juste pour les arrivées (0 marge)`,
-        category: code,
-        date: asOf,
-      });
-    } else if (net <= 1) {
-      alerts.push({
-        id: `hw-${code}`,
-        severity: 'warning',
-        message: `Stock de ${label} faible (${net} disponible après prévisions)`,
-        category: code,
-        date: asOf,
-      });
-    }
-  }
-
-  const licTypeByCode = new Map<string, LicenseType>();
-  for (const lt of licenseTypes) licTypeByCode.set(lt.code, lt);
-
-  const neededLicByCode = new Map<string, number>();
-  for (const _ of upcomingOnboardings) {
-    neededLicByCode.set('OFFICE365', (neededLicByCode.get('OFFICE365') ?? 0) + 1);
-  }
-  const recoveredLicByCode = new Map<string, number>();
-  for (const _ of upcomingOffboardings) {
-    recoveredLicByCode.set('OFFICE365', (recoveredLicByCode.get('OFFICE365') ?? 0) + 1);
-  }
-
-  for (const [code, needed] of neededLicByCode) {
-    const lt = licTypeByCode.get(code);
-    if (!lt) continue;
-    const assignedCount = licenses.filter(
-      (l) => l.license_type_id === lt.id && l.status === 'assigned',
-    ).length;
-    const available = Math.max(0, lt.total_seats - assignedCount);
-    const recovered = recoveredLicByCode.get(code) ?? 0;
-    const net = available + recovered - needed;
-    if (net < 0) {
-      alerts.push({
-        id: `lic-${code}`,
-        severity: 'critical',
-        message: `Manque ${Math.abs(net)} licence(s) ${lt.label} pour les arrivées à venir`,
-        category: code,
-        date: asOf,
-      });
-    } else if (net === 0) {
-      alerts.push({
-        id: `lic-${code}`,
-        severity: 'warning',
-        message: `Licences ${lt.label} : 0 marge pour les arrivées`,
-        category: code,
-        date: asOf,
-      });
-    } else if (net <= 2) {
-      alerts.push({
-        id: `lic-${code}`,
-        severity: 'warning',
-        message: `Licences ${lt.label} : ${net} disponible(s) après prévisions`,
-        category: code,
-        date: asOf,
-      });
-    }
-  }
-
-  for (const lt of licenseTypes) {
-    const assignedCount = licenses.filter(
-      (l) => l.license_type_id === lt.id && l.status === 'assigned',
-    ).length;
-    const available = Math.max(0, lt.total_seats - assignedCount);
-    if (available === 0 && !neededLicByCode.has(lt.code)) {
-      alerts.push({
-        id: `lic-${lt.code}-empty`,
-        severity: 'warning',
-        message: `Aucune licence ${lt.label} disponible (toutes attribuées)`,
-        category: lt.code,
-      });
-    }
-  }
-
-  // Renewal alerts for licenses with expiration dates
   const today = new Date();
   for (const lic of licenses) {
     if (!lic.expiration_date) continue;
@@ -308,281 +347,6 @@ function computeForecastV2(
       });
     }
   }
-
-  return alerts;
-}
-
-/**
- * Time-series stock projection: simulates stock evolution day by day from today
- * to asOf, applying onboardings (-1 per tracked category) and offboardings (+1 for PC
- * after reinstallation delay). Returns alerts when any category hits 0 at any date.
- */
-export function computeStockTimeSeries(
-  hardware: HardwareItem[],
-  movements: Movement[],
-  hardwareCategories: HardwareCategoryLite[],
-  asOf: string,
-): ForecastAlert[] {
-  const alerts: ForecastAlert[] = [];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const endDate = new Date(asOf);
-  endDate.setHours(0, 0, 0, 0);
-  if (endDate < today) return alerts;
-
-  const catIdByCode = new Map<string, string>();
-  const catLabelById = new Map<string, string>();
-  for (const c of hardwareCategories) {
-    catIdByCode.set(c.code, c.id);
-    catLabelById.set(c.id, c.label);
-  }
-
-  // Initial stock per tracked category
-  const stock = new Map<string, number>();
-  for (const code of TRACKED_FOR_ONBOARDING) {
-    const catId = catIdByCode.get(code);
-    if (!catId) continue;
-    const count = hardware.filter(
-      (h) => h.category_id === catId && (h.status === 'in_stock' || h.status === 'being_reinstalled'),
-    ).length;
-    stock.set(code, count);
-  }
-
-  // Build events sorted by date
-  type Event = { date: Date; delta: Map<string, number> };
-  const events: Event[] = [];
-
-  for (const m of movements) {
-    if (m.status === 'done' || m.status === 'cancelled') continue;
-    const d = new Date(m.effective_date);
-    d.setHours(0, 0, 0, 0);
-    if (d < today || d > endDate) continue;
-    const delta = new Map<string, number>();
-    if (m.type === 'onboarding') {
-      for (const code of TRACKED_FOR_ONBOARDING) {
-        delta.set(code, (delta.get(code) ?? 0) - 1);
-      }
-    } else {
-      // Offboarding: PC goes to reinstallation, then back to stock after 3 days
-      // For simplicity in the projection, PC +1 immediately (will be reinstalled)
-      // Other items +1 immediately
-      for (const code of TRACKED_FOR_ONBOARDING) {
-        delta.set(code, (delta.get(code) ?? 0) + 1);
-      }
-    }
-    events.push({ date: d, delta });
-  }
-
-  events.sort((a, b) => a.date.getTime() - b.date.getTime());
-
-  // Simulate day by day
-  const seenZero = new Set<string>();
-  for (const ev of events) {
-    for (const [code, d] of ev.delta) {
-      const cur = stock.get(code) ?? 0;
-      const next = cur + d;
-      stock.set(code, next);
-      if (next <= 0 && !seenZero.has(code)) {
-        seenZero.add(code);
-        const label = catLabelById.get(catIdByCode.get(code) ?? '') ?? code;
-        const dateStr = ev.date.toISOString().slice(0, 10);
-        alerts.push({
-          id: `ts-${code}-${dateStr}`,
-          severity: next < 0 ? 'critical' : 'warning',
-          message: next < 0
-            ? `Stock de ${label} négatif (${next}) le ${dateStr} — manque de matériel`
-            : `Stock de ${label} à 0 le ${dateStr} — plus aucune marge`,
-          category: code,
-          date: dateStr,
-        });
-      }
-    }
-  }
-
-  return alerts;
-}
-export function computeOnboardingNeedsForecast(
-  hardware: HardwareItem[],
-  licenses: License[],
-  licenseTypes: LicenseType[],
-  movements: Movement[],
-  movementItems: MovementItem[],
-  movementLicenses: MovementLicense[],
-  hardwareCategories: HardwareCategoryLite[],
-  asOf: string,
-): ForecastAlert[] {
-  const alerts: ForecastAlert[] = [];
-  const asOfDate = new Date(asOf);
-
-  const upcomingOnboardings = movements
-    .filter(
-      (m) =>
-        m.type === 'onboarding' &&
-        m.status !== 'done' &&
-        m.status !== 'cancelled' &&
-        new Date(m.effective_date) <= asOfDate,
-    )
-    .sort((a, b) => a.effective_date.localeCompare(b.effective_date));
-
-  const movementById = new Map(
-    upcomingOnboardings.map((m) => [m.id, m]),
-  );
-
-  const categoryById = new Map(
-    hardwareCategories.map((c) => [c.id, c]),
-  );
-
-  const licenseTypeById = new Map(
-    licenseTypes.map((lt) => [lt.id, lt]),
-  );
-
-  const hardwareStock = new Map<string, number>();
-
-  for (const item of hardware) {
-    if (item.status === 'in_stock' || item.status === 'being_reinstalled') {
-      hardwareStock.set(
-        item.category_id,
-        (hardwareStock.get(item.category_id) ?? 0) + 1,
-      );
-    }
-  }
-
-  const licenseStock = new Map<string, number>();
-
-  for (const lt of licenseTypes) {
-    const assigned = licenses.filter(
-      (l) =>
-        l.license_type_id === lt.id &&
-        (l.status === 'assigned' ||
-          l.status === 'reserved' ||
-          l.status === 'resiliated'),
-    ).length;
-
-    licenseStock.set(
-      lt.id,
-      Math.max(0, lt.total_seats - assigned),
-    );
-  }
-
-  const hardwareNeedsByDate = new Map<
-    string,
-    Map<string, number>
-  >();
-
-  for (const item of movementItems) {
-    const movement = movementById.get(item.movement_id);
-    if (!movement || !item.category_id) continue;
-
-    const byCategory =
-      hardwareNeedsByDate.get(movement.effective_date) ??
-      new Map<string, number>();
-
-    byCategory.set(
-      item.category_id,
-      (byCategory.get(item.category_id) ?? 0) + 1,
-    );
-
-    hardwareNeedsByDate.set(movement.effective_date, byCategory);
-  }
-
-  const licenseNeedsByDate = new Map<
-    string,
-    Map<string, number>
-  >();
-
-  for (const item of movementLicenses) {
-    const movement = movementById.get(item.movement_id);
-    if (!movement || !item.license_type_id) continue;
-
-    const byLicense =
-      licenseNeedsByDate.get(movement.effective_date) ??
-      new Map<string, number>();
-
-    byLicense.set(
-      item.license_type_id,
-      (byLicense.get(item.license_type_id) ?? 0) + 1,
-    );
-
-    licenseNeedsByDate.set(movement.effective_date, byLicense);
-  }
-
-  const dates = Array.from(
-    new Set([
-      ...hardwareNeedsByDate.keys(),
-      ...licenseNeedsByDate.keys(),
-    ]),
-  ).sort();
-
-  for (const date of dates) {
-    const hardwareNeeds = hardwareNeedsByDate.get(date);
-
-    if (hardwareNeeds) {
-      for (const [categoryId, needed] of hardwareNeeds) {
-        const remaining =
-          (hardwareStock.get(categoryId) ?? 0) - needed;
-
-        hardwareStock.set(categoryId, remaining);
-
-        const category = categoryById.get(categoryId);
-        const label = category?.label ?? 'matériel';
-
-        if (remaining < 0) {
-          alerts.push({
-            id: `manager-hw-${categoryId}-${date}`,
-            severity: 'critical',
-            message: `${formatForecastDate(date)} : il manquera ${Math.abs(
-              remaining,
-            )} ${label}`,
-            category: category?.code,
-            date,
-          });
-        } else if (remaining === 0) {
-          alerts.push({
-            id: `manager-hw-zero-${categoryId}-${date}`,
-            severity: 'warning',
-            message: `${formatForecastDate(date)} : il ne restera plus aucun ${label}`,
-            category: category?.code,
-            date,
-          });
-        }
-      }
-    }
-
-    const licenseNeeds = licenseNeedsByDate.get(date);
-
-    if (licenseNeeds) {
-      for (const [licenseTypeId, needed] of licenseNeeds) {
-        const remaining =
-          (licenseStock.get(licenseTypeId) ?? 0) - needed;
-
-        licenseStock.set(licenseTypeId, remaining);
-
-        const licenseType = licenseTypeById.get(licenseTypeId);
-        const label = licenseType?.label ?? 'licence';
-
-        if (remaining < 0) {
-          alerts.push({
-            id: `manager-lic-${licenseTypeId}-${date}`,
-            severity: 'critical',
-            message: `${formatForecastDate(date)} : il manquera ${Math.abs(
-              remaining,
-            )} licence(s) ${label}`,
-            category: licenseType?.code,
-            date,
-          });
-        } else if (remaining === 0) {
-          alerts.push({
-            id: `manager-lic-zero-${licenseTypeId}-${date}`,
-            severity: 'warning',
-            message: `${formatForecastDate(date)} : il ne restera plus aucune licence ${label}`,
-            category: licenseType?.code,
-            date,
-          });
-        }
-      }
-    }
-  }
-
   return alerts;
 }
 

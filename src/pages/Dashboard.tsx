@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Laptop,
   Smartphone,
@@ -21,12 +21,21 @@ import { useData } from '../hooks/useData';
 import { useAuth } from '../context/AuthContext';
 import { logAudit } from '../lib/audit';
 import {
-  computeForecast,
-  computeOnboardingNeedsForecast,
+  computeSupplyForecast,
+  computeRenewalAlerts,
   computeLicenseStock,
   computeStockByCategory,
   type ForecastAlert,
+  type OffboardingLicenses,
 } from '../lib/forecast';
+import ProjectsSummary from '../components/ProjectsSummary';
+
+// Horizon par défaut des alertes prévisionnelles : 3 mois.
+function defaultForecastHorizon() {
+  const date = new Date();
+  date.setMonth(date.getMonth() + 3);
+  return date.toISOString().slice(0, 10);
+}
 
 
 import { formatFrDate, statusLabel, MOVEMENT_STATUS } from '../lib/format';
@@ -38,6 +47,7 @@ const ALL_WIDGETS: { key: string; label: string; defaultVisible: boolean }[] = [
   { key: 'active_alerts', label: 'Alertes prévisionnelles', defaultVisible: true },
   { key: 'renewal_alerts', label: 'Renouvellements de licences', defaultVisible: true },
   { key: 'license_summary', label: 'Licences', defaultVisible: true },
+  { key: 'projects_summary', label: 'Projets IT', defaultVisible: true },
   { key: 'peripheral_matrix', label: 'Périphériques par service', defaultVisible: true },
   { key: 'upcoming_movements', label: 'Prochains mouvements', defaultVisible: true },
   { key: 'action_reminders', label: "Rappels d'actions", defaultVisible: true },
@@ -48,7 +58,20 @@ type Widget = { key: string; label: string; visible: boolean; sort_order: number
 export default function Dashboard() {
   const data = useData();
   const { profile, user } = useAuth();
-  const [asOf, setAsOf] = useState(() => new Date().toISOString().slice(0, 10));
+  const [asOf, setAsOf] = useState(defaultForecastHorizon);
+  // Licences Microsoft libérées par les départs (null : Microsoft 365 injoignable).
+  const [offboardingLicenses, setOffboardingLicenses] = useState<OffboardingLicenses | null>(null);
+  const [offboardingLicensesError, setOffboardingLicensesError] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/forecast/offboarding-licenses', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((value: OffboardingLicenses) => {
+        setOffboardingLicenses(value);
+        setOffboardingLicensesError(false);
+      })
+      .catch(() => setOffboardingLicensesError(true));
+  }, [data.movements]);
   const [showSettings, setShowSettings] = useState(false);
   const [dragKey, setDragKey] = useState<string | null>(null);
 
@@ -69,36 +92,26 @@ export default function Dashboard() {
 
   const stockByCat = useMemo(() => computeStockByCategory(data.hardware), [data.hardware]);
   const licStock = useMemo(
-    () => computeLicenseStock(data.licenses, data.licenseTypes),
-    [data.licenses, data.licenseTypes],
+    () => computeLicenseStock(data.licenses, data.licenseTypes, data.subscribedSkus),
+    [data.licenses, data.licenseTypes, data.subscribedSkus],
   );
 
-const alerts = useMemo<ForecastAlert[]>(() => {
-  const legacyAlerts = computeForecast(
-    data.hardware,
-    data.licenses,
-    data.licenseTypes,
-    data.movements,
-    data.hardwareCategories,
-    asOf,
-  );
-
-  const onboardingAlerts = computeOnboardingNeedsForecast(
-    data.hardware,
-    data.licenses,
-    data.licenseTypes,
-    data.movements,
-    data.movementItems,
-    data.movementLicenses,
-    data.hardwareCategories,
-    asOf,
-  );
-
-  return [
-    ...legacyAlerts,
-    ...onboardingAlerts,
-  ];
-}, [data, asOf]);
+  const alerts = useMemo<ForecastAlert[]>(() => [
+    ...computeSupplyForecast({
+      hardware: data.hardware,
+      licenses: data.licenses,
+      licenseTypes: data.licenseTypes,
+      subscribedSkus: data.subscribedSkus,
+      movements: data.movements,
+      movementItems: data.movementItems,
+      movementLicenses: data.movementLicenses,
+      hardwareCategories: data.hardwareCategories,
+      employees: data.employees,
+      offboardingLicenses,
+      asOf,
+    }),
+    ...computeRenewalAlerts(data.licenses, data.licenseTypes),
+  ], [data, offboardingLicenses, asOf]);
 
   const renewalAlerts = alerts.filter((a) => a.id.startsWith('renew-'));
   const forecastAlerts = alerts.filter((a) => !a.id.startsWith('renew-'));
@@ -273,7 +286,7 @@ async function saveOrder(orderedKeys: string[]) {
         <div className="flex items-center gap-2">
           <label htmlFor="asof" className="text-sm font-medium text-ink-700 flex items-center gap-1.5">
             <CalendarClock className="w-4 h-4 text-elyade-600" />
-            Prévision au
+            Prévision jusqu'au
           </label>
           <input id="asof" type="date" className="input w-auto" value={asOf} onChange={(e) => setAsOf(e.target.value)} />
           <button onClick={() => setShowSettings(true)} className="btn-secondary" title="Configurer les indicateurs">
@@ -329,12 +342,17 @@ async function saveOrder(orderedKeys: string[]) {
                   {forecastAlerts.length === 0 ? (
                     <div className="card p-6 text-center">
                       <TrendingUp className="w-8 h-8 text-green-500 mx-auto mb-2" />
-                      <p className="text-sm text-ink-600">Aucune alerte — le matériel et les licences couvrent les besoins au {formatFrDate(asOf)}.</p>
+                      <p className="text-sm text-ink-600">Aucune alerte — le matériel et les licences couvrent les arrivées jusqu'au {formatFrDate(asOf)}, départs prévus compris.</p>
                     </div>
                   ) : (
                     <div className="space-y-2">
                       {forecastAlerts.map((a) => <AlertRow key={a.id} alert={a} />)}
                     </div>
+                  )}
+                  {offboardingLicensesError && (
+                    <p className="text-xs text-amber-700 mt-2">
+                      Microsoft 365 injoignable : les licences Microsoft libérées par les départs sont estimées d'après les fiches de départ.
+                    </p>
                   )}
                 </div>
               );
@@ -381,6 +399,16 @@ async function saveOrder(orderedKeys: string[]) {
                       })}
                     </div>
                   </section>
+                </div>
+              );
+            case 'projects_summary':
+              return (
+                <div key={w.key} {...dragProps} className={`group ${dragKey === w.key ? 'opacity-40' : ''}`}>
+                  <div className="flex items-center gap-2 mb-3 cursor-grab">
+                    <GripVertical className="w-4 h-4 text-ink-300 group-hover:text-ink-400" />
+                    <h2 className="text-sm font-semibold text-ink-500 uppercase tracking-wide">Projets IT</h2>
+                  </div>
+                  <ProjectsSummary />
                 </div>
               );
             case 'peripheral_matrix':

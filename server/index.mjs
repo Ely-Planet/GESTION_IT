@@ -21,6 +21,7 @@ import { createOnboardingRequest } from './onboardingRequest.mjs';
 import { syncMicrosoftUsers } from './syncMicrosoftUsers.mjs';
 import { syncLuccaOffboardings } from './luccaOffboardingSync.mjs';
 import { registerProjectRoutes } from './projects.mjs';
+import { registerForecastRoutes } from './forecast.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -4474,6 +4475,7 @@ app.post('/api/inventory/preferences', async (req, res) => {
 
 
 registerProjectRoutes(app);
+registerForecastRoutes(app);
 
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, '../dist/index.html'));
