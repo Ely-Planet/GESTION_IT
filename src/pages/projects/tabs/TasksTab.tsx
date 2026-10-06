@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { GripVertical, MessageSquare, Paperclip } from 'lucide-react';
+import { CalendarDays, GripVertical, ListTree, MessageSquare, Paperclip } from 'lucide-react';
 import { projectsApi } from '../api';
-import { StatusBadge } from '../ProjectUI';
+import { StatusBadge, formatPeriod } from '../ProjectUI';
 import TaskDetail from './TaskDetail';
 import type { Account, ProjectDetailData, Task } from '../types';
 
@@ -47,6 +47,9 @@ function TaskCard({
   onOpen,
 }: TaskCardProps) {
   const files = task.files || [];
+  const subtasks = task.subtasks || [];
+  const subtasksDone = subtasks.filter((subtask) => subtask.status === 'done').length;
+  const period = formatPeriod(task.start_date, task.end_date);
   return (
     <article
       onClick={(event) => {
@@ -79,6 +82,16 @@ function TaskCard({
         <StatusBadge status={task.status} />
       </div>
       {task.description && <p className="text-sm text-ink-500 mt-2 line-clamp-3">{task.description}</p>}
+      {(period || subtasks.length > 0) && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-ink-500">
+          {period && <span className="flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5" /> {period}</span>}
+          {subtasks.length > 0 && (
+            <span className="flex items-center gap-1" title="Sous-tâches terminées">
+              <ListTree className="w-3.5 h-3.5" /> {subtasksDone}/{subtasks.length}
+            </span>
+          )}
+        </div>
+      )}
       {canAssign ? (
         <select
           className="input py-1 text-xs mt-3"
@@ -144,7 +157,8 @@ export default function TasksTab({ project, team, onChanged }: {
   const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
   const [updatingTaskId, setUpdatingTaskId] = useState<string | null>(null);
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
-  const [form, setForm] = useState({ title: '', description: '', assigneeAccountId: '', estimatedHours: '' });
+  const emptyForm = { title: '', description: '', assigneeAccountId: '', estimatedHours: '', startDate: '', endDate: '' };
+  const [form, setForm] = useState(emptyForm);
   const canCreateTasks = Boolean(project.estChefDeProjet);
   const [localTasks, setLocalTasks] = useState<Task[]>(project.tasks || []);
   const tasks = localTasks;
@@ -172,8 +186,10 @@ export default function TasksTab({ project, team, onChanged }: {
         description: form.description,
         assigneeAccountId: form.assigneeAccountId || null,
         estimatedHours: form.estimatedHours ? Number(form.estimatedHours) : 0,
+        startDate: form.startDate || null,
+        endDate: form.endDate || null,
       });
-      setForm({ title: '', description: '', assigneeAccountId: '', estimatedHours: '' });
+      setForm(emptyForm);
       setShowForm(false);
       onChanged();
     } catch (err: any) {
@@ -277,6 +293,16 @@ export default function TasksTab({ project, team, onChanged }: {
             </select>
             <input className="input" type="number" min="0" step="0.5" placeholder="Temps estimé (h)" value={form.estimatedHours} onChange={(e) => setForm({ ...form, estimatedHours: e.target.value })} />
           </div>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-xs text-ink-500">
+              Date de début
+              <input className="input mt-1" type="date" value={form.startDate} max={form.endDate || undefined} onChange={(e) => setForm({ ...form, startDate: e.target.value })} />
+            </label>
+            <label className="text-xs text-ink-500">
+              Date de fin
+              <input className="input mt-1" type="date" value={form.endDate} min={form.startDate || undefined} onChange={(e) => setForm({ ...form, endDate: e.target.value })} />
+            </label>
+          </div>
           <div className="flex gap-2">
             <button className="btn-primary text-sm">Créer</button>
             <button type="button" className="btn-ghost text-sm" onClick={() => setShowForm(false)}>Annuler</button>
@@ -338,7 +364,10 @@ export default function TasksTab({ project, team, onChanged }: {
       {detailTask && (
         <TaskDetail
           task={detailTask}
+          team={team}
           canDelete={canCreateTasks}
+          canPlan={canCreateTasks}
+          onChanged={onChanged}
           onDeleted={() => {
             setLocalTasks((current) => current.filter((task) => task.id !== detailTask.id));
             setDetailTaskId(null);

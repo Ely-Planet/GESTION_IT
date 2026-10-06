@@ -44,6 +44,28 @@ export type Task = {
   completed_at?: string | null;
   comment_count?: number;
   files?: ProjectFile[] | null;
+  start_date?: string | null; // AAAA-MM-JJ
+  end_date?: string | null; // AAAA-MM-JJ
+  subtasks?: Subtask[] | null;
+};
+
+// Sous-tâche : découpage interne, jamais visible ni notifiée au client.
+export type Subtask = {
+  id: string;
+  task_id: string;
+  title: string;
+  status: 'todo' | 'in_progress' | 'done';
+  assignee_account_id: string | null;
+  assignee_name?: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  sort_order: number;
+};
+
+export const SUBTASK_STATUS_LABELS: Record<Subtask['status'], string> = {
+  todo: 'À faire',
+  in_progress: 'En cours',
+  done: 'Terminée',
 };
 
 export type TaskComment = {

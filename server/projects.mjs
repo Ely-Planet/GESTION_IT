@@ -1376,7 +1376,20 @@ export function registerProjectRoutes(app) {
                   (SELECT COUNT(*) FROM project_task_comments c WHERE c.task_id = t.id)
                 )::int AS comment_count,
                 (SELECT COALESCE(json_agg(json_build_object('id', f.id, 'filename', f.filename) ORDER BY f.created_at), '[]'::json)
-                 FROM project_files f WHERE f.task_id = t.id) AS files
+                 FROM project_files f WHERE f.task_id = t.id) AS files,
+                -- Dates renvoyées en texte AAAA-MM-JJ (placées après t.* pour le remplacer) :
+                -- un objet Date JS décalerait le jour selon le fuseau.
+                to_char(t.start_date, 'YYYY-MM-DD') AS start_date,
+                to_char(t.end_date, 'YYYY-MM-DD') AS end_date,
+                (SELECT COALESCE(json_agg(json_build_object(
+                          'id', s.id, 'task_id', s.task_id, 'title', s.title, 'status', s.status,
+                          'assignee_account_id', s.assignee_account_id, 'assignee_name', sa.display_name,
+                          'start_date', to_char(s.start_date, 'YYYY-MM-DD'),
+                          'end_date', to_char(s.end_date, 'YYYY-MM-DD'),
+                          'sort_order', s.sort_order
+                        ) ORDER BY s.sort_order, s.created_at), '[]'::json)
+                 FROM project_subtasks s LEFT JOIN app_accounts sa ON sa.id = s.assignee_account_id
+                 WHERE s.task_id = t.id) AS subtasks
          FROM project_tasks t
          LEFT JOIN app_accounts a ON a.id = t.assignee_account_id
          WHERE t.project_id = $1 ORDER BY t.created_at`,
@@ -1390,6 +1403,7 @@ export function registerProjectRoutes(app) {
            ORDER BY r.created_at DESC`,
           [projectId, accountId]
         );
+        // Vue client : pas de tâches ni de sous-tâches, seulement le taux.
         return res.json({
           id: project.id,
           name: project.name,
@@ -1687,15 +1701,46 @@ export function registerProjectRoutes(app) {
   // Tâches
   // -------------------------------------------------------------------
   const TASK_STATUSES = ['backlog', 'ready', 'in_progress', 'in_review', 'done'];
+  const SUBTASK_STATUSES = ['todo', 'in_progress', 'done'];
+
+  // Dates de planning (startDate / endDate, format AAAA-MM-JJ).
+  // undefined = champ non envoyé (inchangé) ; null ou '' = date effacée.
+  function readPlanningDates(body, current = { start_date: null, end_date: null }) {
+    const result = { startProvided: body.startDate !== undefined, endProvided: body.endDate !== undefined };
+    for (const [key, field] of [['startDate', 'start'], ['endDate', 'end']]) {
+      const value = body[key];
+      if (value === undefined || value === null || value === '') {
+        result[field] = null;
+      } else if (/^\d{4}-\d{2}-\d{2}$/.test(String(value)) && !Number.isNaN(Date.parse(String(value)))) {
+        result[field] = String(value);
+      } else {
+        return { error: 'Date invalide (format AAAA-MM-JJ attendu)' };
+      }
+    }
+    const start = result.startProvided ? result.start : current.start_date;
+    const end = result.endProvided ? result.end : current.end_date;
+    if (start && end && start > end) return { error: 'La date de fin doit être postérieure ou égale à la date de début' };
+    return result;
+  }
+
+  // Dates actuelles d'une tâche ou sous-tâche, en texte AAAA-MM-JJ.
+  async function loadPlanningDates(table, id) {
+    const result = await pool.query(
+      `SELECT to_char(start_date, 'YYYY-MM-DD') AS start_date, to_char(end_date, 'YYYY-MM-DD') AS end_date
+       FROM ${table} WHERE id = $1`,
+      [id]
+    );
+    return result.rows[0] || { start_date: null, end_date: null };
+  }
 
   // Tâche accessible à l'utilisateur ; envoie l'erreur HTTP et renvoie null sinon.
-  async function loadTaskForUser(req, res, { write }) {
+  async function loadTaskForUser(req, res, { write, taskId = req.params.id }) {
     const role = getModuleRole(req.session.user);
     if (role === 'client' || (write && role === 'directeur')) {
       res.status(403).json({ error: 'Accès refusé' });
       return null;
     }
-    const taskResult = await pool.query(`SELECT * FROM project_tasks WHERE id = $1`, [req.params.id]);
+    const taskResult = await pool.query(`SELECT * FROM project_tasks WHERE id = $1`, [taskId]);
     if (taskResult.rowCount === 0) {
       res.status(404).json({ error: 'Tâche introuvable' });
       return null;
@@ -1726,11 +1771,13 @@ export function registerProjectRoutes(app) {
       if (role === 'dev' && !(await isChefDeProjet(req.session.user.id, projectId))) {
         return res.status(403).json({ error: 'Seul le chef de projet peut ajouter une tâche' });
       }
+      const dates = readPlanningDates(req.body);
+      if (dates.error) return res.status(400).json({ error: dates.error });
 
       const result = await pool.query(
-        `INSERT INTO project_tasks (project_id, title, description, assignee_account_id, estimated_hours, origin)
-         VALUES ($1, $2, $3, $4, $5, 'manuelle') RETURNING *`,
-        [projectId, title, description || null, assigneeAccountId || null, estimatedHours || 0]
+        `INSERT INTO project_tasks (project_id, title, description, assignee_account_id, estimated_hours, origin, start_date, end_date)
+         VALUES ($1, $2, $3, $4, $5, 'manuelle', $6, $7) RETURNING *`,
+        [projectId, title, description || null, assigneeAccountId || null, estimatedHours || 0, dates.start, dates.end]
       );
       let task = result.rows[0];
       await notifyTaskAssignee(task, req.session.user.id);
@@ -1760,6 +1807,21 @@ export function registerProjectRoutes(app) {
       const assigneeProvided = assigneeAccountId !== undefined;
       if (assigneeProvided && role === 'dev' && !(await isChefDeProjet(req.session.user.id, task.project_id))) {
         return res.status(403).json({ error: 'Seul le chef de projet peut affecter une tâche' });
+      }
+      const dates = readPlanningDates(req.body, await loadPlanningDates('project_tasks', task.id));
+      if (dates.error) return res.status(400).json({ error: dates.error });
+      if ((dates.startProvided || dates.endProvided) && role === 'dev' && !(await isChefDeProjet(req.session.user.id, task.project_id))) {
+        return res.status(403).json({ error: 'Seul le chef de projet peut planifier une tâche' });
+      }
+      if (dates.startProvided || dates.endProvided) {
+        await pool.query(
+          `UPDATE project_tasks SET
+             start_date = CASE WHEN $1::boolean THEN $2::date ELSE start_date END,
+             end_date = CASE WHEN $3::boolean THEN $4::date ELSE end_date END,
+             updated_at = now()
+           WHERE id = $5`,
+          [dates.startProvided, dates.start, dates.endProvided, dates.end, task.id]
+        );
       }
 
       const result = await pool.query(
@@ -1876,6 +1938,111 @@ export function registerProjectRoutes(app) {
     } catch (error) {
       console.error(error);
       if (!res.headersSent) res.status(500).json({ error: error.message });
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // Sous-tâches — internes à l'équipe : ni mail client, ni carte GitHub,
+  // ni prise en compte dans le taux de complétude du projet.
+  // -------------------------------------------------------------------
+  const SUBTASK_SELECT = `
+    SELECT s.id, s.task_id, s.title, s.status, s.assignee_account_id, a.display_name AS assignee_name,
+           to_char(s.start_date, 'YYYY-MM-DD') AS start_date, to_char(s.end_date, 'YYYY-MM-DD') AS end_date,
+           s.sort_order
+    FROM project_subtasks s LEFT JOIN app_accounts a ON a.id = s.assignee_account_id
+  `;
+
+  // Sous-tâche accessible en écriture ; envoie l'erreur HTTP et renvoie null sinon.
+  async function loadSubtaskForUser(req, res) {
+    const subtaskResult = await pool.query(`SELECT * FROM project_subtasks WHERE id = $1`, [req.params.id]);
+    if (subtaskResult.rowCount === 0) {
+      res.status(404).json({ error: 'Sous-tâche introuvable' });
+      return null;
+    }
+    const subtask = subtaskResult.rows[0];
+    const task = await loadTaskForUser(req, res, { write: true, taskId: subtask.task_id });
+    return task ? subtask : null;
+  }
+
+  app.post('/api/projects/tasks/:id/subtasks', requireAuth, async (req, res) => {
+    try {
+      const task = await loadTaskForUser(req, res, { write: true });
+      if (!task) return;
+      const title = String(req.body.title || '').trim();
+      if (!title) return res.status(400).json({ error: 'Titre requis' });
+      const dates = readPlanningDates(req.body);
+      if (dates.error) return res.status(400).json({ error: dates.error });
+
+      const inserted = await pool.query(
+        `INSERT INTO project_subtasks (task_id, title, assignee_account_id, start_date, end_date, sort_order)
+         VALUES ($1, $2, $3, $4, $5,
+                 (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM project_subtasks WHERE task_id = $1))
+         RETURNING id`,
+        [task.id, title, req.body.assigneeAccountId || null, dates.start, dates.end]
+      );
+      const result = await pool.query(`${SUBTASK_SELECT} WHERE s.id = $1`, [inserted.rows[0].id]);
+      res.status(201).json(result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.put('/api/projects/subtasks/:id', requireAuth, async (req, res) => {
+    try {
+      const subtask = await loadSubtaskForUser(req, res);
+      if (!subtask) return;
+      const { title, status, assigneeAccountId } = req.body;
+      if (status != null && !SUBTASK_STATUSES.includes(status)) {
+        return res.status(400).json({ error: 'Statut de sous-tâche invalide' });
+      }
+      if (title !== undefined && !String(title).trim()) return res.status(400).json({ error: 'Titre requis' });
+      const dates = readPlanningDates(req.body, await loadPlanningDates('project_subtasks', subtask.id));
+      if (dates.error) return res.status(400).json({ error: dates.error });
+
+      await pool.query(
+        `UPDATE project_subtasks SET
+           title = COALESCE($1, title),
+           status = COALESCE($2, status),
+           completed_at = CASE
+             WHEN $2 = 'done' AND status <> 'done' THEN now()
+             WHEN $2 IS NOT NULL AND $2 <> 'done' THEN NULL
+             ELSE completed_at
+           END,
+           assignee_account_id = CASE WHEN $3::boolean THEN $4::uuid ELSE assignee_account_id END,
+           start_date = CASE WHEN $5::boolean THEN $6::date ELSE start_date END,
+           end_date = CASE WHEN $7::boolean THEN $8::date ELSE end_date END,
+           updated_at = now()
+         WHERE id = $9`,
+        [
+          title !== undefined ? String(title).trim() : null,
+          status ?? null,
+          assigneeAccountId !== undefined,
+          assigneeAccountId || null,
+          dates.startProvided,
+          dates.start,
+          dates.endProvided,
+          dates.end,
+          subtask.id,
+        ]
+      );
+      const result = await pool.query(`${SUBTASK_SELECT} WHERE s.id = $1`, [subtask.id]);
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.delete('/api/projects/subtasks/:id', requireAuth, async (req, res) => {
+    try {
+      const subtask = await loadSubtaskForUser(req, res);
+      if (!subtask) return;
+      await pool.query(`DELETE FROM project_subtasks WHERE id = $1`, [subtask.id]);
+      res.status(204).end();
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
     }
   });
 

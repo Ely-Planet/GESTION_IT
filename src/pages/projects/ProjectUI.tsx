@@ -11,6 +11,20 @@ export function ProgressBar({ value }: { value: number }) {
   );
 }
 
+// '2026-10-05' -> '05/10/2026' (sans passer par Date : pas de décalage de fuseau).
+export function formatDay(value: string | null | undefined) {
+  if (!value) return '';
+  const [y, m, d] = value.slice(0, 10).split('-');
+  return `${d}/${m}/${y}`;
+}
+
+export function formatPeriod(start: string | null | undefined, end: string | null | undefined) {
+  if (start && end) return `${formatDay(start)} → ${formatDay(end)}`;
+  if (start) return `Début ${formatDay(start)}`;
+  if (end) return `Fin ${formatDay(end)}`;
+  return '';
+}
+
 export function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`badge ${STATUS_BADGE_CLASSES[status] || 'bg-ink-100 text-ink-700'}`}>

@@ -44,6 +44,11 @@ export const projectsApi = {
   createTask: (body: unknown) => request('/api/projects/tasks', { method: 'POST', body: JSON.stringify(body) }),
   updateTask: (id: string, body: unknown) => request(`/api/projects/tasks/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteTask: (id: string) => request(`/api/projects/tasks/${id}`, { method: 'DELETE' }),
+  createSubtask: (taskId: string, body: unknown) =>
+    request(`/api/projects/tasks/${taskId}/subtasks`, { method: 'POST', body: JSON.stringify(body) }),
+  updateSubtask: (id: string, body: unknown) =>
+    request(`/api/projects/subtasks/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteSubtask: (id: string) => request(`/api/projects/subtasks/${id}`, { method: 'DELETE' }),
   listTaskComments:(taskId: string) => request(`/api/projects/tasks/${taskId}/comments`),
   addTaskComment: (taskId: string, body: string) =>
     request(`/api/projects/tasks/${taskId}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),

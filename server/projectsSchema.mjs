@@ -104,9 +104,31 @@ CREATE TABLE IF NOT EXISTS user_notifications (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_user_notifications_account ON user_notifications(account_id, read_at);
+
+-- Planning (016) : dates de début / fin des tâches pour le Gantt du projet
+ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS start_date date;
+ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS end_date date;
+
+-- Sous-tâches : découpage interne d'une tâche. Table à part pour ne jamais
+-- déclencher les mails client, la synchro GitHub ni le taux de complétude,
+-- qui ne portent que sur project_tasks.
+CREATE TABLE IF NOT EXISTS project_subtasks (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id uuid NOT NULL REFERENCES project_tasks(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  status text NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'in_progress', 'done')),
+  assignee_account_id uuid REFERENCES app_accounts(id) ON DELETE SET NULL,
+  start_date date,
+  end_date date,
+  sort_order integer NOT NULL DEFAULT 0,
+  completed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_project_subtasks_task ON project_subtasks(task_id);
 `;
 
 export async function ensureProjectsSchema() {
   await pool.query(SCHEMA_SQL);
-  console.log('[Projets IT] Schéma 013 vérifié');
+  console.log('[Projets IT] Schéma 013-016 vérifié');
 }

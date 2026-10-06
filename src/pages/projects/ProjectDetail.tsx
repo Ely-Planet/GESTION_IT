@@ -4,6 +4,7 @@ import { projectsApi } from './api';
 import { useAuth } from '../../context/AuthContext';
 import { ProgressBar } from './ProjectUI';
 import TasksTab from './tabs/TasksTab';
+import GanttTab from './tabs/GanttTab';
 import RequestsTab from './tabs/RequestsTab';
 import TeamTab from './tabs/TeamTab';
 import ClientPicker from './ClientPicker';
@@ -89,6 +90,7 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
 
   const tabs: [string, string][] = [
     ['tasks', 'Tâches'],
+    ['gantt', 'Gantt'],
     ['requests', 'Demandes clients'],
     ['team', 'Équipe'],
   ];
@@ -223,6 +225,7 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
           </div>
 
           {tab === 'tasks' && <TasksTab project={project} team={accounts} onChanged={load} />}
+          {tab === 'gantt' && <GanttTab project={project} team={accounts} onChanged={load} />}
           {tab === 'requests' && <RequestsTab project={project} team={accounts} onChanged={load} />}
           {tab === 'team' && (
             <TeamTab project={project} allAccounts={accounts} canManage={canManageTeam} onChanged={load} />

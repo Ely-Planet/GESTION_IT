@@ -2,18 +2,32 @@ import { useEffect, useState } from 'react';
 import { ExternalLink, Paperclip, Trash2, X } from 'lucide-react';
 import { projectsApi } from '../api';
 import { StatusBadge } from '../ProjectUI';
-import type { Task, TaskComment } from '../types';
+import SubtasksSection from './SubtasksSection';
+import type { Account, Task, TaskComment } from '../types';
 
-// Panneau latéral d'une tâche : description complète, pièces jointes et
-// commentaires (synchronisés avec l'issue GitHub liée).
-export default function TaskDetail({ task, canDelete, onClose, onCountChange, onDeleted }: {
+// Panneau latéral d'une tâche : planning, sous-tâches, description complète,
+// pièces jointes et commentaires (synchronisés avec l'issue GitHub liée).
+export default function TaskDetail({ task, team, canDelete, canPlan, onClose, onCountChange, onDeleted, onChanged }: {
   task: Task;
+  team: Account[];
   canDelete: boolean;
+  canPlan: boolean;
   onClose: () => void;
   onCountChange: (count: number) => void;
   onDeleted: () => void;
+  onChanged: () => void;
 }) {
   const [deleting, setDeleting] = useState(false);
+
+  async function updateDates(patch: { startDate?: string | null; endDate?: string | null }) {
+    try {
+      await projectsApi.updateTask(task.id, patch);
+      onChanged();
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors de la mise à jour des dates');
+      onChanged();
+    }
+  }
 
   async function deleteTask() {
     const githubNote = task.github_issue_url || task.github_item_id
@@ -124,6 +138,43 @@ export default function TaskDetail({ task, canDelete, onClose, onCountChange, on
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-6">
+          <section>
+            <h4 className="text-sm font-semibold text-ink-900 mb-2">Planning</h4>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs text-ink-500">
+                Date de début
+                <input
+                  key={`start-${task.start_date ?? ''}`}
+                  type="date"
+                  className="input mt-1"
+                  disabled={!canPlan}
+                  defaultValue={task.start_date ?? ''}
+                  max={task.end_date ?? undefined}
+                  onBlur={(e) => {
+                    if (e.target.value !== (task.start_date ?? '')) void updateDates({ startDate: e.target.value || null });
+                  }}
+                />
+              </label>
+              <label className="text-xs text-ink-500">
+                Date de fin
+                <input
+                  key={`end-${task.end_date ?? ''}`}
+                  type="date"
+                  className="input mt-1"
+                  disabled={!canPlan}
+                  defaultValue={task.end_date ?? ''}
+                  min={task.start_date ?? undefined}
+                  onBlur={(e) => {
+                    if (e.target.value !== (task.end_date ?? '')) void updateDates({ endDate: e.target.value || null });
+                  }}
+                />
+              </label>
+            </div>
+            {!canPlan && <p className="text-xs text-ink-400 mt-1">Seul le chef de projet peut modifier les dates de la tâche.</p>}
+          </section>
+
+          <SubtasksSection task={task} team={team} onChanged={onChanged} />
+
           <section>
             <h4 className="text-sm font-semibold text-ink-900 mb-2">Description</h4>
             {task.description ? (
