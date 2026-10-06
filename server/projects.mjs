@@ -404,6 +404,71 @@ async function notifyTaskAssignee(task, actorId) {
   });
 }
 
+// Tâches et sous-tâches non terminées dont la date de fin est dépassée
+// (jour de Paris) : la personne affectée reçoit une notification, comme pour
+// une affectation. Le marquage se fait dans la même requête que la sélection,
+// donc une seule notification par retard même si deux vérifications se croisent.
+async function notifyOverdueTasks() {
+  const tasks = await pool.query(
+    `UPDATE project_tasks t
+     SET overdue_notified_for = t.end_date,
+         overdue_notified_account = t.assignee_account_id
+     FROM projects p
+     WHERE p.id = t.project_id
+       AND p.status <> 'archive'
+       AND p.project_state IS DISTINCT FROM 'closed'
+       AND t.status <> 'done'
+       AND t.assignee_account_id IS NOT NULL
+       AND t.end_date < (now() AT TIME ZONE 'Europe/Paris')::date
+       AND (t.overdue_notified_for IS DISTINCT FROM t.end_date
+            OR t.overdue_notified_account IS DISTINCT FROM t.assignee_account_id)
+     RETURNING t.id, t.title, t.project_id, t.assignee_account_id,
+               to_char(t.end_date, 'DD/MM/YYYY') AS end_date_fr, p.name AS project_name`
+  );
+  for (const task of tasks.rows) {
+    await createNotification({
+      accountId: task.assignee_account_id,
+      type: 'task_overdue',
+      title: `Tâche en retard : ${task.title}`,
+      body: `Projet ${task.project_name} — date de fin dépassée (${task.end_date_fr})`,
+      projectId: task.project_id,
+      taskId: task.id
+    });
+  }
+
+  const subtasks = await pool.query(
+    `UPDATE project_subtasks s
+     SET overdue_notified_for = s.end_date,
+         overdue_notified_account = s.assignee_account_id
+     FROM project_tasks t, projects p
+     WHERE t.id = s.task_id
+       AND p.id = t.project_id
+       AND p.status <> 'archive'
+       AND p.project_state IS DISTINCT FROM 'closed'
+       AND s.status <> 'done'
+       AND t.status <> 'done'
+       AND s.assignee_account_id IS NOT NULL
+       AND s.end_date < (now() AT TIME ZONE 'Europe/Paris')::date
+       AND (s.overdue_notified_for IS DISTINCT FROM s.end_date
+            OR s.overdue_notified_account IS DISTINCT FROM s.assignee_account_id)
+     RETURNING s.title, s.assignee_account_id, t.id AS task_id, t.title AS task_title,
+               t.project_id, to_char(s.end_date, 'DD/MM/YYYY') AS end_date_fr, p.name AS project_name`
+  );
+  for (const subtask of subtasks.rows) {
+    await createNotification({
+      accountId: subtask.assignee_account_id,
+      type: 'subtask_overdue',
+      title: `Sous-tâche en retard : ${subtask.title}`,
+      body: `Tâche ${subtask.task_title} — projet ${subtask.project_name} — date de fin dépassée (${subtask.end_date_fr})`,
+      projectId: subtask.project_id,
+      taskId: subtask.task_id
+    });
+  }
+
+  const count = tasks.rowCount + subtasks.rowCount;
+  if (count) console.log(`[Projets IT] ${count} notification(s) de retard envoyée(s)`);
+}
+
 async function notifyProjectLeads(projectId, { type, title, body }) {
   const leads = await pool.query(
     `SELECT account_id FROM project_assignments WHERE project_id = $1 AND project_role = 'chef_de_projet'`,
@@ -1113,6 +1178,16 @@ export function registerProjectRoutes(app) {
       console.error('[GitHub Sync] synchronisation initiale impossible', error.message || error)
     );
   }, 15000).unref();
+
+  // Retards : vérification au démarrage puis toutes les heures.
+  const runOverdueCheck = () =>
+    notifyOverdueTasks().catch((error) =>
+      console.error('[Projets IT] Vérification des retards impossible', error.message || error)
+    );
+  setTimeout(() => {
+    schemaReady.then(runOverdueCheck);
+  }, 20000).unref();
+  setInterval(runOverdueCheck, 60 * 60 * 1000).unref();
 
   const githubSyncTimer = setInterval(() => {
     syncGitHubBoards().catch((error) =>

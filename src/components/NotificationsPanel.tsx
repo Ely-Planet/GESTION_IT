@@ -3,7 +3,7 @@ import { Bell, CheckCheck } from 'lucide-react';
 import { projectsApi } from '../pages/projects/api';
 import type { AppNotification } from '../pages/projects/types';
 
-// Notifications de l'utilisateur (tâche affectée, nouvelle demande client),
+// Notifications de l'utilisateur (tâche affectée ou en retard, nouvelle demande client),
 // affichées en haut de sa page d'accueil.
 export default function NotificationsPanel({ onOpenProject }: { onOpenProject: (projectId: string) => void }) {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);

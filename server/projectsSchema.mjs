@@ -141,9 +141,16 @@ CREATE TABLE IF NOT EXISTS project_subtasks (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_project_subtasks_task ON project_subtasks(task_id);
+
+-- Retards (018) : date de fin et personne déjà prévenues, pour ne notifier
+-- qu'une fois par retard (à nouveau si la date est repoussée ou la personne changée).
+ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS overdue_notified_for date;
+ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS overdue_notified_account uuid;
+ALTER TABLE project_subtasks ADD COLUMN IF NOT EXISTS overdue_notified_for date;
+ALTER TABLE project_subtasks ADD COLUMN IF NOT EXISTS overdue_notified_account uuid;
 `;
 
 export async function ensureProjectsSchema() {
   await pool.query(SCHEMA_SQL);
-  console.log('[Projets IT] Schéma 013-017 vérifié');
+  console.log('[Projets IT] Schéma 013-018 vérifié');
 }
