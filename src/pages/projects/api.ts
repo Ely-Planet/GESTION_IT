@@ -84,5 +84,7 @@ export const projectsApi = {
   },
 
   dashboard: () => request('/api/projects-dashboard'),
+  workload: (period: string, date: string | null) =>
+    request(`/api/projects-workload?period=${encodeURIComponent(period)}${date ? `&date=${encodeURIComponent(date)}` : ''}`),
   reporting: () => request('/api/projects-reporting'),
 };

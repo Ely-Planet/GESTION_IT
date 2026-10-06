@@ -1,6 +1,7 @@
 import { pool } from './db.mjs';
 import { sendMailWithAttachments } from './graphMail.mjs';
 import { ensureProjectsSchema } from './projectsSchema.mjs';
+import { computeWorkload } from './workload.mjs';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -2758,6 +2759,21 @@ export function registerProjectRoutes(app) {
   // -------------------------------------------------------------------
   // Dashboard manager + reporting directeur
   // -------------------------------------------------------------------
+  // Charge par technicien sur une semaine, un mois ou une année
+  // (?period=week|month|year&date=AAAA-MM-JJ), congés Outlook déduits.
+  app.get('/api/projects-workload', requireAuth, requireRole('manager'), async (req, res) => {
+    try {
+      res.json(await computeWorkload({
+        period: String(req.query.period || 'week'),
+        date: req.query.date ? String(req.query.date) : null,
+        getGraphToken: getProjectsGraphAccessToken
+      }));
+    } catch (error) {
+      console.error('[Projets IT] Charge par technicien', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.get('/api/projects-dashboard', requireAuth, requireRole('manager'), async (req, res) => {
     try {
       const projectsResult = await pool.query(`SELECT * FROM projects WHERE status != 'archive' AND project_state != 'closed'`);

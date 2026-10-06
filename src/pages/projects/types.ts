@@ -172,6 +172,39 @@ export type DashboardData = {
   tempsParMois: TimeByMonthRow[];
 };
 
+export type WorkloadPeriod = 'week' | 'month' | 'year';
+
+export type WorkloadData = {
+  periode: WorkloadPeriod;
+  debut: string;
+  fin: string;
+  libelle: string;
+  contientAujourdhui: boolean;
+  precedente: string;
+  suivante: string;
+  joursOuvres: number;
+  calendrierErreur: string | null;
+  techniciens: {
+    userId: string;
+    nom: string;
+    capaciteHebdoH: number;
+    joursOuvres: number;
+    capaciteBruteH: number;
+    congesH: number;
+    joursConges: number;
+    conges: { date: string; heures: number; motif: string | null }[];
+    capaciteH: number;
+    chargePlanifieeH: number;
+    chargeNonPlanifieeH: number;
+    chargeH: number;
+    tempsSaisiH: number;
+    tauxCharge: number | null;
+    enSurcharge: boolean;
+    calendrierErreur: string | null;
+    chargeParProjet: { projetId: string; nom: string; chargeH: number; nbTaches: number; nbNonPlanifiees: number }[];
+  }[];
+};
+
 export type TimeByMonthRow = {
   mois: string; // AAAA-MM
   userId: string | null;
