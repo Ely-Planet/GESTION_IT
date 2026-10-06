@@ -152,6 +152,11 @@ export default function WorkloadPanel() {
                             <td className="py-1 text-right">
                               {p.nbTaches}
                               {p.nbNonPlanifiees > 0 && <span className="text-ink-400"> (dont {p.nbNonPlanifiees} sans dates)</span>}
+                              {p.nbViaSousTaches > 0 && (
+                                <span className="text-ink-400" title="Part du reste à faire calculée d'après les sous-tâches qui lui sont affectées">
+                                  {' '}· {p.nbViaSousTaches} via sous-tâches
+                                </span>
+                              )}
                             </td>
                             <td className="py-1 text-right">{p.chargeH} h</td>
                           </tr>
@@ -169,7 +174,9 @@ export default function WorkloadPanel() {
           <p className="text-xs text-ink-400 mt-4">
             Charge = reste à faire des tâches actives (estimé − temps passé), réparti sur les jours ouvrés entre aujourd'hui et la date
             de fin de chaque tâche ; une tâche en retard compte entièrement aujourd'hui, une tâche sans dates compte dans la période en
-            cours. Trait noir : capacité. En rouge : charge supérieure à la capacité.
+            cours. Une tâche découpée en sous-tâches est partagée à parts égales entre ses sous-tâches non terminées, au profit de la
+            personne affectée à chacune (à défaut, le responsable de la tâche), sur les dates de la sous-tâche. Trait noir : capacité.
+            En rouge : charge supérieure à la capacité.
           </p>
         </div>
       )}

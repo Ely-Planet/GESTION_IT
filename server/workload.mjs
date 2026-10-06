@@ -4,7 +4,9 @@
 // ouvrés (lundi-vendredi, hors jours fériés français), moins les congés lus
 // dans le calendrier Outlook de chacun (Microsoft Graph).
 // Charge : reste à faire des tâches actives (estimé - passé), réparti sur les
-// jours ouvrés entre aujourd'hui et la date de fin de la tâche.
+// jours ouvrés entre aujourd'hui et la date de fin de la tâche. Une tâche
+// découpée en sous-tâches voit son reste à faire partagé à parts égales entre
+// ses sous-tâches non terminées, chacune pour la personne qui lui est affectée.
 import { pool } from './db.mjs';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -154,10 +156,39 @@ function leaveHoursByDay(events, dailyHours, start, end) {
   return byDay;
 }
 
-// ---- Répartition de la charge d'une tâche sur les jours ----
-// Renvoie { parJour: heures par jour ouvré, jours: [...] } ou null si non planifiée.
-function spreadTask(task, today) {
+// ---- Répartition d'une tâche entre les personnes (sous-tâches) ----
+// Reste à faire de la tâche partagé à parts égales entre ses sous-tâches non
+// terminées ; chaque part va à la personne affectée à la sous-tâche (à défaut,
+// au responsable de la tâche) et suit les dates de la sous-tâche (à défaut,
+// celles de la tâche). Sans sous-tâche ouverte, tout revient au responsable.
+function splitTaskWork(task, subtasks = []) {
   const remaining = Math.max(Number(task.estimated_hours) - Number(task.spent_hours), 0);
+  const open = subtasks.filter((subtask) => subtask.status !== 'done');
+  if (!open.length) {
+    return task.assignee_account_id
+      ? [{ accountId: task.assignee_account_id, remaining, start_date: task.start_date, end_date: task.end_date, viaSousTache: false }]
+      : [];
+  }
+  const share = remaining / open.length;
+  return open
+    .map((subtask) => {
+      const hasOwnDates = Boolean(subtask.start_date || subtask.end_date);
+      return {
+        accountId: subtask.assignee_account_id || task.assignee_account_id,
+        remaining: share,
+        start_date: hasOwnDates ? subtask.start_date : task.start_date,
+        end_date: hasOwnDates ? subtask.end_date : task.end_date,
+        viaSousTache: true
+      };
+    })
+    .filter((item) => item.accountId);
+}
+
+// ---- Répartition de la charge sur les jours ----
+// item : { remaining, start_date, end_date } (ou une tâche : estimé - passé).
+// Renvoie { remaining, perDay, days } ou null si non planifiée.
+function spreadTask(task, today) {
+  const remaining = task.remaining ?? Math.max(Number(task.estimated_hours) - Number(task.spent_hours), 0);
   if (remaining <= 0) return { remaining: 0, days: [], perDay: 0 };
   const startDate = task.start_date ? toDay(task.start_date) : null;
   const endDate = task.end_date ? toDay(task.end_date) : null;
@@ -198,11 +229,36 @@ export async function computeWorkload({ period, date, getGraphToken }) {
        FROM project_tasks t
        JOIN projects p ON p.id = t.project_id
        WHERE t.status <> 'done'
-         AND t.assignee_account_id IS NOT NULL
+         AND (t.assignee_account_id IS NOT NULL
+              OR EXISTS (SELECT 1 FROM project_subtasks s WHERE s.task_id = t.id AND s.assignee_account_id IS NOT NULL))
          AND p.status <> 'archive'
          AND p.project_state IS DISTINCT FROM 'closed'`
     )
   ).rows;
+
+  const subtasksByTask = {};
+  if (tasks.length) {
+    const subtaskRows = (
+      await pool.query(
+        `SELECT task_id, status, assignee_account_id,
+                to_char(start_date, 'YYYY-MM-DD') AS start_date,
+                to_char(end_date, 'YYYY-MM-DD') AS end_date
+         FROM project_subtasks WHERE task_id = ANY($1::uuid[])`,
+        [tasks.map((task) => task.id)]
+      )
+    ).rows;
+    for (const row of subtaskRows) (subtasksByTask[row.task_id] ||= []).push(row);
+  }
+
+  // Parts de travail : une par tâche, ou une par sous-tâche ouverte.
+  const workItems = tasks.flatMap((task) =>
+    splitTaskWork(task, subtasksByTask[task.id]).map((item) => ({
+      ...item,
+      taskId: task.id,
+      projectId: task.project_id,
+      projectName: task.project_name
+    }))
+  );
 
   // Temps réellement saisi sur la période (journal daté).
   const timeRows = (
@@ -257,30 +313,32 @@ export async function computeWorkload({ period, date, getGraphToken }) {
     let planned = 0;
     let unplanned = 0;
     const byProject = {};
-    for (const task of tasks.filter((t) => t.assignee_account_id === member.id)) {
-      const spread = spreadTask(task, today);
+    for (const item of workItems.filter((w) => w.accountId === member.id)) {
+      const spread = spreadTask(item, today);
       let inPeriod = 0;
       let isUnplanned = false;
       if (spread === null) {
         isUnplanned = true;
-        // Tâche sans date : comptée dans la période en cours.
-        if (containsToday) inPeriod = Math.max(Number(task.estimated_hours) - Number(task.spent_hours), 0);
+        // Sans date : comptée dans la période en cours.
+        if (containsToday) inPeriod = item.remaining;
       } else {
         inPeriod = spread.days.filter((day) => day >= range.start && day <= range.end).length * spread.perDay;
       }
       if (isUnplanned) unplanned += inPeriod;
       else planned += inPeriod;
       if (inPeriod > 0 || isUnplanned) {
-        const entry = (byProject[task.project_id] ||= {
-          projetId: task.project_id,
-          nom: task.project_name,
+        const entry = (byProject[item.projectId] ||= {
+          projetId: item.projectId,
+          nom: item.projectName,
           chargeH: 0,
-          nbTaches: 0,
-          nbNonPlanifiees: 0
+          taches: new Set(),
+          nonPlanifiees: new Set(),
+          viaSousTaches: new Set()
         });
         entry.chargeH += inPeriod;
-        entry.nbTaches += 1;
-        if (isUnplanned) entry.nbNonPlanifiees += 1;
+        entry.taches.add(item.taskId);
+        if (isUnplanned) entry.nonPlanifiees.add(item.taskId);
+        if (item.viaSousTache) entry.viaSousTaches.add(item.taskId);
       }
     }
 
@@ -305,7 +363,14 @@ export async function computeWorkload({ period, date, getGraphToken }) {
       enSurcharge: load > capacity,
       calendrierErreur: memberCalendarError,
       chargeParProjet: Object.values(byProject)
-        .map((entry) => ({ ...entry, chargeH: round1(entry.chargeH) }))
+        .map((entry) => ({
+          projetId: entry.projetId,
+          nom: entry.nom,
+          chargeH: round1(entry.chargeH),
+          nbTaches: entry.taches.size,
+          nbNonPlanifiees: entry.nonPlanifiees.size,
+          nbViaSousTaches: entry.viaSousTaches.size
+        }))
         .sort((a, b) => b.chargeH - a.chargeH)
     });
   }
@@ -325,4 +390,4 @@ export async function computeWorkload({ period, date, getGraphToken }) {
 }
 
 // Exposés pour les tests.
-export { frenchHolidays, leaveHoursByDay, spreadTask, toDay, fromDay, workingDaysBetween };
+export { frenchHolidays, leaveHoursByDay, splitTaskWork, spreadTask, toDay, fromDay, workingDaysBetween };

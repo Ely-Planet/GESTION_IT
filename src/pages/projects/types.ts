@@ -201,7 +201,7 @@ export type WorkloadData = {
     tauxCharge: number | null;
     enSurcharge: boolean;
     calendrierErreur: string | null;
-    chargeParProjet: { projetId: string; nom: string; chargeH: number; nbTaches: number; nbNonPlanifiees: number }[];
+    chargeParProjet: { projetId: string; nom: string; chargeH: number; nbTaches: number; nbNonPlanifiees: number; nbViaSousTaches: number }[];
   }[];
 };
 
