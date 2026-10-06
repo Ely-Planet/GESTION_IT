@@ -986,6 +986,12 @@ try {
     UNION ALL
 
     SELECT 1
+    FROM project_clients pc
+    WHERE pc.account_id = $1
+
+    UNION ALL
+
+    SELECT 1
     FROM project_assignments pa
     WHERE pa.account_id = $1
 

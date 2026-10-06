@@ -7,7 +7,7 @@ import TasksTab from './tabs/TasksTab';
 import GanttTab from './tabs/GanttTab';
 import RequestsTab from './tabs/RequestsTab';
 import TeamTab from './tabs/TeamTab';
-import ClientPicker from './ClientPicker';
+import ClientsEditor from './ClientsEditor';
 import type { Account, ProjectDetailData } from './types';
 
 export default function ProjectDetail({ projectId, onBack }: { projectId: string; onBack: () => void }) {
@@ -46,16 +46,27 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
     onBack();
   }
 
-  async function changeClient(clientAccountId: string) {
+  async function addClient(clientAccountId: string) {
     try {
-      const updated = await projectsApi.updateProject(projectId, { clientAccountId: clientAccountId || null });
-      if (updated?.client_account_id && updated.client_link_sent === false) {
-        alert("Client enregistré, mais l'e-mail avec le lien du projet n'a pas pu être envoyé.");
+      const result = await projectsApi.addClient(projectId, clientAccountId);
+      if (result?.client_link_sent === false) {
+        alert("Client ajouté, mais l'e-mail avec le lien du projet n'a pas pu être envoyé.");
       }
-      await load();
     } catch (err: any) {
-      alert(err.message || 'Erreur lors du changement de client');
+      alert(err.message || "Erreur lors de l'ajout du client");
     }
+    await load();
+  }
+
+  async function removeClient(accountId: string) {
+    const name = project?.clients?.find((c) => c.account_id === accountId)?.display_name || 'ce client';
+    if (!confirm(`Retirer ${name} des clients du projet ? Il n'y aura plus accès.`)) return;
+    try {
+      await projectsApi.removeClient(projectId, accountId);
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors du retrait du client');
+    }
+    await load();
   }
 
   async function changeDates(patch: { startDate?: string | null; dueDate?: string | null }) {
@@ -71,7 +82,7 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
     setSendingLink(true);
     try {
       await projectsApi.sendClientLink(projectId);
-      alert('Le lien du projet a été envoyé au client.');
+      alert('Le lien du projet a été envoyé aux clients.');
     } catch (err: any) {
       alert(err.message || "Erreur lors de l'envoi du lien");
     } finally {
@@ -93,16 +104,22 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
   if (!project) return <div className="p-6 text-ink-500">Chargement...</div>;
 
   const canManageTeam = isManager || Boolean(project.estChefDeProjet);
-  // Le serveur n'envoie les tâches qu'à l'équipe : sans elles, c'est la vue
-  // client du projet (uniquement ses demandes).
-  const clientView = !Array.isArray(project.tasks);
+  // Vue client : tâches et Gantt en lecture seule, plus ses demandes.
+  const clientView = Boolean(project.clientView);
+  const projectClients = project.clients || [];
 
-  const tabs: [string, string][] = [
-    ['tasks', 'Tâches'],
-    ['gantt', 'Gantt'],
-    ['requests', 'Demandes clients'],
-    ['team', 'Équipe'],
-  ];
+  const tabs: [string, string][] = clientView
+    ? [
+        ['tasks', 'Tâches'],
+        ['gantt', 'Gantt'],
+        ['requests', 'Demandes'],
+      ]
+    : [
+        ['tasks', 'Tâches'],
+        ['gantt', 'Gantt'],
+        ['requests', 'Demandes clients'],
+        ['team', 'Équipe'],
+      ];
 
   return (
     <div className="p-6 w-full max-w-[1800px] mx-auto">
@@ -227,34 +244,28 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
         )}
         {canManageTeam && (
           <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-ink-100">
-            <span className="text-sm text-ink-600">Client :</span>
+            <span className="text-sm text-ink-600">{projectClients.length > 1 ? 'Clients :' : 'Client :'}</span>
             {isManager ? (
-              <ClientPicker
-                className="w-96"
+              <ClientsEditor
                 clients={clients}
-                value={project.client_account_id || ''}
-                currentLabel={project.client_name || project.client_email}
-                onChange={(clientAccountId) => {
-                  if (clientAccountId !== (project.client_account_id || '')) void changeClient(clientAccountId);
-                }}
+                selected={projectClients.map((c) => ({ id: c.account_id, label: c.display_name, email: c.email }))}
+                onAdd={(clientAccountId) => void addClient(clientAccountId)}
+                onRemove={(accountId) => void removeClient(accountId)}
               />
             ) : (
               <span className="text-sm text-ink-900">{project.client_name || 'Aucun client'}</span>
             )}
-            {project.client_account_id && (
+            {projectClients.length > 0 && (
               <button className="btn-ghost text-sm" disabled={sendingLink} onClick={() => void sendClientLink()}>
-                {sendingLink ? 'Envoi…' : 'Renvoyer le lien au client'}
+                {sendingLink ? 'Envoi…' : projectClients.length > 1 ? 'Renvoyer le lien aux clients' : 'Renvoyer le lien au client'}
               </button>
             )}
-            {isManager && <span className="text-xs text-ink-400">Le client reçoit le lien du projet par e-mail dès qu'il est choisi.</span>}
+            {isManager && <span className="text-xs text-ink-400">Chaque client ajouté reçoit le lien du projet par e-mail. Les clients voient les tâches sans pouvoir les modifier.</span>}
           </div>
         )}
       </div>
 
-      {clientView ? (
-        <RequestsTab project={project} team={accounts} onChanged={load} />
-      ) : (
-        <>
+      <>
           <div className="flex gap-1 mb-4 border-b border-ink-100">
             {tabs.map(([key, label]) => (
               <button
@@ -269,14 +280,13 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
             ))}
           </div>
 
-          {tab === 'tasks' && <TasksTab project={project} team={accounts} onChanged={load} />}
-          {tab === 'gantt' && <GanttTab project={project} team={accounts} onChanged={load} />}
+          {tab === 'tasks' && <TasksTab project={project} team={accounts} onChanged={load} readOnly={clientView} />}
+          {tab === 'gantt' && <GanttTab project={project} team={accounts} onChanged={load} readOnly={clientView} />}
           {tab === 'requests' && <RequestsTab project={project} team={accounts} onChanged={load} />}
-          {tab === 'team' && (
+          {tab === 'team' && !clientView && (
             <TeamTab project={project} allAccounts={accounts} canManage={canManageTeam} onChanged={load} />
           )}
-        </>
-      )}
+      </>
     </div>
   );
 }

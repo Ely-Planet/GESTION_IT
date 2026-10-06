@@ -3,7 +3,7 @@ import { Plus } from 'lucide-react';
 import { projectsApi } from './api';
 import { useAuth } from '../../context/AuthContext';
 import { ProgressBar } from './ProjectUI';
-import ClientPicker from './ClientPicker';
+import ClientsEditor from './ClientsEditor';
 import type { Account, ProjectListItem } from './types';
 
 export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void }) {
@@ -21,7 +21,7 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
     name: '',
     description: '',
     type: 'dev',
-    clientAccountId: '',
+    clientAccountIds: [] as string[],
     startDate: '',
     dueDate: '',
     githubRepoUrl: '',
@@ -47,12 +47,11 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
     try {
       await projectsApi.createProject({
         ...form,
-        clientAccountId: form.clientAccountId || null,
         startDate: form.startDate || null,
         dueDate: form.dueDate || null,
       });
       setShowForm(false);
-      setForm({ name: '', description: '', type: 'dev', clientAccountId: '', startDate: '', dueDate: '', githubRepoUrl: '', developerAssignments: [] });
+      setForm({ name: '', description: '', type: 'dev', clientAccountIds: [], startDate: '', dueDate: '', githubRepoUrl: '', developerAssignments: [] });
       void load();
     } catch (err: any) {
       alert(err.message || 'Erreur');
@@ -112,11 +111,18 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
             onChange={(e) => setForm({ ...form, description: e.target.value })}
           />
           <div className="grid grid-cols-2 gap-3">
-            <ClientPicker
-              clients={clients}
-              value={form.clientAccountId}
-              onChange={(clientAccountId) => setForm({ ...form, clientAccountId })}
-            />
+            <div>
+              <p className="text-xs text-ink-500 mb-1">Clients du projet (ils voient les tâches, sans pouvoir les modifier)</p>
+              <ClientsEditor
+                clients={clients}
+                selected={form.clientAccountIds.map((id) => {
+                  const account = clients.find((c) => c.id === id);
+                  return { id, label: account?.display_name || id, email: account?.email };
+                })}
+                onAdd={(id) => setForm({ ...form, clientAccountIds: [...new Set([...form.clientAccountIds, id])] })}
+                onRemove={(id) => setForm({ ...form, clientAccountIds: form.clientAccountIds.filter((x) => x !== id) })}
+              />
+            </div>
             <input
               className="input"
               placeholder="URL dépôt GitHub (optionnel)"

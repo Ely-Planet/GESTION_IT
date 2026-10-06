@@ -146,10 +146,29 @@ function TaskCard({
   );
 }
 
-export default function TasksTab({ project, team, onChanged }: {
+// Carte de la vue client : lecture seule (ni glisser-déposer, ni champs, ni détail).
+function ReadOnlyTaskCard({ task }: { task: Task }) {
+  const period = formatPeriod(task.start_date, task.end_date);
+  return (
+    <article className="card p-3">
+      <div className="flex items-start justify-between gap-2">
+        <p className="font-medium text-ink-900 break-words min-w-0">{task.title}</p>
+        <StatusBadge status={task.status} />
+      </div>
+      {task.description && <p className="text-sm text-ink-500 mt-2 line-clamp-4 whitespace-pre-wrap">{task.description}</p>}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-ink-500">
+        {period && <span className="flex items-center gap-1"><CalendarDays className="w-3.5 h-3.5" /> {period}</span>}
+        <span>{task.origin === 'demande_client' ? 'Demande client' : 'Tâche interne'}</span>
+      </div>
+    </article>
+  );
+}
+
+export default function TasksTab({ project, team, onChanged, readOnly = false }: {
   project: ProjectDetailData;
   team: Account[];
   onChanged: () => void;
+  readOnly?: boolean; // vue client
 }) {
   const [showForm, setShowForm] = useState(false);
   const [showOldDone, setShowOldDone] = useState(false);
@@ -161,7 +180,7 @@ export default function TasksTab({ project, team, onChanged }: {
   const [form, setForm] = useState(emptyForm);
   const [formFiles, setFormFiles] = useState<File[]>([]);
   const [creating, setCreating] = useState(false);
-  const canCreateTasks = Boolean(project.estChefDeProjet);
+  const canCreateTasks = !readOnly && Boolean(project.estChefDeProjet);
   const [localTasks, setLocalTasks] = useState<Task[]>(project.tasks || []);
   const tasks = localTasks;
   const detailTask = tasks.find((task) => task.id === detailTaskId) || null;
@@ -326,12 +345,14 @@ export default function TasksTab({ project, team, onChanged }: {
             <section
               key={status}
               onDragOver={(e) => {
+                if (readOnly) return;
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'move';
                 if (dragOverStatus !== status) setDragOverStatus(status);
               }}
               onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverStatus(null); }}
               onDrop={(e) => {
+                if (readOnly) return;
                 e.preventDefault();
                 const taskId = e.dataTransfer.getData('text/plain') || draggedTaskId;
                 if (taskId) void dropTask(status, taskId);
@@ -347,7 +368,8 @@ export default function TasksTab({ project, team, onChanged }: {
               </div>
               {/* Défilement propre à chaque colonne : l'en-tête reste visible. */}
               <div className="space-y-3 flex-1 min-h-0 overflow-y-auto -mr-1 pr-1">
-                {columnTasks.map((task) => (
+                {readOnly && columnTasks.map((task) => <ReadOnlyTaskCard key={task.id} task={task} />)}
+                {!readOnly && columnTasks.map((task) => (
                   <TaskCard
                     key={task.id}
                     task={task}
@@ -363,14 +385,18 @@ export default function TasksTab({ project, team, onChanged }: {
                     onOpen={(openedTask) => setDetailTaskId(openedTask.id)}
                   />
                 ))}
-                {columnTasks.length === 0 && <div className="border-2 border-dashed border-ink-200 rounded-lg p-8 text-center text-sm text-ink-400">Déposez une tâche ici</div>}
+                {columnTasks.length === 0 && (
+                  <div className="border-2 border-dashed border-ink-200 rounded-lg p-8 text-center text-sm text-ink-400">
+                    {readOnly ? 'Aucune tâche' : 'Déposez une tâche ici'}
+                  </div>
+                )}
               </div>
             </section>
           );
         })}
       </div>
 
-      {detailTask && (
+      {detailTask && !readOnly && (
         <TaskDetail
           task={detailTask}
           team={team}

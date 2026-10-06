@@ -62,14 +62,18 @@ function taskSpan(task: Task): Span | null {
   };
 }
 
-export default function GanttTab({ project, team, onChanged }: {
+export default function GanttTab({ project, team, onChanged, readOnly = false }: {
   project: ProjectDetailData;
   team: Account[];
   onChanged: () => void;
+  readOnly?: boolean; // vue client : pas d'ouverture du détail des tâches
 }) {
   const [zoom, setZoom] = useState<Zoom>('week');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  const [detailTaskId, setDetailTaskIdState] = useState<string | null>(null);
+  const setDetailTaskId = (taskId: string | null) => {
+    if (!readOnly) setDetailTaskIdState(taskId);
+  };
   const tasks = useMemo(() => project.tasks || [], [project.tasks]);
   const detailTask = tasks.find((task) => task.id === detailTaskId) || null;
   const canPlan = Boolean(project.estChefDeProjet);
@@ -79,7 +83,7 @@ export default function GanttTab({ project, team, onChanged }: {
   const startDay = project.start_date ? toDay(String(project.start_date)) : null;
 
   useEffect(() => {
-    if (detailTaskId && !detailTask) setDetailTaskId(null);
+    if (detailTaskId && !detailTask) setDetailTaskIdState(null);
   }, [detailTaskId, detailTask]);
 
   const planned = useMemo(
@@ -162,7 +166,9 @@ export default function GanttTab({ project, team, onChanged }: {
         <div>
           <h3 className="font-semibold text-ink-900">Planning du projet</h3>
           <p className="text-xs text-ink-500">
-            Les dates se saisissent dans le détail de chaque tâche. Les sous-tâches ne sont jamais notifiées au client.
+            {readOnly
+              ? 'Planning prévisionnel des tâches du projet.'
+              : 'Les dates se saisissent dans le détail de chaque tâche. Les sous-tâches ne sont jamais notifiées au client.'}
           </p>
         </div>
         <div className="flex rounded-lg border border-ink-200 overflow-hidden">
@@ -181,7 +187,7 @@ export default function GanttTab({ project, team, onChanged }: {
 
       {planned.length === 0 ? (
         <div className="card p-8 text-center text-sm text-ink-500">
-          Aucune tâche planifiée. Ouvrez une tâche pour lui donner une date de début et de fin.
+          {readOnly ? 'Aucune tâche planifiée pour le moment.' : 'Aucune tâche planifiée. Ouvrez une tâche pour lui donner une date de début et de fin.'}
         </div>
       ) : (
         <div className="card overflow-x-auto">
@@ -228,7 +234,7 @@ export default function GanttTab({ project, team, onChanged }: {
                 const isOpen = !collapsed.has(task.id);
                 return (
                   <div key={task.id}>
-                    <div className="flex border-b border-ink-100 hover:bg-elyade-50/30 cursor-pointer" style={{ height: 36 }} onClick={() => setDetailTaskId(task.id)}>
+                    <div className={`flex border-b border-ink-100 ${readOnly ? '' : 'hover:bg-elyade-50/30 cursor-pointer'}`} style={{ height: 36 }} onClick={() => setDetailTaskId(task.id)}>
                       <div className="sticky left-0 z-10 bg-white flex items-center gap-1 px-2 border-r border-ink-100" style={{ width: LABEL_WIDTH, minWidth: LABEL_WIDTH }}>
                         {subtasks.length > 0 ? (
                           <button
@@ -254,7 +260,7 @@ export default function GanttTab({ project, team, onChanged }: {
                     {isOpen && subtasks.map((subtask) => {
                       const subSpan = spanOf(subtask.start_date, subtask.end_date);
                       return (
-                        <div key={subtask.id} className="flex border-b border-ink-50 hover:bg-elyade-50/30 cursor-pointer" style={{ height: 28 }} onClick={() => setDetailTaskId(task.id)}>
+                        <div key={subtask.id} className={`flex border-b border-ink-50 ${readOnly ? '' : 'hover:bg-elyade-50/30 cursor-pointer'}`} style={{ height: 28 }} onClick={() => setDetailTaskId(task.id)}>
                           <div className="sticky left-0 z-10 bg-white flex items-center gap-1.5 pl-10 pr-2 border-r border-ink-100" style={{ width: LABEL_WIDTH, minWidth: LABEL_WIDTH }}>
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${SUBTASK_BAR[subtask.status]}`} />
                             <span className={`text-xs truncate ${subtask.status === 'done' ? 'line-through text-ink-400' : 'text-ink-600'}`} title={subtask.title}>

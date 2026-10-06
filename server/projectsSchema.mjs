@@ -110,6 +110,20 @@ ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS start_date date;
 ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS end_date date;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS start_date date;
 
+-- Plusieurs clients par projet (017). projects.client_account_id reste le
+-- premier client (compatibilité) ; reprise des clients existants.
+CREATE TABLE IF NOT EXISTS project_clients (
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  account_id uuid NOT NULL REFERENCES app_accounts(id) ON DELETE CASCADE,
+  added_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_clients_account ON project_clients(account_id);
+INSERT INTO project_clients (project_id, account_id, added_at)
+SELECT id, client_account_id, COALESCE(created_at, now())
+FROM projects WHERE client_account_id IS NOT NULL
+ON CONFLICT DO NOTHING;
+
 -- Sous-tâches : découpage interne d'une tâche. Table à part pour ne jamais
 -- déclencher les mails client, la synchro GitHub ni le taux de complétude,
 -- qui ne portent que sur project_tasks.
@@ -131,5 +145,5 @@ CREATE INDEX IF NOT EXISTS idx_project_subtasks_task ON project_subtasks(task_id
 
 export async function ensureProjectsSchema() {
   await pool.query(SCHEMA_SQL);
-  console.log('[Projets IT] Schéma 013-016 vérifié');
+  console.log('[Projets IT] Schéma 013-017 vérifié');
 }

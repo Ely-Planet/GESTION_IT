@@ -40,9 +40,9 @@ export default function RequestsTab({
   onChanged: () => void;
 }) {
   const { user } = useAuth();
-  // Vue équipe si le serveur a envoyé les tâches ; être client est propre au projet.
-  const teamView = Array.isArray(project.tasks);
-  const canSubmit = Boolean(user?.id) && project.client_account_id === user?.id;
+  // Être client est propre au projet (un membre IT peut être client d'un projet).
+  const teamView = !project.clientView;
+  const canSubmit = Boolean(user?.id) && Boolean(project.isClient);
   const canProcess = teamView && Boolean(project.estChefDeProjet);
   const [requests, setRequests] = useState<ClientRequest[]>([]);
   const [newRequest, setNewRequest] = useState({ title: '', description: '' });
@@ -280,7 +280,7 @@ export default function RequestsTab({
         })}
         {requests.length === 0 && (
           <p className="text-sm text-ink-500">
-            {teamView && !project.client_account_id
+            {teamView && !(project.clients || []).length
               ? "Aucun client n'est défini pour ce projet. Choisissez-en un en haut de la page : il recevra le lien pour déposer ses demandes ici."
               : teamView && !canSubmit
                 ? `Aucune demande pour l'instant. Les demandes sont rédigées par le client du projet${project.client_name ? ` (${project.client_name})` : ''}.`

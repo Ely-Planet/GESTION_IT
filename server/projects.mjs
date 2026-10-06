@@ -280,6 +280,45 @@ function projectDatesError(startDate, dueDate) {
   return null;
 }
 
+// Un projet peut avoir plusieurs clients (table project_clients).
+// projects.client_account_id reste renseigné avec le premier client ajouté
+// (compatibilité : synchro GitHub, accès à la connexion, tableaux de bord).
+async function isProjectClient(accountId, projectId) {
+  const result = await pool.query(
+    `SELECT 1 FROM project_clients WHERE project_id = $1 AND account_id = $2`,
+    [projectId, accountId]
+  );
+  return result.rowCount > 0;
+}
+
+async function listProjectClients(projectId, db = pool) {
+  const result = await db.query(
+    `SELECT a.id AS account_id, a.email, a.display_name
+     FROM project_clients pc JOIN app_accounts a ON a.id = pc.account_id
+     WHERE pc.project_id = $1
+     ORDER BY pc.added_at, a.display_name`,
+    [projectId]
+  );
+  return result.rows;
+}
+
+async function syncPrincipalClient(db, projectId) {
+  await db.query(
+    `UPDATE projects SET
+       client_account_id = (SELECT account_id FROM project_clients WHERE project_id = $1 ORDER BY added_at LIMIT 1),
+       updated_at = now()
+     WHERE id = $1`,
+    [projectId]
+  );
+}
+
+// Noms des clients d'un projet, séparés par des virgules (listes, reporting).
+const CLIENT_NAMES_SQL = `(
+  SELECT string_agg(ca.display_name, ', ' ORDER BY pc.added_at)
+  FROM project_clients pc JOIN app_accounts ca ON ca.id = pc.account_id
+  WHERE pc.project_id = p.id
+)`;
+
 function completionRate(tasks) {
   if (!tasks.length) return 0;
   const done = tasks.filter((t) => t.status === 'done').length;
@@ -387,14 +426,10 @@ async function handleTaskStatusChange(task, previousStatus) {
   if (task.status !== 'in_progress' && task.status !== 'done') return;
 
   try {
-    const projectResult = await pool.query(
-      `SELECT p.id, p.name, c.email AS client_email, c.display_name AS client_name
-       FROM projects p JOIN app_accounts c ON c.id = p.client_account_id
-       WHERE p.id = $1`,
-      [task.project_id]
-    );
+    const projectResult = await pool.query(`SELECT id, name FROM projects WHERE id = $1`, [task.project_id]);
     const project = projectResult.rows[0];
-    if (!project?.client_email) return;
+    const clients = project ? (await listProjectClients(project.id)).filter((c) => c.email) : [];
+    if (!clients.length) return;
 
     const column = task.status === 'done' ? 'client_notified_done_at' : 'client_notified_in_progress_at';
     const claim = await pool.query(
@@ -406,39 +441,49 @@ async function handleTaskStatusChange(task, previousStatus) {
     const title = escapeHtml(task.title);
     const projectName = escapeHtml(project.name);
     const isDone = task.status === 'done';
-    await notifyClient({
-      email: project.client_email,
-      subject: isDone
-        ? `[${project.name}] Tâche terminée : ${task.title}`
-        : `[${project.name}] Nous travaillons sur : ${task.title}`,
-      html: clientMailHtml({
-        name: project.client_name,
-        paragraphs: isDone
-          ? [`La tâche <strong>« ${title} »</strong> du projet <strong>${projectName}</strong> est terminée.`]
-          : [`L'équipe informatique a commencé à travailler sur la tâche <strong>« ${title} »</strong> du projet <strong>${projectName}</strong>.`],
-        projectId: project.id
-      })
-    });
+    for (const client of clients) {
+      await notifyClient({
+        email: client.email,
+        subject: isDone
+          ? `[${project.name}] Tâche terminée : ${task.title}`
+          : `[${project.name}] Nous travaillons sur : ${task.title}`,
+        html: clientMailHtml({
+          name: client.display_name,
+          paragraphs: isDone
+            ? [`La tâche <strong>« ${title} »</strong> du projet <strong>${projectName}</strong> est terminée.`]
+            : [`L'équipe informatique a commencé à travailler sur la tâche <strong>« ${title} »</strong> du projet <strong>${projectName}</strong>.`],
+          projectId: project.id
+        })
+      });
+    }
   } catch (error) {
     console.error('[Projets IT] Mail de statut client impossible', error.message || error);
   }
 }
 
-// Mail au client avec le lien de son projet, pour qu'il puisse y déposer ses demandes.
-async function sendClientProjectLink(projectId) {
-  const result = await pool.query(
-    `SELECT p.id, p.name, c.email AS client_email, c.display_name AS client_name
-     FROM projects p JOIN app_accounts c ON c.id = p.client_account_id
-     WHERE p.id = $1`,
-    [projectId]
+// Mail aux clients avec le lien de leur projet, pour qu'ils puissent y déposer
+// leurs demandes. accountIds : clients ciblés (par défaut, tous les clients).
+// Renvoie true si au moins un mail est parti.
+async function sendClientProjectLink(projectId, accountIds = null) {
+  const projectResult = await pool.query(`SELECT id, name FROM projects WHERE id = $1`, [projectId]);
+  const project = projectResult.rows[0];
+  if (!project) return false;
+  const clients = (await listProjectClients(projectId)).filter(
+    (c) => c.email && (!accountIds || accountIds.includes(c.account_id))
   );
-  const project = result.rows[0];
-  if (!project?.client_email) return false;
+  let sent = false;
+  for (const client of clients) {
+    if (await sendOneClientProjectLink(project, client)) sent = true;
+  }
+  return sent;
+}
+
+function sendOneClientProjectLink(project, client) {
   return notifyClient({
-    email: project.client_email,
+    email: client.email,
     subject: `Votre projet "${project.name}" : déposez vos demandes`,
     html: clientMailHtml({
-      name: project.client_name,
+      name: client.display_name,
       paragraphs: [
         `Vous êtes désormais le client du projet <strong>${escapeHtml(project.name)}</strong> dans l'application de gestion IT.`,
         `Depuis le lien ci-dessous, vous pouvez rédiger vos demandes (avec pièces jointes si besoin) et suivre leur avancement. Connectez-vous avec votre compte Microsoft Elyade.`
@@ -483,8 +528,7 @@ async function canAccessProject(user, projectId) {
   const role = getModuleRole(user);
   if (role === 'manager' || role === 'directeur') return true;
   if (role === 'dev' && (await isAssignedToProject(user.id, projectId))) return true;
-  const result = await pool.query(`SELECT 1 FROM projects WHERE id = $1 AND client_account_id = $2`, [projectId, user.id]);
-  return result.rowCount > 0;
+  return isProjectClient(user.id, projectId);
 }
 
 async function removeUploadedFiles(files) {
@@ -1306,20 +1350,19 @@ export function registerProjectRoutes(app) {
       let params = [];
 
       if (role === 'client') {
-        where += ' AND p.client_account_id = $1';
+        where += ' AND EXISTS (SELECT 1 FROM project_clients pc WHERE pc.project_id = p.id AND pc.account_id = $1)';
         params = [accountId];
       } else if (role === 'dev') {
-        where += ` AND (p.client_account_id = $1
+        where += ` AND (EXISTS (SELECT 1 FROM project_clients pc WHERE pc.project_id = p.id AND pc.account_id = $1)
                    OR EXISTS (SELECT 1 FROM project_assignments pa WHERE pa.project_id = p.id AND pa.account_id = $1))`;
         params = [accountId];
       }
 
       const projectsResult = await pool.query(
-        `SELECT p.*, c.display_name AS client_name, c.email AS client_email,
+        `SELECT p.*, ${CLIENT_NAMES_SQL} AS client_name,
                 to_char(p.start_date, 'YYYY-MM-DD') AS start_date,
                 to_char(p.due_date, 'YYYY-MM-DD') AS due_date
          FROM projects p
-         LEFT JOIN app_accounts c ON c.id = p.client_account_id
          ${where}
          ORDER BY CASE p.project_state WHEN 'new' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'maintenance' THEN 3 ELSE 4 END, p.updated_at DESC, p.created_at DESC`,
         params
@@ -1379,10 +1422,10 @@ export function registerProjectRoutes(app) {
       const projectId = req.params.id;
 
       const projectResult = await pool.query(
-        `SELECT p.*, c.display_name AS client_name, c.email AS client_email,
+        `SELECT p.*, ${CLIENT_NAMES_SQL} AS client_name,
                 to_char(p.start_date, 'YYYY-MM-DD') AS start_date,
                 to_char(p.due_date, 'YYYY-MM-DD') AS due_date
-         FROM projects p LEFT JOIN app_accounts c ON c.id = p.client_account_id
+         FROM projects p
          WHERE p.id = $1`,
         [projectId]
       );
@@ -1391,13 +1434,13 @@ export function registerProjectRoutes(app) {
 
       // Être client est propre au projet : un membre IT choisi comme client
       // d'un projet où il n'est pas dans l'équipe a la vue client.
-      const isProjectClient = project.client_account_id === accountId;
+      const isClient = await isProjectClient(accountId, projectId);
       const hasTeamView =
         role === 'manager' ||
         role === 'directeur' ||
         (role === 'dev' && (await isAssignedToProject(accountId, projectId)));
 
-      if (!hasTeamView && !isProjectClient) return res.status(403).json({ error: 'Accès refusé à ce projet' });
+      if (!hasTeamView && !isClient) return res.status(403).json({ error: 'Accès refusé à ce projet' });
 
       const tasksResult = await pool.query(
         `SELECT t.*, a.display_name AS assignee_name,
@@ -1427,13 +1470,16 @@ export function registerProjectRoutes(app) {
       );
 
       if (!hasTeamView) {
+        // Les clients d'un même projet voient toutes les demandes du projet.
         const requestsResult = await pool.query(
           `${CLIENT_REQUESTS_SELECT}
-           WHERE r.project_id = $1 AND r.client_account_id = $2
+           WHERE r.project_id = $1
            ORDER BY r.created_at DESC`,
-          [projectId, accountId]
+          [projectId]
         );
-        // Vue client : pas de tâches ni de sous-tâches, seulement le taux.
+        // Vue client : tableau des tâches en lecture seule, réduit à ce que le
+        // client doit voir (ni sous-tâches, ni temps, ni affectation, ni
+        // commentaires, ni pièces jointes, ni lien GitHub).
         return res.json({
           id: project.id,
           name: project.name,
@@ -1443,8 +1489,20 @@ export function registerProjectRoutes(app) {
           start_date: project.start_date,
           due_date: project.due_date,
           project_state: project.project_state,
-          client_account_id: project.client_account_id,
+          clientView: true,
+          isClient: true,
           tauxCompletude: completionRate(tasksResult.rows),
+          tasks: tasksResult.rows.map((t) => ({
+            id: t.id,
+            project_id: t.project_id,
+            title: t.title,
+            description: t.description,
+            status: t.status,
+            origin: t.origin,
+            start_date: t.start_date,
+            end_date: t.end_date,
+            completed_at: t.completed_at
+          })),
           clientRequests: requestsResult.rows
         });
       }
@@ -1461,6 +1519,8 @@ export function registerProjectRoutes(app) {
         ...project,
         tasks: tasksResult.rows,
         assignments: assignmentsResult.rows,
+        clients: await listProjectClients(projectId),
+        isClient,
         tauxCompletude: completionRate(tasksResult.rows),
         chargeEstimeeH: tasksResult.rows.reduce((s, t) => s + Number(t.estimated_hours), 0),
         chargePasseeH: tasksResult.rows.reduce((s, t) => s + Number(t.spent_hours), 0),
@@ -1488,6 +1548,7 @@ export function registerProjectRoutes(app) {
         startDate,
         dueDate,
         clientAccountId,
+        clientAccountIds,
         developerAssignments,
         developerAccountIds,
         githubRepoUrl
@@ -1503,9 +1564,14 @@ export function registerProjectRoutes(app) {
         return res.status(400).json({ error: datesError });
       }
 
-      const normalizedClientId = clientAccountId
-        ? await ensureProjectAccount(client, clientAccountId)
-        : null;
+      // Identifiants Microsoft des clients (clientAccountId : ancien format, un seul client).
+      const requestedClientIds = [...new Set(
+        (Array.isArray(clientAccountIds) ? clientAccountIds : [clientAccountId]).filter(Boolean)
+      )];
+      const normalizedClientIds = [];
+      for (const microsoftObjectId of requestedClientIds) {
+        normalizedClientIds.push(await ensureProjectAccount(client, microsoftObjectId));
+      }
 
       const result = await client.query(
         `INSERT INTO projects (
@@ -1525,7 +1591,7 @@ export function registerProjectRoutes(app) {
           description || null,
           type,
           req.session.user.id,
-          normalizedClientId,
+          null,
           githubRepoUrl || null,
           dueDate || null,
           startDate || null
@@ -1533,6 +1599,14 @@ export function registerProjectRoutes(app) {
       );
 
       const project = result.rows[0];
+
+      for (const accountId of normalizedClientIds) {
+        await client.query(
+          `INSERT INTO project_clients (project_id, account_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [project.id, accountId]
+        );
+      }
+      await syncPrincipalClient(client, project.id);
 
       await replaceProjectDevelopers(
         client,
@@ -1542,7 +1616,7 @@ export function registerProjectRoutes(app) {
 
       await client.query('COMMIT');
 
-      if (project.client_account_id) {
+      if (normalizedClientIds.length) {
         project.client_link_sent = await sendClientProjectLink(project.id);
       }
 
@@ -1569,22 +1643,17 @@ export function registerProjectRoutes(app) {
         status,
         startDate,
         dueDate,
-        clientAccountId,
-        developerAssignments,
         developerAccountIds,
         githubRepoUrl
       } = req.body;
 
-      let normalizedClientId;
+      // Les clients se gèrent via /api/projects/:id/clients.
       const previousResult = await client.query(
-        `SELECT client_account_id,
-                to_char(start_date, 'YYYY-MM-DD') AS start_date,
+        `SELECT to_char(start_date, 'YYYY-MM-DD') AS start_date,
                 to_char(due_date, 'YYYY-MM-DD') AS due_date
          FROM projects WHERE id = $1`,
         [req.params.id]
       );
-      const previousClientId = previousResult.rows[0]?.client_account_id || null;
-
       // Dates : undefined = inchangée, null ou '' = effacée.
       const startProvided = startDate !== undefined;
       const dueProvided = dueDate !== undefined;
@@ -1597,27 +1666,17 @@ export function registerProjectRoutes(app) {
         return res.status(400).json({ error: datesError });
       }
 
-      if (clientAccountId !== undefined) {
-        normalizedClientId = clientAccountId
-          ? await ensureProjectAccount(client, clientAccountId)
-          : null;
-      }
-
       const result = await client.query(
         `UPDATE projects SET
            name = COALESCE($1, name),
            description = COALESCE($2, description),
            type = COALESCE($3, type),
            status = COALESCE($4, status),
-           due_date = CASE WHEN $5::boolean THEN $10::date ELSE due_date END,
-           client_account_id = CASE
-             WHEN $6::boolean = true THEN $7::uuid
-             ELSE client_account_id
-           END,
-           github_repo_url = COALESCE($8, github_repo_url),
-           start_date = CASE WHEN $11::boolean THEN $12::date ELSE start_date END,
+           due_date = CASE WHEN $5::boolean THEN $6::date ELSE due_date END,
+           github_repo_url = COALESCE($7, github_repo_url),
+           start_date = CASE WHEN $9::boolean THEN $10::date ELSE start_date END,
            updated_at = now()
-         WHERE id = $9
+         WHERE id = $8
          RETURNING *`,
         [
           name,
@@ -1625,11 +1684,9 @@ export function registerProjectRoutes(app) {
           type,
           status,
           dueProvided,
-          clientAccountId !== undefined,
-          normalizedClientId ?? null,
+          dueDate || null,
           githubRepoUrl,
           req.params.id,
-          dueDate || null,
           startProvided,
           startDate || null
         ]
@@ -1650,12 +1707,7 @@ export function registerProjectRoutes(app) {
 
       await client.query('COMMIT');
 
-      const updatedProject = result.rows[0];
-      if (updatedProject.client_account_id && updatedProject.client_account_id !== previousClientId) {
-        updatedProject.client_link_sent = await sendClientProjectLink(updatedProject.id);
-      }
-
-      res.json(updatedProject);
+      res.json(result.rows[0]);
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
       console.error('[Projets IT] Modification projet', error);
@@ -1717,6 +1769,59 @@ export function registerProjectRoutes(app) {
     }
   });
 
+
+  // Ajout d'un client (identifiant Microsoft) : il reçoit le lien du projet.
+  app.post('/api/projects/:id/clients', requireAuth, requireRole('manager'), async (req, res) => {
+    const client = await pool.connect();
+    try {
+      const { clientAccountId } = req.body;
+      if (!clientAccountId) return res.status(400).json({ error: 'clientAccountId requis' });
+      await client.query('BEGIN');
+      const exists = await client.query(`SELECT 1 FROM projects WHERE id = $1`, [req.params.id]);
+      if (exists.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Projet introuvable' });
+      }
+      const accountId = await ensureProjectAccount(client, clientAccountId);
+      const inserted = await client.query(
+        `INSERT INTO project_clients (project_id, account_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING account_id`,
+        [req.params.id, accountId]
+      );
+      await syncPrincipalClient(client, req.params.id);
+      await client.query('COMMIT');
+
+      const clients = await listProjectClients(req.params.id);
+      const linkSent = inserted.rowCount ? await sendClientProjectLink(req.params.id, [accountId]) : null;
+      res.status(inserted.rowCount ? 201 : 200).json({ clients, client_link_sent: linkSent });
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('[Projets IT] Ajout client', error);
+      res.status(500).json({ error: error.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  // Retrait d'un client : ses demandes déjà déposées restent dans le projet.
+  app.delete('/api/projects/:id/clients/:accountId', requireAuth, requireRole('manager'), async (req, res) => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `DELETE FROM project_clients WHERE project_id = $1 AND account_id = $2`,
+        [req.params.id, req.params.accountId]
+      );
+      await syncPrincipalClient(client, req.params.id);
+      await client.query('COMMIT');
+      res.json({ clients: await listProjectClients(req.params.id) });
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('[Projets IT] Retrait client', error);
+      res.status(500).json({ error: error.message });
+    } finally {
+      client.release();
+    }
+  });
 
   app.post('/api/projects/:id/send-client-link', requireAuth, async (req, res) => {
     try {
@@ -2231,7 +2336,7 @@ export function registerProjectRoutes(app) {
       }
 
       const projectResult = await pool.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
-      if (projectResult.rowCount === 0 || projectResult.rows[0].client_account_id !== accountId) {
+      if (projectResult.rowCount === 0 || !(await isProjectClient(accountId, projectId))) {
         await removeUploadedFiles(files);
         return res.status(403).json({ error: "Ce projet ne vous appartient pas" });
       }
@@ -2454,8 +2559,7 @@ export function registerProjectRoutes(app) {
       const accountId = req.session.user.id;
 
       if (role === 'client') {
-        const p = await pool.query(`SELECT client_account_id FROM projects WHERE id = $1`, [projectId]);
-        if (p.rowCount === 0 || p.rows[0].client_account_id !== accountId) {
+        if (!(await isProjectClient(accountId, projectId))) {
           return res.status(403).json({ error: 'Accès refusé' });
         }
       } else if (role === 'dev' && !(await isAssignedToProject(accountId, projectId))) {
@@ -2483,15 +2587,11 @@ export function registerProjectRoutes(app) {
       const accountId = req.session.user.id;
       if (!projectId || !content) return res.status(400).json({ error: 'projectId et content requis' });
 
-      const projectResult = await pool.query(
-        `SELECT p.*, c.email AS client_email, c.display_name AS client_name
-         FROM projects p LEFT JOIN app_accounts c ON c.id = p.client_account_id WHERE p.id = $1`,
-        [projectId]
-      );
+      const projectResult = await pool.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
       if (projectResult.rowCount === 0) return res.status(404).json({ error: 'Projet introuvable' });
       const project = projectResult.rows[0];
 
-      if (role === 'client' && project.client_account_id !== accountId) {
+      if (role === 'client' && !(await isProjectClient(accountId, projectId))) {
         return res.status(403).json({ error: 'Accès refusé' });
       }
       if (role === 'dev' && !(await isAssignedToProject(accountId, projectId))) {
@@ -2502,12 +2602,16 @@ export function registerProjectRoutes(app) {
       const recipientType = role === 'client' ? 'equipe' : 'client';
       let emailSent = false;
 
-      if (recipientType === 'client' && project.client_email) {
-        emailSent = await notifyClient({
-          email: project.client_email,
-          subject: `Nouveau message sur votre projet "${project.name}"`,
-          html: `<p>Bonjour ${project.client_name},</p><p>${content.replace(/\n/g, '<br/>')}</p>`
-        });
+      if (recipientType === 'client') {
+        for (const projectClient of await listProjectClients(projectId)) {
+          if (!projectClient.email) continue;
+          const sent = await notifyClient({
+            email: projectClient.email,
+            subject: `Nouveau message sur votre projet "${project.name}"`,
+            html: `<p>Bonjour ${escapeHtml(projectClient.display_name)},</p><p>${escapeHtml(content).replace(/\n/g, '<br/>')}</p>`
+          });
+          emailSent = emailSent || sent;
+        }
       }
 
       const result = await pool.query(
@@ -2730,8 +2834,8 @@ export function registerProjectRoutes(app) {
   app.get('/api/projects-reporting', requireAuth, requireRole('manager', 'directeur'), async (req, res) => {
     try {
       const projectsResult = await pool.query(
-        `SELECT p.*, c.display_name AS client_name
-         FROM projects p LEFT JOIN app_accounts c ON c.id = p.client_account_id
+        `SELECT p.*, ${CLIENT_NAMES_SQL} AS client_name
+         FROM projects p
          WHERE p.status != 'archive' AND p.project_state != 'closed'`
       );
       const projects = projectsResult.rows;

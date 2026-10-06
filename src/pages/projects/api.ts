@@ -39,6 +39,10 @@ export const projectsApi = {
   unassign: (projectId: string, accountId: string) =>
     request(`/api/projects/${projectId}/assignments/${accountId}`, { method: 'DELETE' }),
 
+  addClient: (projectId: string, clientAccountId: string) =>
+    request(`/api/projects/${projectId}/clients`, { method: 'POST', body: JSON.stringify({ clientAccountId }) }),
+  removeClient: (projectId: string, accountId: string) =>
+    request(`/api/projects/${projectId}/clients/${accountId}`, { method: 'DELETE' }),
   sendClientLink: (projectId: string) => request(`/api/projects/${projectId}/send-client-link`, { method: 'POST' }),
 
   // multipart : champs de la tâche + jusqu'à 10 pièces jointes (champ "files")

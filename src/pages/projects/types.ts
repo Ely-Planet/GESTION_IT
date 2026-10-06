@@ -117,6 +117,12 @@ export type ClientRequest = {
   client_name?: string;
 };
 
+export type ProjectClient = {
+  account_id: string;
+  email: string | null;
+  display_name: string;
+};
+
 export type ProjectFile = {
   id: string;
   filename: string;
@@ -142,6 +148,9 @@ export type ProjectDetailData = ProjectListItem & {
   estChefDeProjet?: boolean;
   client_account_id?: string | null;
   client_email?: string | null;
+  clients?: ProjectClient[];
+  clientView?: boolean; // vue client : tâches en lecture seule
+  isClient?: boolean;
   github_project_url?: string | null;
 };
 
