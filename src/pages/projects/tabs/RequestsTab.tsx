@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Paperclip, X } from 'lucide-react';
 import { projectsApi } from '../api';
 import { StatusBadge } from '../ProjectUI';
+import AttachmentLink from '../AttachmentLink';
 import { useAuth } from '../../../context/AuthContext';
 import type { Account, ClientRequest, ProjectDetailData, ProjectFile } from '../types';
 
@@ -23,9 +24,7 @@ function FileLinks({ files }: { files?: ProjectFile[] | null }) {
   return (
     <div className="mt-2 space-y-0.5">
       {files.map((file) => (
-        <a key={file.id} href={`/api/projects/files/${file.id}/download`} className="flex items-center gap-1 text-xs text-elyade-700 hover:underline">
-          <Paperclip className="w-3 h-3 shrink-0" /> <span className="truncate">{file.filename}</span>
-        </a>
+        <AttachmentLink key={file.id} file={file} className="text-xs" />
       ))}
     </div>
   );

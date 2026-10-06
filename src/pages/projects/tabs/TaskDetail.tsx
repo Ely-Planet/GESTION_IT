@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, Paperclip, Trash2, X } from 'lucide-react';
+import { ExternalLink, Trash2, X } from 'lucide-react';
 import { projectsApi } from '../api';
 import { StatusBadge } from '../ProjectUI';
 import SubtasksSection from './SubtasksSection';
+import AttachmentLink from '../AttachmentLink';
+import FilePicker from '../FilePicker';
 import type { Account, Task, TaskComment } from '../types';
 
 // Panneau latéral d'une tâche : planning, sous-tâches, description complète,
@@ -18,6 +20,24 @@ export default function TaskDetail({ task, team, canDelete, canPlan, onClose, on
   onChanged: () => void;
 }) {
   const [deleting, setDeleting] = useState(false);
+  const [newFiles, setNewFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+
+  async function uploadFiles() {
+    if (!newFiles.length) return;
+    setUploading(true);
+    try {
+      const data = new FormData();
+      newFiles.forEach((file) => data.append('files', file));
+      await projectsApi.addTaskFiles(task.id, data);
+      setNewFiles([]);
+      onChanged();
+    } catch (err: any) {
+      alert(err.message || "Erreur lors de l'envoi des pièces jointes");
+    } finally {
+      setUploading(false);
+    }
+  }
 
   async function updateDates(patch: { startDate?: string | null; endDate?: string | null }) {
     try {
@@ -192,13 +212,19 @@ export default function TaskDetail({ task, team, canDelete, canPlan, onClose, on
               <ul className="space-y-1">
                 {files.map((file) => (
                   <li key={file.id}>
-                    <a href={`/api/projects/files/${file.id}/download`} className="flex items-center gap-2 text-sm text-elyade-700 hover:underline">
-                      <Paperclip className="w-4 h-4 shrink-0" /> <span className="truncate">{file.filename}</span>
-                    </a>
+                    <AttachmentLink file={file} className="text-sm w-full" />
                   </li>
                 ))}
               </ul>
             )}
+            <div className="mt-3">
+              <FilePicker files={newFiles} onChange={setNewFiles} />
+              {newFiles.length > 0 && (
+                <button type="button" className="btn-primary text-sm mt-2" disabled={uploading} onClick={() => void uploadFiles()}>
+                  {uploading ? 'Envoi…' : `Joindre ${newFiles.length} fichier(s)`}
+                </button>
+              )}
+            </div>
           </section>
 
           <section>

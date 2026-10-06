@@ -76,6 +76,7 @@ export default function GanttTab({ project, team, onChanged }: {
   const px = ZOOMS[zoom].px;
   const today = todayDay();
   const dueDay = project.due_date ? toDay(String(project.due_date)) : null;
+  const startDay = project.start_date ? toDay(String(project.start_date)) : null;
 
   useEffect(() => {
     if (detailTaskId && !detailTask) setDetailTaskId(null);
@@ -101,6 +102,7 @@ export default function GanttTab({ project, team, onChanged }: {
       }
     }
     if (dueDay !== null) days.push(dueDay);
+    if (startDay !== null) days.push(startDay);
     // Marge, et début aligné sur un lundi (ou le 1er du mois en vue mois).
     let start = Math.min(...days) - (zoom === 'month' ? 15 : 3);
     const end = Math.max(...days) + (zoom === 'month' ? 30 : 10);
@@ -111,7 +113,7 @@ export default function GanttTab({ project, team, onChanged }: {
       start -= (fromDay(start).getUTCDay() + 6) % 7;
     }
     return { start, end, length: end - start + 1 };
-  }, [planned, today, dueDay, zoom]);
+  }, [planned, today, dueDay, startDay, zoom]);
 
   const width = range.length * px;
   const x = (day: number) => (day - range.start) * px;
@@ -213,6 +215,9 @@ export default function GanttTab({ project, team, onChanged }: {
                 {today >= range.start && today <= range.end && (
                   <div className="absolute inset-y-0 w-0.5 bg-red-500/70 z-10" style={{ left: x(today) + px / 2 }} title="Aujourd'hui" />
                 )}
+                {startDay !== null && (
+                  <div className="absolute inset-y-0 border-l-2 border-dashed border-emerald-600 z-10" style={{ left: x(startDay) }} title={`Début du projet : ${formatDay(String(project.start_date))}`} />
+                )}
                 {dueDay !== null && (
                   <div className="absolute inset-y-0 border-l-2 border-dashed border-elyade-600 z-10" style={{ left: x(dueDay + 1) }} title={`Échéance du projet : ${formatDay(String(project.due_date))}`} />
                 )}
@@ -288,6 +293,7 @@ export default function GanttTab({ project, team, onChanged }: {
           </span>
         ))}
         <span className="flex items-center gap-1.5"><span className="w-0.5 h-3 bg-red-500" /> Aujourd'hui</span>
+        {startDay !== null && <span className="flex items-center gap-1.5"><span className="h-3 border-l-2 border-dashed border-emerald-600" /> Début du projet</span>}
         {dueDay !== null && <span className="flex items-center gap-1.5"><span className="h-3 border-l-2 border-dashed border-elyade-600" /> Échéance du projet</span>}
         <span className="flex items-center gap-1.5"><span className="w-3 h-2.5 rounded-sm bg-slate-400 opacity-50 border border-dashed border-ink-500" /> Période déduite des sous-tâches</span>
       </div>

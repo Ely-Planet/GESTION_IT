@@ -20,7 +20,8 @@ export type ProjectListItem = {
   description: string | null;
   type: 'dev' | 'infra';
   status: 'en_attente' | 'en_cours' | 'termine' | 'archive';
-  due_date: string | null;
+  start_date?: string | null; // AAAA-MM-JJ
+  due_date: string | null; // AAAA-MM-JJ
   tauxCompletude: number;
   client_name?: string;
   github_repo_url?: string | null;

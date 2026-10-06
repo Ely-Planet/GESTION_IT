@@ -271,6 +271,15 @@ async function isChefDeProjet(accountId, projectId) {
   return result.rowCount > 0;
 }
 
+// Dates de projet AAAA-MM-JJ ; renvoie un message d'erreur ou null.
+function projectDatesError(startDate, dueDate) {
+  for (const value of [startDate, dueDate]) {
+    if (value && !/^\d{4}-\d{2}-\d{2}$/.test(String(value))) return 'Date invalide (format AAAA-MM-JJ attendu)';
+  }
+  if (startDate && dueDate && startDate > dueDate) return "La date de début doit précéder l'échéance du projet";
+  return null;
+}
+
 function completionRate(tasks) {
   if (!tasks.length) return 0;
   const done = tasks.filter((t) => t.status === 'done').length;
@@ -439,6 +448,22 @@ async function sendClientProjectLink(projectId) {
     })
   });
 }
+
+// Formats affichables directement dans l'aperçu des pièces jointes.
+const INLINE_PREVIEW_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain; charset=utf-8',
+  '.log': 'text/plain; charset=utf-8',
+  '.csv': 'text/plain; charset=utf-8',
+  '.json': 'text/plain; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8'
+};
 
 async function loadFileWithProject(fileId) {
   const result = await pool.query(
@@ -1290,7 +1315,9 @@ export function registerProjectRoutes(app) {
       }
 
       const projectsResult = await pool.query(
-        `SELECT p.*, c.display_name AS client_name, c.email AS client_email
+        `SELECT p.*, c.display_name AS client_name, c.email AS client_email,
+                to_char(p.start_date, 'YYYY-MM-DD') AS start_date,
+                to_char(p.due_date, 'YYYY-MM-DD') AS due_date
          FROM projects p
          LEFT JOIN app_accounts c ON c.id = p.client_account_id
          ${where}
@@ -1321,6 +1348,7 @@ export function registerProjectRoutes(app) {
           status: p.status,
           project_state: p.project_state || 'active',
           closed_at: p.closed_at,
+          start_date: p.start_date,
           due_date: p.due_date,
           tauxCompletude: completionRate(tasks)
         };
@@ -1351,7 +1379,9 @@ export function registerProjectRoutes(app) {
       const projectId = req.params.id;
 
       const projectResult = await pool.query(
-        `SELECT p.*, c.display_name AS client_name, c.email AS client_email
+        `SELECT p.*, c.display_name AS client_name, c.email AS client_email,
+                to_char(p.start_date, 'YYYY-MM-DD') AS start_date,
+                to_char(p.due_date, 'YYYY-MM-DD') AS due_date
          FROM projects p LEFT JOIN app_accounts c ON c.id = p.client_account_id
          WHERE p.id = $1`,
         [projectId]
@@ -1410,6 +1440,7 @@ export function registerProjectRoutes(app) {
           description: project.description,
           type: project.type,
           status: project.status,
+          start_date: project.start_date,
           due_date: project.due_date,
           project_state: project.project_state,
           client_account_id: project.client_account_id,
@@ -1454,6 +1485,7 @@ export function registerProjectRoutes(app) {
         name,
         description,
         type,
+        startDate,
         dueDate,
         clientAccountId,
         developerAssignments,
@@ -1464,6 +1496,11 @@ export function registerProjectRoutes(app) {
       if (!name || !type) {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'name et type requis' });
+      }
+      const datesError = projectDatesError(startDate || null, dueDate || null);
+      if (datesError) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: datesError });
       }
 
       const normalizedClientId = clientAccountId
@@ -1478,9 +1515,10 @@ export function registerProjectRoutes(app) {
            created_by,
            client_account_id,
            github_repo_url,
-           due_date
+           due_date,
+           start_date
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
         [
           name,
@@ -1489,7 +1527,8 @@ export function registerProjectRoutes(app) {
           req.session.user.id,
           normalizedClientId,
           githubRepoUrl || null,
-          dueDate || null
+          dueDate || null,
+          startDate || null
         ]
       );
 
@@ -1528,6 +1567,7 @@ export function registerProjectRoutes(app) {
         description,
         type,
         status,
+        startDate,
         dueDate,
         clientAccountId,
         developerAssignments,
@@ -1537,10 +1577,25 @@ export function registerProjectRoutes(app) {
 
       let normalizedClientId;
       const previousResult = await client.query(
-        `SELECT client_account_id FROM projects WHERE id = $1`,
+        `SELECT client_account_id,
+                to_char(start_date, 'YYYY-MM-DD') AS start_date,
+                to_char(due_date, 'YYYY-MM-DD') AS due_date
+         FROM projects WHERE id = $1`,
         [req.params.id]
       );
       const previousClientId = previousResult.rows[0]?.client_account_id || null;
+
+      // Dates : undefined = inchangée, null ou '' = effacée.
+      const startProvided = startDate !== undefined;
+      const dueProvided = dueDate !== undefined;
+      const datesError = projectDatesError(
+        startProvided ? startDate || null : previousResult.rows[0]?.start_date ?? null,
+        dueProvided ? dueDate || null : previousResult.rows[0]?.due_date ?? null
+      );
+      if (datesError) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: datesError });
+      }
 
       if (clientAccountId !== undefined) {
         normalizedClientId = clientAccountId
@@ -1554,12 +1609,13 @@ export function registerProjectRoutes(app) {
            description = COALESCE($2, description),
            type = COALESCE($3, type),
            status = COALESCE($4, status),
-           due_date = COALESCE($5, due_date),
+           due_date = CASE WHEN $5::boolean THEN $10::date ELSE due_date END,
            client_account_id = CASE
              WHEN $6::boolean = true THEN $7::uuid
              ELSE client_account_id
            END,
            github_repo_url = COALESCE($8, github_repo_url),
+           start_date = CASE WHEN $11::boolean THEN $12::date ELSE start_date END,
            updated_at = now()
          WHERE id = $9
          RETURNING *`,
@@ -1568,11 +1624,14 @@ export function registerProjectRoutes(app) {
           description,
           type,
           status,
-          dueDate,
+          dueProvided,
           clientAccountId !== undefined,
           normalizedClientId ?? null,
           githubRepoUrl,
-          req.params.id
+          req.params.id,
+          dueDate || null,
+          startProvided,
+          startDate || null
         ]
       );
 
@@ -1761,28 +1820,47 @@ export function registerProjectRoutes(app) {
     }
   }
 
-  app.post('/api/projects/tasks', requireAuth, async (req, res) => {
+  // JSON ou multipart (champ "files", 10 pièces jointes max).
+  app.post('/api/projects/tasks', requireAuth, uploadRequestFiles, async (req, res) => {
+    const files = req.files || [];
     try {
       const role = getModuleRole(req.session.user);
       const { projectId, title, description, assigneeAccountId, estimatedHours } = req.body;
-      if (!projectId || !title) return res.status(400).json({ error: 'projectId et title requis' });
+      const reject = async (status, error) => {
+        await removeUploadedFiles(files);
+        return res.status(status).json({ error });
+      };
+      if (!projectId || !title) return reject(400, 'projectId et title requis');
 
-      if (role === 'client' || role === 'directeur') return res.status(403).json({ error: 'Accès refusé' });
+      if (role === 'client' || role === 'directeur') return reject(403, 'Accès refusé');
       if (role === 'dev' && !(await isChefDeProjet(req.session.user.id, projectId))) {
-        return res.status(403).json({ error: 'Seul le chef de projet peut ajouter une tâche' });
+        return reject(403, 'Seul le chef de projet peut ajouter une tâche');
       }
       const dates = readPlanningDates(req.body);
-      if (dates.error) return res.status(400).json({ error: dates.error });
+      if (dates.error) return reject(400, dates.error);
 
-      const result = await pool.query(
-        `INSERT INTO project_tasks (project_id, title, description, assignee_account_id, estimated_hours, origin, start_date, end_date)
-         VALUES ($1, $2, $3, $4, $5, 'manuelle', $6, $7) RETURNING *`,
-        [projectId, title, description || null, assigneeAccountId || null, estimatedHours || 0, dates.start, dates.end]
-      );
-      let task = result.rows[0];
+      const client = await pool.connect();
+      let task;
+      try {
+        await client.query('BEGIN');
+        const result = await client.query(
+          `INSERT INTO project_tasks (project_id, title, description, assignee_account_id, estimated_hours, origin, start_date, end_date)
+           VALUES ($1, $2, $3, $4, $5, 'manuelle', $6, $7) RETURNING *`,
+          [projectId, title, description || null, assigneeAccountId || null, Number(estimatedHours) || 0, dates.start, dates.end]
+        );
+        task = result.rows[0];
+        await insertTaskFiles(client, task, files, req.session.user.id);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        await removeUploadedFiles(files);
+        throw error;
+      } finally {
+        client.release();
+      }
       await notifyTaskAssignee(task, req.session.user.id);
       try {
-        task = (await createGitHubItemForTask(task)) || task;
+        task = (await createGitHubItemForTask(task, { attachmentsCount: files.length })) || task;
       } catch (githubError) {
         console.error('[Projets IT] Creation carte GitHub impossible', githubError.message || githubError);
         task.github_sync_error = githubError.message || String(githubError);
@@ -1936,6 +2014,36 @@ export function registerProjectRoutes(app) {
       }
       res.status(204).end();
     } catch (error) {
+      console.error(error);
+      if (!res.headersSent) res.status(500).json({ error: error.message });
+    }
+  });
+
+  async function insertTaskFiles(db, task, files, accountId) {
+    for (const file of files) {
+      await db.query(
+        `INSERT INTO project_files (project_id, task_id, filename, storage_path, uploaded_by_account_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [task.project_id, task.id, decodeUploadName(file.originalname), file.filename, accountId]
+      );
+    }
+  }
+
+  // Ajout de pièces jointes à une tâche existante (champ "files").
+  app.post('/api/projects/tasks/:id/files', requireAuth, uploadRequestFiles, async (req, res) => {
+    const files = req.files || [];
+    try {
+      const task = await loadTaskForUser(req, res, { write: true });
+      if (!task) return removeUploadedFiles(files);
+      if (!files.length) return res.status(400).json({ error: 'Aucun fichier reçu' });
+      await insertTaskFiles(pool, task, files, req.session.user.id);
+      const result = await pool.query(
+        `SELECT id, filename FROM project_files WHERE task_id = $1 ORDER BY created_at`,
+        [task.id]
+      );
+      res.status(201).json(result.rows);
+    } catch (error) {
+      await removeUploadedFiles(files);
       console.error(error);
       if (!res.headersSent) res.status(500).json({ error: error.message });
     }
@@ -2447,6 +2555,20 @@ export function registerProjectRoutes(app) {
       }
       const filePath = path.join(PROJECTS_DIR, file.storage_path);
       if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Fichier introuvable sur le disque' });
+
+      // ?inline=1 : affichage dans le navigateur (aperçu), limité aux formats
+      // sans risque. Le SVG et le HTML restent en téléchargement (scripts).
+      const inlineType = INLINE_PREVIEW_TYPES[path.extname(file.filename).toLowerCase()];
+      if (req.query.inline === '1' && inlineType) {
+        res.setHeader('Content-Type', inlineType);
+        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        // Pas de "sandbox" sur les PDF : Chrome refuse alors de les afficher.
+        if (inlineType.startsWith('text/')) {
+          res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+        }
+        return res.sendFile(filePath);
+      }
       res.download(filePath, file.filename);
     } catch (error) {
       console.error(error);

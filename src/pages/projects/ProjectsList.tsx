@@ -22,6 +22,7 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
     description: '',
     type: 'dev',
     clientAccountId: '',
+    startDate: '',
     dueDate: '',
     githubRepoUrl: '',
     developerAssignments: [] as { accountId: string; projectRole: 'contributeur' | 'chef_de_projet' }[],
@@ -44,9 +45,14 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
   async function createProject(e: React.FormEvent) {
     e.preventDefault();
     try {
-      await projectsApi.createProject({ ...form, clientAccountId: form.clientAccountId || null });
+      await projectsApi.createProject({
+        ...form,
+        clientAccountId: form.clientAccountId || null,
+        startDate: form.startDate || null,
+        dueDate: form.dueDate || null,
+      });
       setShowForm(false);
-      setForm({ name: '', description: '', type: 'dev', clientAccountId: '', dueDate: '', githubRepoUrl: '', developerAssignments: [] });
+      setForm({ name: '', description: '', type: 'dev', clientAccountId: '', startDate: '', dueDate: '', githubRepoUrl: '', developerAssignments: [] });
       void load();
     } catch (err: any) {
       alert(err.message || 'Erreur');
@@ -105,7 +111,7 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
             value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
           />
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <ClientPicker
               clients={clients}
               value={form.clientAccountId}
@@ -113,16 +119,32 @@ export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void 
             />
             <input
               className="input"
-              type="date"
-              value={form.dueDate}
-              onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
-            />
-            <input
-              className="input"
               placeholder="URL dépôt GitHub (optionnel)"
               value={form.githubRepoUrl}
               onChange={(e) => setForm({ ...form, githubRepoUrl: e.target.value })}
             />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-xs text-ink-500">
+              Date de début du projet
+              <input
+                className="input mt-1"
+                type="date"
+                value={form.startDate}
+                max={form.dueDate || undefined}
+                onChange={(e) => setForm({ ...form, startDate: e.target.value })}
+              />
+            </label>
+            <label className="text-xs text-ink-500">
+              Échéance du projet
+              <input
+                className="input mt-1"
+                type="date"
+                value={form.dueDate}
+                min={form.startDate || undefined}
+                onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
+              />
+            </label>
           </div>
           <div>
             <p className="text-sm font-medium text-ink-700 mb-2">Développeurs affectés</p>

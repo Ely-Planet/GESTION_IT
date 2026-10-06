@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { CalendarDays, GripVertical, ListTree, MessageSquare, Paperclip } from 'lucide-react';
+import { CalendarDays, GripVertical, ListTree, MessageSquare } from 'lucide-react';
 import { projectsApi } from '../api';
 import { StatusBadge, formatPeriod } from '../ProjectUI';
 import TaskDetail from './TaskDetail';
+import AttachmentLink from '../AttachmentLink';
+import FilePicker from '../FilePicker';
 import type { Account, ProjectDetailData, Task } from '../types';
 
 const STATUSES = ['backlog', 'ready', 'in_progress', 'in_review', 'done'] as const;
@@ -114,9 +116,7 @@ function TaskCard({
       {files.length > 0 && (
         <div className="mt-2 space-y-0.5">
           {files.map((file) => (
-            <a key={file.id} href={`/api/projects/files/${file.id}/download`} className="flex items-center gap-1 text-xs text-elyade-700 hover:underline">
-              <Paperclip className="w-3 h-3 shrink-0" /> <span className="truncate">{file.filename}</span>
-            </a>
+            <AttachmentLink key={file.id} file={file} className="text-xs w-full" />
           ))}
         </div>
       )}
@@ -159,6 +159,8 @@ export default function TasksTab({ project, team, onChanged }: {
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const emptyForm = { title: '', description: '', assigneeAccountId: '', estimatedHours: '', startDate: '', endDate: '' };
   const [form, setForm] = useState(emptyForm);
+  const [formFiles, setFormFiles] = useState<File[]>([]);
+  const [creating, setCreating] = useState(false);
   const canCreateTasks = Boolean(project.estChefDeProjet);
   const [localTasks, setLocalTasks] = useState<Task[]>(project.tasks || []);
   const tasks = localTasks;
@@ -179,21 +181,26 @@ export default function TasksTab({ project, team, onChanged }: {
 
   async function createTask(e: React.FormEvent) {
     e.preventDefault();
+    setCreating(true);
     try {
-      await projectsApi.createTask({
-        projectId: project.id,
-        title: form.title,
-        description: form.description,
-        assigneeAccountId: form.assigneeAccountId || null,
-        estimatedHours: form.estimatedHours ? Number(form.estimatedHours) : 0,
-        startDate: form.startDate || null,
-        endDate: form.endDate || null,
-      });
+      const data = new FormData();
+      data.append('projectId', project.id);
+      data.append('title', form.title);
+      data.append('description', form.description);
+      data.append('assigneeAccountId', form.assigneeAccountId);
+      data.append('estimatedHours', form.estimatedHours || '0');
+      data.append('startDate', form.startDate);
+      data.append('endDate', form.endDate);
+      formFiles.forEach((file) => data.append('files', file));
+      await projectsApi.createTask(data);
       setForm(emptyForm);
+      setFormFiles([]);
       setShowForm(false);
       onChanged();
     } catch (err: any) {
       alert(err.message || 'Erreur');
+    } finally {
+      setCreating(false);
     }
   }
 
@@ -303,8 +310,9 @@ export default function TasksTab({ project, team, onChanged }: {
               <input className="input mt-1" type="date" value={form.endDate} min={form.startDate || undefined} onChange={(e) => setForm({ ...form, endDate: e.target.value })} />
             </label>
           </div>
+          <FilePicker files={formFiles} onChange={setFormFiles} />
           <div className="flex gap-2">
-            <button className="btn-primary text-sm">Créer</button>
+            <button className="btn-primary text-sm" disabled={creating}>{creating ? 'Création…' : 'Créer'}</button>
             <button type="button" className="btn-ghost text-sm" onClick={() => setShowForm(false)}>Annuler</button>
           </div>
         </form>
@@ -328,7 +336,7 @@ export default function TasksTab({ project, team, onChanged }: {
                 const taskId = e.dataTransfer.getData('text/plain') || draggedTaskId;
                 if (taskId) void dropTask(status, taskId);
               }}
-              className={`rounded-xl border p-3 min-h-[360px] min-w-[320px] w-[320px] flex-shrink-0 transition-all ${columnConfig.style} ${dragOverStatus === status ? 'ring-2 ring-elyade-500 ring-offset-2 scale-[1.01]' : ''}`}
+              className={`rounded-xl border p-3 min-h-[360px] max-h-[calc(100vh-240px)] min-w-[320px] w-[320px] flex-shrink-0 flex flex-col transition-all ${columnConfig.style} ${dragOverStatus === status ? 'ring-2 ring-elyade-500 ring-offset-2 scale-[1.01]' : ''}`}
             >
               <div className="flex items-center justify-between mb-3 px-1">
                 <div>
@@ -337,7 +345,8 @@ export default function TasksTab({ project, team, onChanged }: {
                 </div>
                 <span className="badge bg-white text-ink-700">{columnTasks.length}</span>
               </div>
-              <div className="space-y-3">
+              {/* Défilement propre à chaque colonne : l'en-tête reste visible. */}
+              <div className="space-y-3 flex-1 min-h-0 overflow-y-auto -mr-1 pr-1">
                 {columnTasks.map((task) => (
                   <TaskCard
                     key={task.id}

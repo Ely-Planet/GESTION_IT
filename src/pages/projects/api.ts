@@ -41,7 +41,10 @@ export const projectsApi = {
 
   sendClientLink: (projectId: string) => request(`/api/projects/${projectId}/send-client-link`, { method: 'POST' }),
 
-  createTask: (body: unknown) => request('/api/projects/tasks', { method: 'POST', body: JSON.stringify(body) }),
+  // multipart : champs de la tâche + jusqu'à 10 pièces jointes (champ "files")
+  createTask: (formData: FormData) => request('/api/projects/tasks', { method: 'POST', body: formData }),
+  addTaskFiles: (taskId: string, formData: FormData) =>
+    request(`/api/projects/tasks/${taskId}/files`, { method: 'POST', body: formData }),
   updateTask: (id: string, body: unknown) => request(`/api/projects/tasks/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteTask: (id: string) => request(`/api/projects/tasks/${id}`, { method: 'DELETE' }),
   createSubtask: (taskId: string, body: unknown) =>

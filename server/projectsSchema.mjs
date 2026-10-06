@@ -108,6 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_user_notifications_account ON user_notifications(
 -- Planning (016) : dates de début / fin des tâches pour le Gantt du projet
 ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS start_date date;
 ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS end_date date;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS start_date date;
 
 -- Sous-tâches : découpage interne d'une tâche. Table à part pour ne jamais
 -- déclencher les mails client, la synchro GitHub ni le taux de complétude,

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { projectsApi } from './api';
 import { useAuth } from '../../context/AuthContext';
-import { ProgressBar } from './ProjectUI';
+import { ProgressBar, formatDay } from './ProjectUI';
 import TasksTab from './tabs/TasksTab';
 import GanttTab from './tabs/GanttTab';
 import RequestsTab from './tabs/RequestsTab';
@@ -58,6 +58,15 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
     }
   }
 
+  async function changeDates(patch: { startDate?: string | null; dueDate?: string | null }) {
+    try {
+      await projectsApi.updateProject(projectId, patch);
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors de la mise à jour des dates');
+    }
+    await load();
+  }
+
   async function sendClientLink() {
     setSendingLink(true);
     try {
@@ -106,6 +115,42 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
           <div>
             <h1 className="text-xl font-semibold text-ink-900">{project.name}</h1>
             {project.description && <p className="text-sm text-ink-500 mt-1">{project.description}</p>}
+            {isManager ? (
+              <div className="flex flex-wrap items-center gap-3 mt-2 text-sm text-ink-600">
+                <label className="flex items-center gap-2">
+                  Début
+                  <input
+                    key={`start-${project.start_date ?? ''}`}
+                    type="date"
+                    className="input py-1 text-sm w-40"
+                    defaultValue={project.start_date ?? ''}
+                    max={project.due_date ?? undefined}
+                    onBlur={(e) => {
+                      if (e.target.value !== (project.start_date ?? '')) void changeDates({ startDate: e.target.value || null });
+                    }}
+                  />
+                </label>
+                <label className="flex items-center gap-2">
+                  Échéance
+                  <input
+                    key={`due-${project.due_date ?? ''}`}
+                    type="date"
+                    className="input py-1 text-sm w-40"
+                    defaultValue={project.due_date ?? ''}
+                    min={project.start_date ?? undefined}
+                    onBlur={(e) => {
+                      if (e.target.value !== (project.due_date ?? '')) void changeDates({ dueDate: e.target.value || null });
+                    }}
+                  />
+                </label>
+              </div>
+            ) : (project.start_date || project.due_date) && (
+              <p className="text-sm text-ink-600 mt-2">
+                {project.start_date && <>Début : {formatDay(project.start_date)}</>}
+                {project.start_date && project.due_date && ' · '}
+                {project.due_date && <>Échéance : {formatDay(project.due_date)}</>}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
             <span className={`badge ${
