@@ -1340,6 +1340,20 @@ const [error, setError] = useState<string | null>(null);
 
   const docLicenses = lics.filter((l) => l.status === 'assigned');
 
+  // Restitution : licences qui seront libérées à la signature (hors Microsoft),
+  // calculées par le serveur avec la même règle que la libération.
+  const [releasableLicenses, setReleasableLicenses] = useState<
+    { id: string; seat_key: string | null; label: string }[]
+  >([]);
+
+  useEffect(() => {
+    if (docType !== 'restitution') return;
+    fetch(`/api/movements/${movementId}/releasable-licenses`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setReleasableLicenses)
+      .catch(() => setReleasableLicenses([]));
+  }, [docType, movementId]);
+
   function startDraw(e: React.PointerEvent<HTMLCanvasElement>) {
     if (!canvas) return;
 
@@ -1433,11 +1447,13 @@ hardware_issue:
   docType === 'restitution'
     ? hardwareIssue.trim() || null
     : null,      
-  licenses: docLicenses.map((l) => {
-          const lt = data.licenseTypes.find((t) => t.id === l.license_type_id);
-          const lic = l.license_id ? data.licenses.find((x) => x.id === l.license_id) : null;
-          return { type: lt?.label, seat: lic?.seat_key };
-        }),
+  licenses: docType === 'restitution'
+          ? releasableLicenses.map((l) => ({ type: l.label, seat: l.seat_key, released: true }))
+          : docLicenses.map((l) => {
+              const lt = data.licenseTypes.find((t) => t.id === l.license_type_id);
+              const lic = l.license_id ? data.licenses.find((x) => x.id === l.license_id) : null;
+              return { type: lt?.label, seat: lic?.seat_key };
+            }),
       };
 
       const res = await fetch('/api/signed-documents', {
@@ -1520,7 +1536,22 @@ hardware_issue:
               </tbody>
             </table>
 
-            {docLicenses.length > 0 && (
+            {docType === 'restitution' && (
+              <>
+                <p className="text-sm font-medium text-ink-700 mt-3 mb-1">Licences libérées à la signature :</p>
+                {releasableLicenses.length === 0 ? (
+                  <p className="text-sm text-ink-400">Aucune licence à libérer (les licences Microsoft sont gérées par la synchronisation).</p>
+                ) : (
+                  <ul className="text-sm text-ink-600 list-disc list-inside">
+                    {releasableLicenses.map((l) => (
+                      <li key={l.id}>{l.label} {l.seat_key ? `(${l.seat_key})` : ''}</li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+
+            {docType !== 'restitution' && docLicenses.length > 0 && (
               <>
                 <p className="text-sm font-medium text-ink-700 mt-3 mb-1">Licences attribuées :</p>
                 <ul className="text-sm text-ink-600 list-disc list-inside">

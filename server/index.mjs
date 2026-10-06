@@ -3823,6 +3823,67 @@ app.patch('/api/movement-licenses/:id', async (req, res) => {
   }
 });
 
+/*
+ * Licences à libérer au départ d'un collaborateur : celles qui lui sont
+ * attribuées, hors licences Microsoft (synchronisées depuis le tenant :
+ * SKU présents dans microsoft_license_filters, plus l'ancien type OFFICE365).
+ * Le collaborateur peut exister en double (fiche RH + fiche issue de la
+ * synchro Microsoft) : on prend aussi les fiches de même e-mail / UPN.
+ */
+async function findReleasableLicenses(db, employeeId, { lock = false } = {}) {
+  const hasMicrosoftFilters = (
+    await db.query(`SELECT to_regclass('public.microsoft_license_filters') IS NOT NULL AS ok`)
+  ).rows[0].ok;
+
+  const result = await db.query(
+    `
+    WITH target AS (
+      SELECT
+        NULLIF(lower(btrim(email)), '') AS email,
+        NULLIF(lower(btrim(microsoft_upn)), '') AS upn
+      FROM employees
+      WHERE id = $1
+    ),
+    same_person AS (
+      SELECT e.id
+      FROM employees e, target t
+      WHERE e.id = $1
+         OR lower(btrim(e.email)) IN (t.email, t.upn)
+         OR lower(btrim(e.microsoft_upn)) IN (t.email, t.upn)
+    )
+    SELECT l.id, l.seat_key, l.assigned_employee_id, lt.code, lt.label
+    FROM licenses l
+    JOIN license_types lt ON lt.id = l.license_type_id
+    WHERE l.status = 'assigned'
+      AND l.assigned_employee_id IN (SELECT id FROM same_person)
+      AND upper(lt.code) <> 'OFFICE365'
+      ${hasMicrosoftFilters
+        ? 'AND NOT EXISTS (SELECT 1 FROM microsoft_license_filters f WHERE f.sku_part_number = lt.code)'
+        : ''}
+    ORDER BY lt.label
+    ${lock ? 'FOR UPDATE OF l' : ''}
+    `,
+    [employeeId]
+  );
+  return result.rows;
+}
+
+// Aperçu de la fiche de restitution : licences qui seront libérées à la signature.
+app.get('/api/movements/:id/releasable-licenses', async (req, res) => {
+  try {
+    const movementResult = await pool.query(
+      `SELECT employee_id FROM movements WHERE id = $1`,
+      [req.params.id]
+    );
+    const employeeId = movementResult.rows[0]?.employee_id;
+    if (!employeeId) return res.json([]);
+    res.json(await findReleasableLicenses(pool, employeeId));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/signed-documents', async (req, res) => {
   const client = await pool.connect();
 
@@ -3994,6 +4055,61 @@ app.post('/api/signed-documents', async (req, res) => {
           `${movement.employee_id}`
         );
       }
+
+      /*
+       * RESTITUTION-AUTOMATIQUE-LICENCES
+       *
+       * Les licences du collaborateur (Seiitra, Adobe, ArchiPad…) repassent
+       * en "available", hors Microsoft (voir findReleasableLicenses).
+       */
+      const releasedLicenses = await findReleasableLicenses(
+        client,
+        movement.employee_id,
+        { lock: true }
+      );
+
+      if (releasedLicenses.length > 0) {
+        await client.query(
+          `
+          UPDATE licenses
+          SET
+            status = 'available',
+            assigned_employee_id = NULL,
+            assigned_at = NULL,
+            updated_at = NOW()
+          WHERE id = ANY($1::uuid[])
+          `,
+          [releasedLicenses.map((license) => license.id)]
+        );
+
+        for (const license of releasedLicenses) {
+          await client.query(
+            `
+            INSERT INTO audit_log (actor_name, action, entity_type, entity_id, details)
+            VALUES ($1, 'release', 'license', $2, $3)
+            `,
+            [
+              createdDocument.signer_name ?? null,
+              license.id,
+              {
+                reason: 'restitution',
+                movement_id: movement.id,
+                signed_document_id: createdDocument.id,
+                previous_employee_id: license.assigned_employee_id,
+                license_type: license.label
+              }
+            ]
+          );
+        }
+      }
+
+      console.log(
+        `[RESTITUTION] ${releasedLicenses.length} licence(s) libérée(s) ` +
+        `pour l'employé ${movement.employee_id}` +
+        (releasedLicenses.length
+          ? ` : ${releasedLicenses.map((license) => license.label).join(', ')}`
+          : '')
+      );
     }
 
     await client.query('COMMIT');
