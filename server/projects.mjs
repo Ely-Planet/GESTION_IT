@@ -1601,7 +1601,9 @@ export function registerProjectRoutes(app) {
         tauxCompletude: completionRate(tasksResult.rows),
         chargeEstimeeH: tasksResult.rows.reduce((s, t) => s + Number(t.estimated_hours), 0),
         chargePasseeH: tasksResult.rows.reduce((s, t) => s + Number(t.spent_hours), 0),
-        estChefDeProjet: role === 'manager' ? true : await isChefDeProjet(accountId, projectId)
+        estChefDeProjet: role === 'manager' ? true : await isChefDeProjet(accountId, projectId),
+        // Vue équipe d'un développeur = il est affecté au projet : il peut ajouter des tâches.
+        peutCreerTaches: role === 'manager' || role === 'dev'
       });
     } catch (error) {
       console.error(error);
@@ -2015,8 +2017,9 @@ export function registerProjectRoutes(app) {
       if (!projectId || !title) return reject(400, 'projectId et title requis');
 
       if (role === 'client' || role === 'directeur') return reject(403, 'Accès refusé');
-      if (role === 'dev' && !(await isChefDeProjet(req.session.user.id, projectId))) {
-        return reject(403, 'Seul le chef de projet peut ajouter une tâche');
+      // Développeurs / techniciens : création ouverte à toute l'équipe du projet.
+      if (role === 'dev' && !(await isAssignedToProject(req.session.user.id, projectId))) {
+        return reject(403, "Seuls les membres de l'équipe du projet peuvent ajouter une tâche");
       }
       const dates = readPlanningDates(req.body);
       if (dates.error) return reject(400, dates.error);

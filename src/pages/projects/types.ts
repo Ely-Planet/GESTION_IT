@@ -147,6 +147,7 @@ export type ProjectDetailData = ProjectListItem & {
   assignments?: Assignment[];
   clientRequests?: ClientRequest[];
   estChefDeProjet?: boolean;
+  peutCreerTaches?: boolean; // équipe du projet (affectation, planning, suppression : chef de projet)
   client_account_id?: string | null;
   client_email?: string | null;
   clients?: ProjectClient[];

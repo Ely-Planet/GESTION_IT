@@ -184,7 +184,9 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
   const [creating, setCreating] = useState(false);
   const mod = useProjectModule();
   const projectsApi = mod.api;
-  const canCreateTasks = !readOnly && Boolean(project.estChefDeProjet);
+  // Créer : toute l'équipe du projet ; affecter, planifier, supprimer : chef de projet / manager.
+  const canManageTasks = !readOnly && Boolean(project.estChefDeProjet);
+  const canCreateTasks = !readOnly && Boolean(project.peutCreerTaches ?? project.estChefDeProjet);
   const [localTasks, setLocalTasks] = useState<Task[]>(project.tasks || []);
   const tasks = localTasks;
   const detailTask = tasks.find((task) => task.id === detailTaskId) || null;
@@ -382,7 +384,7 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
                     key={task.id}
                     task={task}
                     team={team}
-                    canAssign={canCreateTasks}
+                    canAssign={canManageTasks}
                     updating={updatingTaskId === task.id}
                     dragged={draggedTaskId === task.id}
                     onDragStart={setDraggedTaskId}
@@ -408,8 +410,8 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
         <TaskDetail
           task={detailTask}
           team={team}
-          canDelete={canCreateTasks}
-          canPlan={canCreateTasks}
+          canDelete={canManageTasks}
+          canPlan={canManageTasks}
           onChanged={onChanged}
           onDeleted={() => {
             setLocalTasks((current) => current.filter((task) => task.id !== detailTask.id));
