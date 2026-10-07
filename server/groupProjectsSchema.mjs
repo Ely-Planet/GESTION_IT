@@ -145,6 +145,24 @@ CREATE TABLE IF NOT EXISTS group_messages (
 CREATE INDEX IF NOT EXISTS idx_group_messages_project ON group_messages(project_id, sent_at);
 CREATE INDEX IF NOT EXISTS idx_group_messages_conversation ON group_messages(conversation_id);
 
+-- Référence courte du projet (PG-0001), reprise dans l'objet des mails.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns WHERE table_name = 'group_projects' AND column_name = 'ref_number'
+  ) THEN
+    ALTER TABLE group_projects ADD COLUMN ref_number serial;
+  END IF;
+END $$;
+
+-- Salle de réunion réservée (boîte de ressource Exchange).
+ALTER TABLE group_meetings ADD COLUMN IF NOT EXISTS room_email text;
+ALTER TABLE group_meetings ADD COLUMN IF NOT EXISTS room_name text;
+
+-- Mail envoyé par sendMail : repéré ensuite dans les éléments envoyés grâce
+-- à cet en-tête, pour connaître sa conversation.
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS tracking_ref text;
+
 -- Notifications de la page d'accueil : lien vers un projet Groupe.
 ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS group_project_id uuid REFERENCES group_projects(id) ON DELETE CASCADE;
 `;

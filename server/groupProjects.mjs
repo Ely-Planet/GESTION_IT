@@ -13,6 +13,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import fsp from 'fs/promises';
+import crypto from 'crypto';
 import { pool } from './db.mjs';
 import { getGraphAppToken, sendMailWithAttachments } from './graphMail.mjs';
 import { ensureGroupProjectsSchema } from './groupProjectsSchema.mjs';
@@ -196,6 +197,40 @@ async function projectName(projectId) {
   return (await pool.query(`SELECT name FROM group_projects WHERE id = $1`, [projectId])).rows[0]?.name || '';
 }
 
+const projectRef = (refNumber) => `PG-${String(refNumber ?? 0).padStart(4, '0')}`;
+
+// Préfixe de l'objet des mails : référence + début du nom du projet.
+async function mailSubjectPrefix(projectId) {
+  const project = (await pool.query(`SELECT name, ref_number FROM group_projects WHERE id = $1`, [projectId])).rows[0];
+  const name = project?.name || '';
+  const shortName = name.length > 40 ? `${name.slice(0, 39).trimEnd()}…` : name;
+  return `[${projectRef(project?.ref_number)} · ${shortName}]`;
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Retrouve un mail envoyé (sendMail ne renvoie rien) dans les éléments envoyés :
+// par l'en-tête X-GestionIT-Ref, à défaut par l'objet et l'heure d'envoi.
+async function findSentMessage(mailboxId, { tracking, subject, sentAfter }, { attempts = 1 } = {}) {
+  const params = new URLSearchParams({
+    $top: '25',
+    $orderby: 'sentDateTime desc',
+    $select: 'conversationId,internetMessageId,subject,sentDateTime,internetMessageHeaders'
+  });
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt) await wait(2500);
+    const page = await graph('GET', `/users/${encodeURIComponent(mailboxId)}/mailFolders/sentitems/messages?${params}`);
+    const messages = page?.value || [];
+    const byHeader = messages.find((m) =>
+      (m.internetMessageHeaders || []).some((h) => h.name?.toLowerCase() === 'x-gestionit-ref' && h.value === tracking)
+    );
+    const bySubject = messages.find((m) => m.subject === subject && (!sentAfter || m.sentDateTime >= sentAfter));
+    const found = byHeader || bySubject;
+    if (found?.conversationId) return found;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Microsoft Graph
 // ---------------------------------------------------------------------------
@@ -229,12 +264,39 @@ const recipientsOf = (list) =>
   (list || []).map((r) => ({ name: r.emailAddress?.name || null, email: r.emailAddress?.address || null }));
 
 // Relève les réponses des conversations envoyées depuis les projets (90 derniers jours).
+async function resolvePendingSentMessages() {
+  const pending = (
+    await pool.query(
+      `SELECT id, mailbox_account_id, tracking_ref, subject, sent_at FROM group_messages
+       WHERE direction = 'sent' AND conversation_id LIKE 'pending:%' AND sent_at > now() - interval '7 days'`
+    )
+  ).rows;
+  for (const message of pending) {
+    try {
+      const found = await findSentMessage(message.mailbox_account_id, {
+        tracking: message.tracking_ref,
+        subject: message.subject,
+        sentAfter: new Date(new Date(message.sent_at).getTime() - 60000).toISOString()
+      });
+      if (found) {
+        await pool.query(
+          `UPDATE group_messages SET conversation_id = $1, internet_message_id = COALESCE($2, internet_message_id) WHERE id = $3`,
+          [found.conversationId, found.internetMessageId || null, message.id]
+        );
+      }
+    } catch (error) {
+      console.error('[Projets Groupe] Mail envoyé introuvable dans les éléments envoyés', error.message || error);
+    }
+  }
+}
+
 async function syncMailReplies() {
+  await resolvePendingSentMessages();
   const conversations = (
     await pool.query(
       `SELECT DISTINCT ON (conversation_id) project_id, conversation_id, mailbox_account_id
        FROM group_messages
-       WHERE direction = 'sent' AND sent_at > now() - interval '90 days'
+       WHERE direction = 'sent' AND sent_at > now() - interval '90 days' AND conversation_id NOT LIKE 'pending:%'
        ORDER BY conversation_id, sent_at`
     )
   ).rows;
@@ -289,6 +351,35 @@ async function syncMailReplies() {
     }
   }
   if (added) console.log(`[Projets Groupe] ${added} réponse(s) de mail rangée(s)`);
+}
+
+let roomsCache = { at: 0, value: null };
+
+async function listRooms() {
+  if (roomsCache.value && Date.now() - roomsCache.at < 60 * 60 * 1000) return roomsCache.value;
+  try {
+    const page = await graph('GET', '/places/microsoft.graph.room?$top=200');
+    const rooms = (page?.value || [])
+      .filter((room) => room.emailAddress)
+      .map((room) => ({
+        email: room.emailAddress.toLowerCase(),
+        name: room.displayName || room.emailAddress,
+        capacity: room.capacity ?? null,
+        building: room.building || null,
+        floor: room.floorLabel || (room.floorNumber != null ? String(room.floorNumber) : null)
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+    roomsCache = { at: Date.now(), value: { rooms, error: null } };
+  } catch (error) {
+    // Pas de cache sur erreur : la permission peut être accordée entre-temps.
+    return {
+      rooms: [],
+      error: error.status === 403
+        ? "Liste des salles indisponible : la permission Microsoft Graph Place.Read.All (application) n'est pas accordée."
+        : error.message
+    };
+  }
+  return roomsCache.value;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +494,7 @@ const SUBTASK_SELECT = `
 `;
 
 const MEETINGS_SELECT = `
-  SELECT g.id, g.project_id, g.title, g.agenda, g.location, g.online, g.status,
+  SELECT g.id, g.project_id, g.title, g.agenda, g.location, g.room_email, g.room_name, g.online, g.status,
          to_char(g.start_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD"T"HH24:MI') AS start_at,
          to_char(g.end_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD"T"HH24:MI') AS end_at,
          g.organizer_account_id, o.display_name AS organizer_name, g.attendee_ids,
@@ -462,10 +553,16 @@ function outlookEventBody({ project, meeting, attendees }) {
     },
     start: { dateTime: `${meeting.start}:00`, timeZone: 'Europe/Paris' },
     end: { dateTime: `${meeting.end}:00`, timeZone: 'Europe/Paris' },
-    location: meeting.location ? { displayName: meeting.location } : undefined,
-    attendees: attendees
-      .filter((a) => a.email)
-      .map((a) => ({ emailAddress: { address: a.email, name: a.display_name }, type: 'required' })),
+    location: meeting.roomEmail
+      ? { displayName: meeting.roomName || meeting.roomEmail, locationEmailAddress: meeting.roomEmail, locationType: 'conferenceRoom' }
+      : meeting.location ? { displayName: meeting.location } : undefined,
+    // La salle est invitée comme ressource : c'est ce qui la réserve.
+    attendees: [
+      ...attendees
+        .filter((a) => a.email)
+        .map((a) => ({ emailAddress: { address: a.email, name: a.display_name }, type: 'required' })),
+      ...(meeting.roomEmail ? [{ emailAddress: { address: meeting.roomEmail, name: meeting.roomName || meeting.roomEmail }, type: 'resource' }] : [])
+    ],
     isOnlineMeeting: Boolean(meeting.online),
     ...(meeting.online ? { onlineMeetingProvider: 'teamsForBusiness' } : {}),
     allowNewTimeProposals: true
@@ -533,11 +630,111 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
     }
   });
 
+  // ---- Salles de réunion (boîtes de ressource Exchange) ----
+  app.get('/api/group-projects/rooms', requireAuth, async (req, res) => {
+    try {
+      if (!canCreateProjects(req.session.user) && !(await hasGroupProjectAccess(req.session.user.id))) {
+        return res.status(403).json({ error: 'Accès refusé' });
+      }
+      res.json(await listRooms());
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Disponibilités sur une semaine (lundi -> vendredi) des invités et des salles.
+  // Seul le statut (occupé, provisoire, absent…) est renvoyé, jamais l'objet des rendez-vous.
+  app.post('/api/group-projects/:id/availability', requireAuth, async (req, res) => {
+    try {
+      if (!(await requireMember(req, res, req.params.id))) return;
+      const { weekStart } = req.body;
+      if (!isDate(weekStart)) return res.status(400).json({ error: 'Semaine invalide' });
+      const attendeeIds = Array.isArray(req.body.attendeeIds) ? req.body.attendeeIds : [];
+      const roomEmails = (Array.isArray(req.body.roomEmails) ? req.body.roomEmails : []).filter(Boolean).slice(0, 40);
+      const members = await listMembers(req.params.id);
+      const people = members.filter((m) => m.email && (attendeeIds.includes(m.account_id) || m.account_id === req.session.user.id));
+      const emails = [...new Set([...people.map((p) => p.email.toLowerCase()), ...roomEmails.map((e) => String(e).toLowerCase())])];
+      const end = new Date(`${weekStart}T00:00:00Z`);
+      end.setUTCDate(end.getUTCDate() + 5);
+      const weekEnd = end.toISOString().slice(0, 10);
+      const schedules = [];
+      for (let i = 0; i < emails.length; i += 20) {
+        const result = await graph(
+          'POST',
+          `/users/${encodeURIComponent(req.session.user.id)}/calendar/getSchedule`,
+          {
+            schedules: emails.slice(i, i + 20),
+            startTime: { dateTime: `${weekStart}T00:00:00`, timeZone: 'Europe/Paris' },
+            endTime: { dateTime: `${weekEnd}T00:00:00`, timeZone: 'Europe/Paris' },
+            availabilityViewInterval: 30
+          },
+          { headers: { Prefer: 'outlook.timezone="Europe/Paris"' } }
+        );
+        for (const schedule of result?.value || []) {
+          schedules.push({
+            email: String(schedule.scheduleId || '').toLowerCase(),
+            error: schedule.error?.message || null,
+            items: (schedule.scheduleItems || [])
+              .filter((item) => item.status && item.status !== 'free')
+              .map((item) => ({ status: item.status, start: item.start?.dateTime?.slice(0, 16), end: item.end?.dateTime?.slice(0, 16) }))
+          });
+        }
+      }
+      res.json({
+        weekStart,
+        people: people.map((p) => ({ account_id: p.account_id, display_name: p.display_name, email: p.email.toLowerCase() })),
+        schedules
+      });
+    } catch (error) {
+      console.error('[Projets Groupe] Disponibilités', error);
+      res.status(error.status === 403 ? 502 : 500).json({
+        error: error.status === 403
+          ? "Disponibilités indisponibles : la permission Microsoft Graph Calendars.ReadWrite (ou Calendars.Read) de l'application n'est pas accordée."
+          : error.message
+      });
+    }
+  });
+
+  // Projets IT de l'utilisateur (équipe ou client), en lecture simplifiée.
+  app.get('/api/group-projects/it-projects', requireAuth, async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT p.id, p.name, p.project_state,
+                to_char(p.start_date, 'YYYY-MM-DD') AS start_date, to_char(p.due_date, 'YYYY-MM-DD') AS due_date,
+                (SELECT COUNT(*) FROM project_tasks t WHERE t.project_id = p.id)::int AS nb_taches,
+                (SELECT COUNT(*) FROM project_tasks t WHERE t.project_id = p.id AND t.status = 'done')::int AS nb_taches_terminees,
+                (SELECT COUNT(*) FROM project_tasks t WHERE t.project_id = p.id AND t.status <> 'done' AND t.assignee_account_id = $1)::int AS mes_taches,
+                CASE
+                  WHEN EXISTS (SELECT 1 FROM project_assignments a WHERE a.project_id = p.id AND a.account_id = $1 AND a.project_role = 'chef_de_projet') THEN 'chef_de_projet'
+                  WHEN EXISTS (SELECT 1 FROM project_assignments a WHERE a.project_id = p.id AND a.account_id = $1) THEN 'equipe'
+                  ELSE 'client'
+                END AS mon_role
+         FROM projects p
+         WHERE p.status <> 'archive'
+           AND p.project_state IS DISTINCT FROM 'closed'
+           AND (EXISTS (SELECT 1 FROM project_assignments a WHERE a.project_id = p.id AND a.account_id = $1)
+                OR EXISTS (SELECT 1 FROM project_clients c WHERE c.project_id = p.id AND c.account_id = $1))
+         ORDER BY p.updated_at DESC`,
+        [req.session.user.id]
+      );
+      res.json(
+        result.rows.map((p) => ({
+          ...p,
+          tauxCompletude: p.nb_taches ? Math.round((p.nb_taches_terminees / p.nb_taches) * 100) : 0
+        }))
+      );
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // ---- Projets ----
   app.get('/api/group-projects', requireAuth, async (req, res) => {
     try {
       const result = await pool.query(
-        `SELECT p.id, p.name, p.description, p.status,
+        `SELECT p.id, p.name, p.description, p.status, p.ref_number,
                 to_char(p.start_date, 'YYYY-MM-DD') AS start_date, to_char(p.due_date, 'YYYY-MM-DD') AS due_date,
                 m.role AS my_role,
                 (SELECT COUNT(*) FROM group_project_members x WHERE x.project_id = p.id)::int AS nb_membres,
@@ -554,6 +751,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       res.json(
         result.rows.map((p) => ({
           ...p,
+          ref: projectRef(p.ref_number),
           tauxCompletude: p.nb_taches ? Math.round((p.nb_taches_terminees / p.nb_taches) * 100) : 0
         }))
       );
@@ -625,7 +823,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       if (!role) return;
       const project = (
         await pool.query(
-          `SELECT p.id, p.name, p.description, p.status, p.created_by,
+          `SELECT p.id, p.name, p.description, p.status, p.created_by, p.ref_number,
                   to_char(p.start_date, 'YYYY-MM-DD') AS start_date, to_char(p.due_date, 'YYYY-MM-DD') AS due_date
            FROM group_projects p WHERE p.id = $1`,
           [req.params.id]
@@ -634,6 +832,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       const tasks = (await pool.query(`${TASKS_SELECT} WHERE t.project_id = $1 ORDER BY t.created_at`, [req.params.id])).rows;
       res.json({
         ...project,
+        ref: projectRef(project.ref_number),
         myRole: role,
         estResponsable: role === 'responsable',
         // Les composants partagés avec Projets IT s'appuient sur ce drapeau.
@@ -1173,35 +1372,60 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
         return res.status(400).json({ error: 'Les destinataires doivent être des membres du projet avec une adresse e-mail' });
       }
       const name = await projectName(req.params.id);
-      const mailbox = encodeURIComponent(req.session.user.id);
+      const fullSubject = `${await mailSubjectPrefix(req.params.id)} ${subject}`;
+      const mailboxId = req.session.user.id;
+      const tracking = crypto.randomUUID();
+      const sentAfter = new Date(Date.now() - 60000).toISOString();
       const html =
         `<div style="font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.6;color:#1f2937">` +
         `${escapeHtml(body).replace(/\n/g, '<br/>')}` +
         `<p style="color:#6b7280;font-size:12px;margin-top:24px">Projet « ${escapeHtml(name)} » — ` +
         `répondez à ce mail : votre réponse sera rangée dans les communications du projet.</p></div>`;
-      // Brouillon puis envoi : le brouillon donne l'identifiant de conversation.
-      const draft = await graph('POST', `/users/${mailbox}/messages`, {
-        subject: `[${name}] ${subject}`,
-        body: { contentType: 'HTML', content: html },
-        toRecipients: recipients.map((r) => ({ emailAddress: { address: r.email, name: r.display_name } }))
-      });
-      await graph('POST', `/users/${mailbox}/messages/${encodeURIComponent(draft.id)}/send`);
+      // Envoi direct depuis la boîte de l'utilisateur (permission Mail.Send).
+      try {
+        await graph('POST', `/users/${encodeURIComponent(mailboxId)}/sendMail`, {
+          message: {
+            subject: fullSubject,
+            body: { contentType: 'HTML', content: html },
+            toRecipients: recipients.map((r) => ({ emailAddress: { address: r.email, name: r.display_name } })),
+            internetMessageHeaders: [{ name: 'X-GestionIT-Ref', value: tracking }]
+          },
+          saveToSentItems: true
+        });
+      } catch (sendError) {
+        if (sendError.status === 403) {
+          return res.status(502).json({
+            error:
+              "Envoi impossible : Microsoft refuse que l'application envoie depuis votre boîte Outlook " +
+              "(permission Mail.Send de l'application, ou restriction Exchange limitant l'application à certaines boîtes). " +
+              "Transmettez ce message à l'administrateur Microsoft 365."
+          });
+        }
+        throw sendError;
+      }
+      // Conversation du mail envoyé : nécessaire pour relever les réponses.
+      let found = null;
+      try {
+        found = await findSentMessage(mailboxId, { tracking, subject: fullSubject, sentAfter }, { attempts: 4 });
+      } catch (readError) {
+        console.error('[Projets Groupe] Lecture des éléments envoyés impossible', readError.message || readError);
+      }
       const saved = await pool.query(
         `INSERT INTO group_messages (project_id, direction, mailbox_account_id, conversation_id, internet_message_id,
-                                     from_name, from_email, recipients, subject, body)
-         VALUES ($1, 'sent', $2, $3, $4, $5, $6, $7, $8, $9)
+                                     from_name, from_email, recipients, subject, body, tracking_ref)
+         VALUES ($1, 'sent', $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (internet_message_id) DO NOTHING RETURNING id`,
         [
-          req.params.id, req.session.user.id, draft.conversationId, draft.internetMessageId || null,
+          req.params.id, mailboxId, found?.conversationId || `pending:${tracking}`, found?.internetMessageId || null,
           req.session.user.displayName, req.session.user.email,
           JSON.stringify(recipients.map((r) => ({ name: r.display_name, email: r.email }))),
-          `[${name}] ${subject}`, body
+          fullSubject, body, tracking
         ]
       );
-      res.status(201).json({ id: saved.rows[0]?.id || null });
+      res.status(201).json({ id: saved.rows[0]?.id || null, suiviReponses: Boolean(found) });
     } catch (error) {
       console.error('[Projets Groupe] Envoi de mail', error);
-      res.status(error.status === 403 ? 502 : 500).json({ error: `Envoi impossible : ${error.message}` });
+      res.status(500).json({ error: `Envoi impossible : ${error.message}` });
     }
   });
 
@@ -1232,6 +1456,8 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       title: String(body.title || '').trim(),
       agenda: String(body.agenda || '').trim() || null,
       location: String(body.location || '').trim() || null,
+      roomEmail: String(body.roomEmail || '').trim() || null,
+      roomName: String(body.roomName || '').trim() || null,
       online: body.online !== false,
       start: body.start,
       end: body.end,
@@ -1254,11 +1480,12 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
 
       const saved = (
         await pool.query(
-          `INSERT INTO group_meetings (project_id, title, agenda, location, online, start_at, end_at, organizer_account_id, attendee_ids)
-           VALUES ($1, $2, $3, $4, $5, ($6::timestamp AT TIME ZONE 'Europe/Paris'), ($7::timestamp AT TIME ZONE 'Europe/Paris'), $8, $9)
+          `INSERT INTO group_meetings (project_id, title, agenda, location, online, start_at, end_at, organizer_account_id, attendee_ids,
+                                       room_email, room_name)
+           VALUES ($1, $2, $3, $4, $5, ($6::timestamp AT TIME ZONE 'Europe/Paris'), ($7::timestamp AT TIME ZONE 'Europe/Paris'), $8, $9, $10, $11)
            RETURNING id`,
-          [req.params.id, meeting.title, meeting.agenda, meeting.location, meeting.online, meeting.start, meeting.end,
-            req.session.user.id, attendees.map((a) => a.account_id)]
+          [req.params.id, meeting.title, meeting.agenda, meeting.roomEmail ? meeting.roomName : meeting.location, meeting.online,
+            meeting.start, meeting.end, req.session.user.id, attendees.map((a) => a.account_id), meeting.roomEmail, meeting.roomName]
         )
       ).rows[0];
 
@@ -1318,10 +1545,10 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
         `UPDATE group_meetings SET title = $1, agenda = $2, location = $3, online = $4,
            start_at = ($5::timestamp AT TIME ZONE 'Europe/Paris'), end_at = ($6::timestamp AT TIME ZONE 'Europe/Paris'),
            attendee_ids = $7, minutes_reminders = CASE WHEN ($6::timestamp AT TIME ZONE 'Europe/Paris') <> end_at THEN 0 ELSE minutes_reminders END,
-           updated_at = now()
+           room_email = $9, room_name = $10, updated_at = now()
          WHERE id = $8`,
-        [meeting.title, meeting.agenda, meeting.location, meeting.online, meeting.start, meeting.end,
-          attendees.map((a) => a.account_id), existing.id]
+        [meeting.title, meeting.agenda, meeting.roomEmail ? meeting.roomName : meeting.location, meeting.online, meeting.start, meeting.end,
+          attendees.map((a) => a.account_id), existing.id, meeting.roomEmail, meeting.roomName]
       );
       let outlookError = null;
       try {

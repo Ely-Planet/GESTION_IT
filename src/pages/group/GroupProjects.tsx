@@ -1,17 +1,24 @@
 import { useEffect, useState } from 'react';
-import { CalendarClock, Plus, Users } from 'lucide-react';
+import { CalendarClock, FolderKanban, Plus, Users } from 'lucide-react';
 import { groupApi } from './groupApi';
 import GroupProjectDetail from './GroupProjectDetail';
 import ClientsEditor from '../projects/ClientsEditor';
 import { ProgressBar, formatPeriod } from '../projects/ProjectUI';
-import { formatDateTime, type DirectoryAccount, type GroupProjectListItem } from './types';
+import { formatDateTime, type DirectoryAccount, type GroupProjectListItem, type ItProjectSummary } from './types';
 import type { Account } from '../projects/types';
 
 // Page "Projets Groupe" : les managers et directeurs créent des projets ;
 // chacun ne voit que les projets dont il est membre.
-export default function GroupProjects({ initialProjectId = null }: { initialProjectId?: string | null }) {
+const IT_STATE: Record<string, string> = { new: 'Nouveau', in_progress: 'En cours', maintenance: 'Maintenance', closed: 'Clôturé' };
+const IT_ROLE: Record<string, string> = { chef_de_projet: 'Chef de projet', equipe: 'Équipe', client: 'Client' };
+
+export default function GroupProjects({ initialProjectId = null, onOpenItProject }: {
+  initialProjectId?: string | null;
+  onOpenItProject: (projectId: string) => void;
+}) {
   const [selectedId, setSelectedId] = useState<string | null>(initialProjectId);
   const [projects, setProjects] = useState<GroupProjectListItem[]>([]);
+  const [itProjects, setItProjects] = useState<ItProjectSummary[]>([]);
   const [canCreate, setCanCreate] = useState(false);
   const [accounts, setAccounts] = useState<DirectoryAccount[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,6 +37,7 @@ export default function GroupProjects({ initialProjectId = null }: { initialProj
     setLoading(true);
     Promise.all([
       load(),
+      groupApi.itProjects().then(setItProjects).catch(() => setItProjects([])),
       groupApi.access().then((access: { canCreate: boolean }) => {
         setCanCreate(access.canCreate);
         if (access.canCreate) return groupApi.accounts().then(setAccounts);
@@ -130,7 +138,10 @@ export default function GroupProjects({ initialProjectId = null }: { initialProj
           {visible.map((p) => (
             <button key={p.id} type="button" className="card p-5 text-left hover:shadow-elevated transition" onClick={() => setSelectedId(p.id)}>
               <div className="flex items-start justify-between gap-2">
-                <h2 className="font-semibold text-ink-900">{p.name}</h2>
+                <h2 className="font-semibold text-ink-900">
+                  <span className="text-xs font-mono font-normal text-ink-400 mr-1.5">{p.ref}</span>
+                  {p.name}
+                </h2>
                 <span className={`badge ${p.status === 'closed' ? 'bg-ink-100 text-ink-600' : 'bg-emerald-100 text-emerald-700'}`}>
                   {p.status === 'closed' ? 'Clôturé' : 'Actif'}
                 </span>
@@ -154,6 +165,37 @@ export default function GroupProjects({ initialProjectId = null }: { initialProj
             </button>
           ))}
         </div>
+      )}
+
+      {itProjects.length > 0 && (
+        <section className="mt-8">
+          <h2 className="font-semibold text-ink-900 flex items-center gap-2 mb-1">
+            <FolderKanban className="w-4 h-4 text-elyade-600" /> Mes projets IT
+          </h2>
+          <p className="text-xs text-ink-500 mb-3">Projets du service informatique dont vous faites partie (équipe ou client). Cliquez pour les ouvrir dans Projets IT.</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            {itProjects.map((p) => (
+              <button key={p.id} type="button" className="card p-4 text-left hover:shadow-elevated transition" onClick={() => onOpenItProject(p.id)}>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-medium text-ink-900 text-sm">{p.name}</p>
+                  <span className="badge bg-blue-50 text-blue-700 shrink-0">IT</span>
+                </div>
+                <p className="text-xs text-ink-500 mt-1">
+                  {IT_STATE[p.project_state || 'new'] || 'Nouveau'} · {IT_ROLE[p.mon_role]}
+                  {p.mes_taches > 0 && <> · {p.mes_taches} tâche{p.mes_taches > 1 ? 's' : ''} pour vous</>}
+                  {p.due_date && <> · échéance {formatPeriod(null, p.due_date).replace('Fin ', '')}</>}
+                </p>
+                <div className="mt-2">
+                  <div className="flex justify-between text-[11px] text-ink-400 mb-0.5">
+                    <span>{p.nb_taches} tâche{p.nb_taches > 1 ? 's' : ''}</span>
+                    <span>{p.tauxCompletude}%</span>
+                  </div>
+                  <ProgressBar value={p.tauxCompletude} />
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
       )}
     </div>
   );

@@ -7,6 +7,10 @@ const json = (method: string, body: unknown): RequestInit => ({ method, body: JS
 export const groupApi = {
   access: () => request(`${BASE}/access`),
   accounts: () => request(`${BASE}/accounts`),
+  rooms: () => request(`${BASE}/rooms`),
+  itProjects: () => request(`${BASE}/it-projects`),
+  availability: (id: string, body: { weekStart: string; attendeeIds: string[]; roomEmails: string[] }) =>
+    request(`${BASE}/${id}/availability`, json('POST', body)),
 
   listProjects: () => request(BASE),
   getProject: (id: string) => request(`${BASE}/${id}`),

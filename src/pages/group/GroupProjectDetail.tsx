@@ -83,7 +83,10 @@ export default function GroupProjectDetail({ projectId, onBack }: { projectId: s
         <div className="card p-5 mb-4">
           <div className="flex flex-wrap justify-between items-start gap-3">
             <div className="min-w-0">
-              <h1 className="text-xl font-semibold text-ink-900">{project.name}</h1>
+              <h1 className="text-xl font-semibold text-ink-900">
+                <span className="text-sm font-mono font-normal text-ink-400 mr-2">{project.ref}</span>
+                {project.name}
+              </h1>
               {project.description && <p className="text-sm text-ink-500 mt-1 whitespace-pre-wrap">{project.description}</p>}
               {project.estResponsable ? (
                 <div className="flex flex-wrap items-center gap-3 mt-2 text-sm text-ink-600">

@@ -11,6 +11,7 @@ export type GroupMember = {
 
 export type GroupProjectListItem = {
   id: string;
+  ref: string; // PG-0001
   name: string;
   description: string | null;
   status: 'active' | 'closed';
@@ -25,6 +26,7 @@ export type GroupProjectListItem = {
 
 export type GroupProjectDetail = {
   id: string;
+  ref: string;
   name: string;
   description: string | null;
   status: 'active' | 'closed';
@@ -73,6 +75,8 @@ export type GroupMeeting = {
   title: string;
   agenda: string | null;
   location: string | null;
+  room_email: string | null;
+  room_name: string | null;
   online: boolean;
   status: 'planned' | 'cancelled';
   start_at: string; // AAAA-MM-JJTHH:MM (heure de Paris)
@@ -85,6 +89,29 @@ export type GroupMeeting = {
   in_outlook: boolean;
   minute_id: string | null;
   past: boolean;
+};
+
+export type MeetingRoom = { email: string; name: string; capacity: number | null; building: string | null; floor: string | null };
+
+export type BusyItem = { status: string; start: string; end: string }; // AAAA-MM-JJTHH:MM, heure de Paris
+
+export type Availability = {
+  weekStart: string;
+  people: { account_id: string; display_name: string; email: string }[];
+  schedules: { email: string; error: string | null; items: BusyItem[] }[];
+};
+
+// Projet IT de l'utilisateur, affiché de façon simplifiée dans Projets Groupe.
+export type ItProjectSummary = {
+  id: string;
+  name: string;
+  project_state: 'new' | 'in_progress' | 'maintenance' | 'closed' | null;
+  start_date: string | null;
+  due_date: string | null;
+  nb_taches: number;
+  mes_taches: number;
+  tauxCompletude: number;
+  mon_role: 'chef_de_projet' | 'equipe' | 'client';
 };
 
 // Les onglets partagés attendent des "Account" (équipe affectable).

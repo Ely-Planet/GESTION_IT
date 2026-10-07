@@ -142,7 +142,7 @@ if (
 {page === 'documents' && <SignedDocuments />}
 {page === 'audit' && <Audit />}
 {page === 'projects' && <Projects key={openRequest.nonce} initialProjectId={openRequest.projectId} />}
-{page === 'groupprojects' && <GroupProjects key={openGroupRequest.nonce} initialProjectId={openGroupRequest.projectId} />}
+{page === 'groupprojects' && <GroupProjects key={openGroupRequest.nonce} initialProjectId={openGroupRequest.projectId} onOpenItProject={openProject} />}
 
     </Layout>
   );

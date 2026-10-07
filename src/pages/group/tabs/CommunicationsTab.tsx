@@ -64,7 +64,10 @@ export default function CommunicationsTab({ project }: { project: GroupProjectDe
     }
     setSending(true);
     try {
-      await groupApi.sendMail(project.id, { recipientIds, subject, body });
+      const result = await groupApi.sendMail(project.id, { recipientIds, subject, body });
+      if (result && result.suiviReponses === false) {
+        alert("Mail envoyé. Il n'a pas encore été retrouvé dans vos éléments envoyés : le suivi des réponses démarrera dès qu'il le sera (quelques minutes).");
+      }
       setComposing(false);
       setRecipientIds([]);
       setSubject('');
@@ -136,8 +139,12 @@ export default function CommunicationsTab({ project }: { project: GroupProjectDe
               </div>
             )}
           </div>
-          <input className="input" placeholder="Objet" required value={subject} onChange={(e) => setSubject(e.target.value)} />
-          <p className="text-xs text-ink-400 -mt-2">Le nom du projet est ajouté automatiquement au début de l'objet.</p>
+          <div className="flex items-stretch">
+            <span className="inline-flex items-center px-2 rounded-l-lg border border-r-0 border-ink-200 bg-ink-50 text-xs text-ink-500 whitespace-nowrap" title="Ajouté automatiquement : référence et nom du projet">
+              [{project.ref} · {project.name.length > 40 ? `${project.name.slice(0, 39).trimEnd()}…` : project.name}]
+            </span>
+            <input className="input rounded-l-none" placeholder="Objet" required value={subject} onChange={(e) => setSubject(e.target.value)} />
+          </div>
           <textarea className="input" rows={8} placeholder="Votre message" required value={body} onChange={(e) => setBody(e.target.value)} />
           <div className="flex gap-2">
             <button className="btn-primary text-sm" disabled={sending}>
