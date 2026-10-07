@@ -124,8 +124,8 @@ function TaskCard({
           ))}
         </div>
       )}
-      <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-ink-100">
-        <select className="input py-1 text-xs w-32" value={task.status} onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}>
+      <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t border-ink-100">
+        <select className="input py-1 text-xs w-auto max-w-full" value={task.status} onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}>
           {STATUSES.map((status) => (
             <option key={status} value={status}>{mod.statusLabels[status]}</option>
           ))}
@@ -343,7 +343,9 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
         </form>
       )}
 
-      <div className="flex gap-4 overflow-x-auto pb-4 items-start">
+      {/* Colonnes souples : elles se partagent la largeur de l'écran ; défilement
+          horizontal seulement sous ~1 000 px de large. */}
+      <div className="grid gap-3 overflow-x-auto pb-4 items-start" style={{ gridTemplateColumns: 'repeat(5, minmax(190px, 1fr))' }}>
         {STATUSES.map((status) => {
           const columnTasks = visibleTasks.filter((task) => task.status === status);
           const columnConfig = { ...mod.columns[status], style: COLUMN_STYLE[status] };
@@ -363,7 +365,7 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
                 const taskId = e.dataTransfer.getData('text/plain') || draggedTaskId;
                 if (taskId) void dropTask(status, taskId);
               }}
-              className={`rounded-xl border p-3 min-h-[360px] max-h-[calc(100vh-240px)] min-w-[320px] w-[320px] flex-shrink-0 flex flex-col transition-all ${columnConfig.style} ${dragOverStatus === status ? 'ring-2 ring-elyade-500 ring-offset-2 scale-[1.01]' : ''}`}
+              className={`rounded-xl border p-3 min-h-[360px] max-h-[calc(100vh-240px)] min-w-0 flex flex-col transition-all ${columnConfig.style} ${dragOverStatus === status ? 'ring-2 ring-elyade-500 ring-offset-1' : ''}`}
             >
               <div className="flex items-center justify-between mb-3 px-1">
                 <div>
