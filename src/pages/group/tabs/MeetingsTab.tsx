@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CalendarPlus, CheckCircle2, DoorOpen, FileText, MapPin, Pencil, Video, XCircle } from 'lucide-react';
+import { AlertTriangle, CalendarPlus, CheckCircle2, DoorOpen, FileText, MapPin, Pencil, Trash2, Video, XCircle } from 'lucide-react';
 import { groupApi } from '../groupApi';
 import { useAuth } from '../../../context/AuthContext';
 import WeekScheduler from '../WeekScheduler';
@@ -170,6 +170,24 @@ export default function MeetingsTab({ project, onWriteMinutes }: {
     }
   }
 
+  async function remove(meeting: GroupMeeting) {
+    const upcomingMeeting = meeting.status === 'planned' && !meeting.past;
+    const message = upcomingMeeting
+      ? `Supprimer la réunion « ${meeting.title} » du ${formatDateTime(meeting.start_at)} ?
+Elle sera annulée dans Outlook (les invités seront prévenus) et retirée du projet.`
+      : `Supprimer la réunion « ${meeting.title} » du ${formatDateTime(meeting.start_at)} du projet ?`;
+    if (!confirm(`${message}
+Un compte rendu déjà rédigé est conservé.`)) return;
+    try {
+      const result = await groupApi.deleteMeeting(meeting.id);
+      if (result?.outlookError) alert(`Réunion supprimée de l'application, mais pas annulée dans Outlook :
+${result.outlookError}`);
+      await load();
+    } catch (err: any) {
+      alert(err.message || 'Erreur lors de la suppression');
+    }
+  }
+
   async function cancel(meeting: GroupMeeting) {
     if (!confirm(`Annuler la réunion « ${meeting.title} » du ${formatDateTime(meeting.start_at)} ? Les invités seront prévenus.`)) return;
     try {
@@ -186,7 +204,8 @@ export default function MeetingsTab({ project, onWriteMinutes }: {
   const nameOf = (id: string) => project.members.find((m) => m.account_id === id)?.display_name || 'Ancien membre';
 
   function renderMeeting(meeting: GroupMeeting) {
-    const canEdit = meeting.status === 'planned' && (project.estResponsable || meeting.organizer_account_id === user?.id);
+    const canManage = project.estResponsable || meeting.organizer_account_id === user?.id;
+    const canEdit = meeting.status === 'planned' && canManage;
     return (
       <article key={meeting.id} className={`card p-4 ${meeting.status === 'cancelled' ? 'opacity-60' : ''}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -220,10 +239,16 @@ export default function MeetingsTab({ project, onWriteMinutes }: {
             {meeting.agenda && <p className="text-sm text-ink-700 whitespace-pre-wrap mt-2">{meeting.agenda}</p>}
           </div>
           <div className="flex flex-wrap items-center gap-1">
-            {meeting.past && meeting.status === 'planned' && (
-              meeting.minute_id ? (
-                <span className="badge bg-emerald-50 text-emerald-700"><CheckCircle2 className="w-3.5 h-3.5" /> Compte rendu saisi</span>
-              ) : (
+            {meeting.status === 'planned' && (
+              meeting.minute_id && !meeting.minute_is_draft ? (
+                <button className="badge bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onClick={() => onWriteMinutes(meeting)} title="Ouvrir le compte rendu">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Compte rendu validé
+                </button>
+              ) : meeting.minute_id ? (
+                <button className={`${meeting.past ? 'btn-primary' : 'btn-secondary'} text-xs`} onClick={() => onWriteMinutes(meeting)}>
+                  <FileText className="w-3.5 h-3.5" /> {meeting.past ? 'Compléter le compte rendu' : 'Préparer le compte rendu'}
+                </button>
+              ) : meeting.past && (
                 <button className="btn-primary text-xs" onClick={() => onWriteMinutes(meeting)}>
                   <FileText className="w-3.5 h-3.5" /> Saisir le compte rendu
                 </button>
@@ -232,10 +257,15 @@ export default function MeetingsTab({ project, onWriteMinutes }: {
             {canEdit && !meeting.past && (
               <>
                 <button className="btn-ghost p-1.5" title="Modifier" onClick={() => openDraft(editDraft(meeting))}><Pencil className="w-4 h-4" /></button>
-                <button className="btn-ghost p-1.5 text-ink-400 hover:text-red-600" title="Annuler la réunion" onClick={() => void cancel(meeting)}>
+                <button className="btn-ghost p-1.5 text-ink-400 hover:text-amber-600" title="Annuler la réunion (reste visible, barrée)" onClick={() => void cancel(meeting)}>
                   <XCircle className="w-4 h-4" />
                 </button>
               </>
+            )}
+            {canManage && (
+              <button className="btn-ghost p-1.5 text-ink-400 hover:text-red-600" title="Supprimer la réunion" onClick={() => void remove(meeting)}>
+                <Trash2 className="w-4 h-4" />
+              </button>
             )}
           </div>
         </div>

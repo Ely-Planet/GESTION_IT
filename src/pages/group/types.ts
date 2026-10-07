@@ -48,6 +48,7 @@ export type GroupMinute = {
   title: string;
   meeting_date: string;
   content: string;
+  is_draft: boolean;
   author_account_id: string | null;
   author_name: string | null;
   updated_by_name: string | null;
@@ -88,6 +89,7 @@ export type GroupMeeting = {
   outlook_error: string | null;
   in_outlook: boolean;
   minute_id: string | null;
+  minute_is_draft: boolean | null;
   past: boolean;
 };
 

@@ -26,7 +26,7 @@ export default function GroupProjectDetail({ projectId, onBack }: { projectId: s
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState('tasks');
   // Ouverture du compte rendu d'une réunion depuis l'onglet Réunions.
-  const [minuteForMeeting, setMinuteForMeeting] = useState<{ id: string; title: string; date: string } | null>(null);
+  const [minuteForMeeting, setMinuteForMeeting] = useState<{ id: string; title: string; date: string; minuteId: string | null } | null>(null);
 
   async function load() {
     try {
@@ -171,7 +171,7 @@ export default function GroupProjectDetail({ projectId, onBack }: { projectId: s
           <MeetingsTab
             project={project}
             onWriteMinutes={(meeting) => {
-              setMinuteForMeeting({ id: meeting.id, title: meeting.title, date: meeting.start_at.slice(0, 10) });
+              setMinuteForMeeting({ id: meeting.id, title: meeting.title, date: meeting.start_at.slice(0, 10), minuteId: meeting.minute_id });
               setTab('minutes');
             }}
           />

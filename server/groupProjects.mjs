@@ -436,7 +436,7 @@ async function remindMissingMinutes() {
      FROM group_projects p, app_accounts o
      WHERE p.id = g.project_id AND p.status = 'active' AND o.id = g.organizer_account_id
        AND g.status = 'planned' AND g.end_at < now()
-       AND NOT EXISTS (SELECT 1 FROM group_minutes m WHERE m.meeting_id = g.id)
+       AND NOT EXISTS (SELECT 1 FROM group_minutes m WHERE m.meeting_id = g.id AND NOT m.is_draft)
        AND (g.minutes_reminders = 0 OR (g.minutes_reminders = 1 AND g.minutes_reminded_at < now() - interval '2 days'))
      RETURNING g.id, g.title, g.project_id, g.organizer_account_id, p.name AS project_name,
                o.email AS organizer_email, o.display_name AS organizer_name,
@@ -499,7 +499,8 @@ const MEETINGS_SELECT = `
          to_char(g.end_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD"T"HH24:MI') AS end_at,
          g.organizer_account_id, o.display_name AS organizer_name, g.attendee_ids,
          g.online_meeting_url, g.outlook_error, (g.outlook_event_id IS NOT NULL) AS in_outlook,
-         (SELECT m.id FROM group_minutes m WHERE m.meeting_id = g.id ORDER BY m.created_at LIMIT 1) AS minute_id,
+         (SELECT m.id FROM group_minutes m WHERE m.meeting_id = g.id ORDER BY m.is_draft, m.created_at LIMIT 1) AS minute_id,
+         (SELECT m.is_draft FROM group_minutes m WHERE m.meeting_id = g.id ORDER BY m.is_draft, m.created_at LIMIT 1) AS minute_is_draft,
          (g.end_at < now()) AS past
   FROM group_meetings g LEFT JOIN app_accounts o ON o.id = g.organizer_account_id
 `;
@@ -536,6 +537,51 @@ async function notifyTaskAssignee(task, actorId) {
 function completionRate(tasks) {
   if (!tasks.length) return 0;
   return Math.round((tasks.filter((t) => t.status === 'done').length / tasks.length) * 100);
+}
+
+// ---- Compte rendu préparé à partir de l'invitation ----
+async function meetingForMinutes(meetingId) {
+  const meeting = (
+    await pool.query(
+      `SELECT g.title, g.agenda, g.location, g.room_name, g.online, g.attendee_ids,
+              to_char(g.start_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS day,
+              to_char(g.start_at AT TIME ZONE 'Europe/Paris', 'DD/MM/YYYY') AS day_fr,
+              to_char(g.start_at AT TIME ZONE 'Europe/Paris', 'HH24:MI') AS start_fr,
+              to_char(g.end_at AT TIME ZONE 'Europe/Paris', 'HH24:MI') AS end_fr,
+              o.display_name AS organizer_name
+       FROM group_meetings g LEFT JOIN app_accounts o ON o.id = g.organizer_account_id
+       WHERE g.id = $1`,
+      [meetingId]
+    )
+  ).rows[0];
+  if (!meeting) return null;
+  meeting.attendee_names = (
+    await pool.query(`SELECT display_name FROM app_accounts WHERE id = ANY($1::uuid[]) ORDER BY display_name`, [meeting.attendee_ids])
+  ).rows.map((row) => row.display_name);
+  return meeting;
+}
+
+const minutesTitle = (meetingTitle) => `Compte rendu — ${meetingTitle}`;
+
+function minutesTemplate(meeting) {
+  const place = [meeting.room_name || meeting.location, meeting.online ? 'Teams' : null].filter(Boolean).join(' / ');
+  return [
+    `Réunion du ${meeting.day_fr} de ${meeting.start_fr} à ${meeting.end_fr}${place ? ` — ${place}` : ''}`,
+    `Organisateur : ${meeting.organizer_name || '—'}`,
+    `Participants : ${[meeting.organizer_name, ...meeting.attendee_names].filter(Boolean).join(', ')}`,
+    '',
+    'Ordre du jour :',
+    meeting.agenda || '-',
+    '',
+    'Points abordés :',
+    '- ',
+    '',
+    'Décisions :',
+    '- ',
+    '',
+    'Actions (qui / quoi / quand) :',
+    '- '
+  ].join('\n');
 }
 
 // Date et heure locales Paris "AAAA-MM-JJTHH:MM".
@@ -1246,7 +1292,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
     try {
       if (!(await requireMember(req, res, req.params.id))) return;
       const result = await pool.query(
-        `SELECT m.id, m.meeting_id, m.title, to_char(m.meeting_date, 'YYYY-MM-DD') AS meeting_date, m.content,
+        `SELECT m.id, m.meeting_id, m.title, to_char(m.meeting_date, 'YYYY-MM-DD') AS meeting_date, m.content, m.is_draft,
                 m.author_account_id, a.display_name AS author_name, u.display_name AS updated_by_name,
                 m.created_at, m.updated_at
          FROM group_minutes m
@@ -1303,16 +1349,30 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       if (!minute) return res.status(404).json({ error: 'Compte rendu introuvable' });
       if (!(await requireMember(req, res, minute.project_id))) return;
       const { title, content, meetingDate } = req.body;
+      // finalize : le brouillon devient le compte rendu définitif (fin des rappels).
+      const finalize = req.body.finalize === true;
       if (meetingDate !== undefined && !isDate(meetingDate)) return res.status(400).json({ error: 'Date invalide' });
       if ((title !== undefined && !String(title).trim()) || (content !== undefined && !String(content).trim())) {
         return res.status(400).json({ error: 'Titre et contenu ne peuvent pas être vides' });
       }
       await pool.query(
         `UPDATE group_minutes SET title = COALESCE($1, title), content = COALESCE($2, content),
-                meeting_date = COALESCE($3::date, meeting_date), updated_by = $4, updated_at = now()
+                meeting_date = COALESCE($3::date, meeting_date), updated_by = $4, updated_at = now(),
+                is_draft = CASE WHEN $6::boolean THEN false ELSE is_draft END
          WHERE id = $5`,
-        [title ? String(title).trim() : null, content ? String(content).trim() : null, meetingDate || null, req.session.user.id, minute.id]
+        [title ? String(title).trim() : null, content ? String(content).trim() : null, meetingDate || null, req.session.user.id, minute.id, finalize]
       );
+      if (finalize && minute.is_draft) {
+        const members = await listMembers(minute.project_id);
+        await notify({
+          accountIds: members.map((m) => m.account_id),
+          type: 'group_minutes',
+          title: `Compte rendu : ${title ? String(title).trim() : minute.title}`,
+          body: `Projet ${await projectName(minute.project_id)} — par ${req.session.user.displayName}`,
+          projectId: minute.project_id,
+          exceptId: req.session.user.id
+        });
+      }
       res.json({ ok: true });
     } catch (error) {
       console.error(error);
@@ -1501,6 +1561,14 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
         await pool.query(`UPDATE group_meetings SET outlook_error = $1 WHERE id = $2`, [outlookError, saved.id]);
       }
 
+      // Compte rendu prêt à remplir, reprenant l'invitation (ordre du jour).
+      const forMinutes = await meetingForMinutes(saved.id);
+      await pool.query(
+        `INSERT INTO group_minutes (project_id, meeting_id, title, meeting_date, content, author_account_id, updated_by, is_draft)
+         VALUES ($1, $2, $3, $4, $5, $6, $6, true)`,
+        [req.params.id, saved.id, minutesTitle(meeting.title), forMinutes.day, minutesTemplate(forMinutes), req.session.user.id]
+      );
+
       const when = `${meeting.start.slice(8, 10)}/${meeting.start.slice(5, 7)} à ${meeting.start.slice(11)}`;
       await notify({
         accountIds: attendees.map((a) => a.account_id),
@@ -1541,6 +1609,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       const attendees = members.filter(
         (m) => meeting.attendeeIds.includes(m.account_id) && m.account_id !== existing.organizer_account_id
       );
+      const templateBefore = minutesTemplate(await meetingForMinutes(existing.id));
       await pool.query(
         `UPDATE group_meetings SET title = $1, agenda = $2, location = $3, online = $4,
            start_at = ($5::timestamp AT TIME ZONE 'Europe/Paris'), end_at = ($6::timestamp AT TIME ZONE 'Europe/Paris'),
@@ -1550,6 +1619,17 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
         [meeting.title, meeting.agenda, meeting.roomEmail ? meeting.roomName : meeting.location, meeting.online, meeting.start, meeting.end,
           attendees.map((a) => a.account_id), existing.id, meeting.roomEmail, meeting.roomName]
       );
+      // Brouillon de compte rendu pas encore retouché : mis à jour avec la réunion.
+      const forMinutes = await meetingForMinutes(existing.id);
+      await pool.query(
+        `UPDATE group_minutes SET
+           content = CASE WHEN content = $1 THEN $2 ELSE content END,
+           title = CASE WHEN title = $3 THEN $4 ELSE title END,
+           meeting_date = $5
+         WHERE meeting_id = $6 AND is_draft`,
+        [templateBefore, minutesTemplate(forMinutes), minutesTitle(existing.title), minutesTitle(meeting.title), forMinutes.day, existing.id]
+      );
+
       let outlookError = null;
       try {
         const project = { id: existing.project_id, name: await projectName(existing.project_id) };
@@ -1582,30 +1662,56 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
     }
   });
 
-  // Annulation : la réunion est annulée dans Outlook (les invités sont prévenus).
-  app.delete('/api/group-projects/meetings/:meetingId', requireAuth, async (req, res) => {
-    try {
-      const existing = await loadMeeting(req, res);
-      if (!existing) return;
-      await pool.query(`UPDATE group_meetings SET status = 'cancelled', updated_at = now() WHERE id = $1`, [existing.id]);
-      let outlookError = null;
-      if (existing.outlook_event_id) {
-        try {
-          await graph('POST', `/users/${encodeURIComponent(existing.organizer_account_id)}/events/${encodeURIComponent(existing.outlook_event_id)}/cancel`, {
-            comment: `Réunion annulée par ${req.session.user.displayName}`
-          });
-        } catch (graphError) {
-          outlookError = graphError.message || String(graphError);
-        }
+  // Annule la réunion dans Outlook (les invités sont prévenus par Outlook et
+  // dans l'application) et retire le brouillon de compte rendu non retouché.
+  async function cancelEverywhere(existing, actor) {
+    let outlookError = null;
+    if (existing.status === 'planned' && existing.outlook_event_id && new Date(existing.end_at) > new Date()) {
+      try {
+        await graph('POST', `/users/${encodeURIComponent(existing.organizer_account_id)}/events/${encodeURIComponent(existing.outlook_event_id)}/cancel`, {
+          comment: `Réunion annulée par ${actor.displayName}`
+        });
+      } catch (graphError) {
+        outlookError = graphError.message || String(graphError);
       }
+    }
+    const untouched = minutesTemplate(await meetingForMinutes(existing.id));
+    await pool.query(`DELETE FROM group_minutes WHERE meeting_id = $1 AND is_draft AND content = $2`, [existing.id, untouched]);
+    if (existing.status === 'planned' && new Date(existing.end_at) > new Date()) {
       await notify({
         accountIds: [...existing.attendee_ids, existing.organizer_account_id],
         type: 'group_meeting',
         title: `Réunion annulée : ${existing.title}`,
         body: `Projet ${await projectName(existing.project_id)}`,
         projectId: existing.project_id,
-        exceptId: req.session.user.id
+        exceptId: actor.id
       });
+    }
+    return outlookError;
+  }
+
+  // Annulation : la réunion reste visible (barrée) dans le projet.
+  app.delete('/api/group-projects/meetings/:meetingId', requireAuth, async (req, res) => {
+    try {
+      const existing = await loadMeeting(req, res);
+      if (!existing) return;
+      const outlookError = await cancelEverywhere(existing, req.session.user);
+      await pool.query(`UPDATE group_meetings SET status = 'cancelled', updated_at = now() WHERE id = $1`, [existing.id]);
+      res.json({ ok: true, outlookError });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Suppression : la réunion disparaît du projet (annulée dans Outlook si elle
+  // est à venir). Un compte rendu déjà rédigé est conservé, sans lien.
+  app.post('/api/group-projects/meetings/:meetingId/delete', requireAuth, async (req, res) => {
+    try {
+      const existing = await loadMeeting(req, res);
+      if (!existing) return;
+      const outlookError = await cancelEverywhere(existing, req.session.user);
+      await pool.query(`DELETE FROM group_meetings WHERE id = $1`, [existing.id]);
       res.json({ ok: true, outlookError });
     } catch (error) {
       console.error(error);

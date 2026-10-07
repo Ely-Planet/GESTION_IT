@@ -46,6 +46,7 @@ export const groupApi = {
   createMeeting: (id: string, body: unknown) => request(`${BASE}/${id}/meetings`, json('POST', body)),
   updateMeeting: (meetingId: string, body: unknown) => request(`${BASE}/meetings/${meetingId}`, json('PUT', body)),
   cancelMeeting: (meetingId: string) => request(`${BASE}/meetings/${meetingId}`, { method: 'DELETE' }),
+  deleteMeeting: (meetingId: string) => request(`${BASE}/meetings/${meetingId}/delete`, { method: 'POST' }),
 };
 
 // Configuration des onglets partagés (Tâches, Gantt, détail) pour Projets Groupe.

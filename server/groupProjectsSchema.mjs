@@ -163,6 +163,10 @@ ALTER TABLE group_meetings ADD COLUMN IF NOT EXISTS room_name text;
 -- à cet en-tête, pour connaître sa conversation.
 ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS tracking_ref text;
 
+-- Compte rendu préparé dès la planification d'une réunion (brouillon) ; le
+-- rappel ne s'arrête qu'une fois le compte rendu validé.
+ALTER TABLE group_minutes ADD COLUMN IF NOT EXISTS is_draft boolean NOT NULL DEFAULT false;
+
 -- Notifications de la page d'accueil : lien vers un projet Groupe.
 ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS group_project_id uuid REFERENCES group_projects(id) ON DELETE CASCADE;
 `;
