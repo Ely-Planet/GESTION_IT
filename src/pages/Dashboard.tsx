@@ -631,7 +631,7 @@ function WidgetSettings({
           <h2 className="text-lg font-semibold text-ink-900 flex items-center gap-2">
             <Settings2 className="w-5 h-5 text-elyade-600" /> Configurer les indicateurs
           </h2>
-          <button onClick={onClose} className="btn-ghost p-1.5"><X className="w-5 h-5" /></button>
+          <button onClick={onClose} className="btn-ghost p-1.5" title="Fermer" aria-label="Fermer"><X className="w-5 h-5" /></button>
         </div>
         <div className="p-5 space-y-2">
           {widgets.map((w) => (

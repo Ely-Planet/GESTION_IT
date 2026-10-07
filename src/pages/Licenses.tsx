@@ -775,7 +775,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
       <div className="card w-full max-w-lg max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-ink-100 sticky top-0 bg-white rounded-t-xl">
           <h2 className="text-lg font-semibold text-ink-900">{title}</h2>
-          <button onClick={onClose} className="btn-ghost p-1.5"><X className="w-5 h-5" /></button>
+          <button onClick={onClose} className="btn-ghost p-1.5" title="Fermer" aria-label="Fermer"><X className="w-5 h-5" /></button>
         </div>
         <div className="p-5">{children}</div>
       </div>

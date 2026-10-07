@@ -1497,7 +1497,7 @@ hardware_issue:
             {docType === 'assignment' ? <PenTool className="w-5 h-5 text-elyade-600" /> : <FileSignature className="w-5 h-5 text-amber-600" />}
             {docType === 'assignment' ? 'Signature — Attestation d\'attribution' : 'Signature — Fiche de restitution'}
           </h2>
-          <button onClick={onClose} className="btn-ghost p-1.5"><X className="w-5 h-5" /></button>
+          <button onClick={onClose} className="btn-ghost p-1.5" title="Fermer" aria-label="Fermer"><X className="w-5 h-5" /></button>
         </div>
 
         <div className="p-5 space-y-4">
@@ -2039,7 +2039,7 @@ manager_email:
             {type === 'onboarding' ? <ArrowDownToLine className="w-5 h-5 text-green-600" /> : <ArrowUpFromLine className="w-5 h-5 text-amber-600" />}
             {type === 'onboarding' ? 'Nouvel onboarding' : 'Nouvel offboarding'}
           </h2>
-          <button onClick={onClose} className="btn-ghost p-1.5"><X className="w-5 h-5" /></button>
+          <button onClick={onClose} className="btn-ghost p-1.5" title="Fermer" aria-label="Fermer"><X className="w-5 h-5" /></button>
         </div>
 
         <form onSubmit={onSubmit} className="p-5 space-y-4">

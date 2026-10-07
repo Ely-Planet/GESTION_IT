@@ -66,6 +66,8 @@ export default function WeekScheduler({ weekStart, onWeekChange, availability, l
     const selected = day === selection.date && minutes >= selStart && minutes < selEnd;
     const firstSelected = selected && minutes === Math.max(selStart - (selStart % SLOT), FIRST_SLOT);
     const allBusy = people.length > 0 && busyPeople.length === people.length;
+    const available = people.length - busyPeople.length;
+    const freePeople = people.filter((p) => !busyPeople.some((e) => e.person.email === p.email));
 
     const background = selected
       ? 'bg-elyade-600 text-white'
@@ -78,8 +80,13 @@ export default function WeekScheduler({ weekStart, onWeekChange, availability, l
             : 'bg-white hover:bg-elyade-50';
 
     const title = [
-      `${toTime(minutes)} – ${toTime(minutes + SLOT)}`,
-      busyPeople.length === 0 ? 'Tout le monde est disponible' : busyPeople.map((e) => `• ${e.person.display_name} : ${statusLabel(e.busy[0].status)}`).join('\n'),
+      `${toTime(minutes)} – ${toTime(minutes + SLOT)} : ${available}/${people.length} disponible${available > 1 ? 's' : ''}`,
+      busyPeople.length === 0
+        ? 'Tout le monde est disponible'
+        : [
+            freePeople.length ? `Disponibles : ${freePeople.map((p) => p.display_name).join(', ')}` : 'Personne n’est disponible',
+            ...busyPeople.map((e) => `✗ ${e.person.display_name} : ${statusLabel(e.busy[0].status)}`),
+          ].join('\n'),
       roomEmail ? (roomBusy ? 'Salle occupée' : 'Salle libre') : '',
       past ? 'Créneau passé' : '',
     ].filter(Boolean).join('\n');
@@ -99,9 +106,10 @@ export default function WeekScheduler({ weekStart, onWeekChange, availability, l
             {selection.start} – {selection.end}
           </span>
         )}
-        {!selected && busyPeople.length > 0 && (
+        {/* Nombre de personnes DISPONIBLES, affiché quand quelqu'un est pris. */}
+        {!selected && !past && busyPeople.length > 0 && (
           <span className={`absolute right-1 top-1/2 -translate-y-1/2 rounded-full px-1.5 text-[10px] font-medium leading-4 ${allBusy ? 'bg-rose-500 text-white' : 'bg-amber-400 text-white'}`}>
-            {people.length > 1 ? `${busyPeople.length}/${people.length}` : '•'}
+            {people.length > 1 ? `${available}/${people.length}` : '✗'}
           </span>
         )}
       </button>
@@ -166,13 +174,15 @@ export default function WeekScheduler({ weekStart, onWeekChange, availability, l
       {/* Légende */}
       <div className="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 border-t border-ink-100 text-[11px] text-ink-500">
         <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-white border border-ink-200" /> Tous disponibles</span>
-        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-amber-50 border border-amber-200" /> Certains occupés</span>
-        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-rose-100 border border-rose-200" /> Tous occupés</span>
+        <span className="flex items-center gap-1.5">
+          <span className="rounded-full bg-amber-400 px-1 text-[10px] font-medium leading-3 text-white">2/3</span> Personnes disponibles / invitées
+        </span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-rose-100 border border-rose-200" /> Personne de disponible</span>
         {roomEmail && (
           <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm border border-ink-200" style={{ backgroundImage: STRIPES }} /> Salle occupée</span>
         )}
         <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-elyade-600" /> Votre réunion</span>
-        <span className="text-ink-400">Survolez un créneau pour voir qui est occupé.</span>
+        <span className="text-ink-400">Survolez un créneau pour voir qui est disponible.</span>
       </div>
       {unreadable.length > 0 && (
         <p className="px-3 pb-2 text-[11px] text-amber-700">Agenda illisible pour : {unreadable.map((s) => s.email).join(', ')}</p>

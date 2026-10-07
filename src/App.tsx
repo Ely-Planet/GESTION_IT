@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import MyRequests from './pages/MyRequests';
 import NotificationsPanel from './components/NotificationsPanel';
+import GlobalTooltip from './components/GlobalTooltip';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import Layout, { type PageKey } from './components/Layout';
@@ -152,6 +153,7 @@ export default function App() {
   return (
     <AuthProvider>
       <Shell />
+      <GlobalTooltip />
     </AuthProvider>
   );
 }
