@@ -1,7 +1,7 @@
 import { pool } from './db.mjs';
 import { sendMailWithAttachments } from './graphMail.mjs';
 import { ensureProjectsSchema } from './projectsSchema.mjs';
-import { computeWorkload } from './workload.mjs';
+import { computeWorkload, TIME_PARTS_SQL } from './workload.mjs';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -2850,7 +2850,8 @@ export function registerProjectRoutes(app) {
       const demandesResult = await pool.query(`SELECT COUNT(*) FROM project_client_requests WHERE status = 'en_attente'`);
 
       // Temps passé sur les 12 derniers mois, par mois, technicien et projet
-      // (projets clôturés compris : le temps a bien été passé).
+      // (projets clôturés compris : le temps a bien été passé), partagé entre
+      // les personnes affectées aux sous-tâches comme la charge (TIME_PARTS_SQL).
       const tempsResult = await pool.query(
         `SELECT to_char(date_trunc('month', e.logged_at AT TIME ZONE 'Europe/Paris'), 'YYYY-MM') AS mois,
                 e.account_id AS "userId",
@@ -2858,7 +2859,7 @@ export function registerProjectRoutes(app) {
                 t.project_id AS "projetId",
                 p.name AS projet,
                 SUM(e.hours)::float AS heures
-         FROM project_time_entries e
+         FROM ${TIME_PARTS_SQL} e
          JOIN project_tasks t ON t.id = e.task_id
          JOIN projects p ON p.id = t.project_id
          LEFT JOIN app_accounts a ON a.id = e.account_id

@@ -205,6 +205,24 @@ function spreadTask(task, today) {
 
 const round1 = (value) => Math.round(value * 10) / 10;
 
+// Temps saisi attribué aux personnes (sous-requête : task_id, account_id,
+// hours, logged_at). Sur une tâche découpée, chaque saisie est partagée à parts
+// égales entre toutes ses sous-tâches (terminées comprises : le temps couvre
+// aussi le travail fait), au profit de la personne affectée à chacune ; à
+// défaut, de la personne à qui la saisie était attribuée.
+export const TIME_PARTS_SQL = `(
+  SELECT e.task_id,
+         COALESCE(s.assignee_account_id, e.account_id) AS account_id,
+         e.hours / COUNT(*) OVER (PARTITION BY e.id) AS hours,
+         e.logged_at
+  FROM project_time_entries e
+  JOIN project_subtasks s ON s.task_id = e.task_id
+  UNION ALL
+  SELECT e.task_id, e.account_id, e.hours, e.logged_at
+  FROM project_time_entries e
+  WHERE NOT EXISTS (SELECT 1 FROM project_subtasks s WHERE s.task_id = e.task_id)
+)`;
+
 export async function computeWorkload({ period, date, getGraphToken }) {
   const kind = PERIODS.includes(period) ? period : 'week';
   const today = parisToday();
@@ -264,7 +282,7 @@ export async function computeWorkload({ period, date, getGraphToken }) {
   const timeRows = (
     await pool.query(
       `SELECT account_id, SUM(hours)::float AS hours
-       FROM project_time_entries
+       FROM ${TIME_PARTS_SQL} parts
        WHERE (logged_at AT TIME ZONE 'Europe/Paris')::date BETWEEN $1::date AND $2::date
        GROUP BY account_id`,
       [fromDay(range.start), fromDay(range.end)]
