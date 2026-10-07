@@ -89,6 +89,7 @@ export type GroupMeeting = {
   organizer_name: string | null;
   attendee_ids: string[];
   online_meeting_url: string | null;
+  attendee_responses: Record<string, string> | null; // adresse -> réponse Outlook
   outlook_error: string | null;
   in_outlook: boolean;
   minute_id: string | null;

@@ -443,6 +443,46 @@ async function listRooms() {
   return roomsCache.value;
 }
 
+// Réponses des invités à l'invitation Outlook (lues dans l'agenda de l'organisateur).
+async function syncMeetingResponses(meeting) {
+  const event = await graph(
+    'GET',
+    `/users/${encodeURIComponent(meeting.organizer_account_id)}/events/${encodeURIComponent(meeting.outlook_event_id)}?$select=attendees`
+  );
+  const responses = {};
+  for (const attendee of event?.attendees || []) {
+    const email = attendee.emailAddress?.address?.toLowerCase();
+    if (email) responses[email] = attendee.status?.response || 'none';
+  }
+  await pool.query(
+    `UPDATE group_meetings SET attendee_responses = $1, responses_synced_at = now() WHERE id = $2`,
+    [JSON.stringify(responses), meeting.id]
+  );
+}
+
+// Réunions à venir (ou terminées depuis moins d'un jour) dont les réponses
+// n'ont pas été lues récemment ; projectId : limiter à un projet.
+async function syncPendingResponses({ projectId = null, olderThan = '2 minutes', limit = 50 } = {}) {
+  const meetings = (
+    await pool.query(
+      `SELECT id, organizer_account_id, outlook_event_id FROM group_meetings
+       WHERE status = 'planned' AND outlook_event_id IS NOT NULL
+         AND end_at > now() - interval '1 day'
+         AND ($1::uuid IS NULL OR project_id = $1)
+         AND (responses_synced_at IS NULL OR responses_synced_at < now() - $2::interval)
+       ORDER BY start_at
+       LIMIT $3`,
+      [projectId, olderThan, limit]
+    )
+  ).rows;
+  const results = await Promise.allSettled(meetings.map(syncMeetingResponses));
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.error('[Projets Groupe] Réponses à l\'invitation illisibles', result.reason?.message || result.reason);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tâches de fond : retards, rappels de compte rendu
 // ---------------------------------------------------------------------------
@@ -556,6 +596,7 @@ const SUBTASK_SELECT = `
 
 const MEETINGS_SELECT = `
   SELECT g.id, g.project_id, g.title, g.agenda, g.location, g.room_email, g.room_name, g.online, g.status,
+         g.attendee_responses, g.responses_synced_at,
          to_char(g.start_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD"T"HH24:MI') AS start_at,
          to_char(g.end_at AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD"T"HH24:MI') AS end_at,
          g.organizer_account_id, o.display_name AS organizer_name, g.attendee_ids,
@@ -697,9 +738,11 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
   setTimeout(runJobs, 25000).unref();
   setInterval(runJobs, 30 * 60 * 1000).unref();
 
-  const runMailSync = () => schemaReady.then(syncMailReplies).catch((error) =>
-    console.error('[Projets Groupe] Relève des mails', error.message || error)
-  );
+  const runMailSync = () =>
+    schemaReady
+      .then(syncMailReplies)
+      .then(() => syncPendingResponses({ olderThan: '4 minutes' }))
+      .catch((error) => console.error('[Projets Groupe] Relève des mails et réponses', error.message || error));
   setTimeout(runMailSync, 40000).unref();
   setInterval(runMailSync, 5 * 60 * 1000).unref();
 
@@ -1566,6 +1609,8 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
   app.get('/api/group-projects/:id/meetings', requireAuth, async (req, res) => {
     try {
       if (!(await requireMember(req, res, req.params.id))) return;
+      // Réponses aux invitations rafraîchies à l'ouverture (au plus toutes les 2 min).
+      await syncPendingResponses({ projectId: req.params.id }).catch(() => {});
       const result = await pool.query(`${MEETINGS_SELECT} WHERE g.project_id = $1 ORDER BY g.start_at DESC`, [req.params.id]);
       res.json(result.rows);
     } catch (error) {
@@ -1786,4 +1831,4 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
 }
 
 // Exposés pour les tests.
-export { notifyOverdueTasks, remindMissingMinutes, syncMailReplies, TASK_STATUS_FR };
+export { notifyOverdueTasks, remindMissingMinutes, syncMailReplies, syncPendingResponses, TASK_STATUS_FR };

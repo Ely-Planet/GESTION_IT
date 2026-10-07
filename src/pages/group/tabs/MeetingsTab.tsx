@@ -21,6 +21,18 @@ type Draft = {
 
 const today = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Paris' }).format(new Date());
 
+// Réponse Outlook d'un invité -> libellé, pastille et couleurs.
+const RESPONSES: Record<string, { label: string; mark: string; tone: string }> = {
+  accepted: { label: 'a accepté', mark: '✓', tone: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  declined: { label: 'a refusé', mark: '✗', tone: 'bg-red-50 text-red-700 border-red-200' },
+  tentativelyAccepted: { label: 'provisoire', mark: '?', tone: 'bg-amber-50 text-amber-700 border-amber-200' },
+  pending: { label: 'pas encore répondu', mark: '…', tone: 'bg-ink-50 text-ink-500 border-ink-200' },
+};
+const responseOf = (responses: Record<string, string> | null, email: string | null | undefined) => {
+  const value = email ? responses?.[email.toLowerCase()] : undefined;
+  return RESPONSES[value || ''] || RESPONSES.pending;
+};
+
 // Réunions du projet : invitation Outlook (Teams) envoyée aux membres choisis,
 // salle réservée, disponibilités sur la semaine, rappel du compte rendu.
 export default function MeetingsTab({ project, onWriteMinutes }: {
@@ -228,9 +240,51 @@ ${result.outlookError}`);
                   <Video className="w-3.5 h-3.5" /> Rejoindre sur Teams
                 </a>
               )}
-              <span>Invités : {meeting.attendee_ids.length ? meeting.attendee_ids.map(nameOf).join(', ') : 'aucun'}</span>
+              {meeting.attendee_ids.length === 0 && <span>Aucun invité</span>}
               {meeting.in_outlook && <span className="text-emerald-700">Invitation Outlook envoyée</span>}
             </div>
+            {meeting.attendee_ids.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                <span className="text-xs text-ink-500">Invités :</span>
+                {meeting.attendee_ids.map((id) => {
+                  const member = project.members.find((m) => m.account_id === id);
+                  const response = meeting.in_outlook ? responseOf(meeting.attendee_responses, member?.email) : null;
+                  return (
+                    <span
+                      key={id}
+                      className={`badge border ${response ? response.tone : 'bg-white text-ink-600 border-ink-200'}`}
+                      title={response ? `${nameOf(id)} ${response.label}` : nameOf(id)}
+                    >
+                      {response && <span className="font-semibold">{response.mark}</span>} {nameOf(id)}
+                    </span>
+                  );
+                })}
+                {meeting.room_email && meeting.in_outlook && (() => {
+                  const room = responseOf(meeting.attendee_responses, meeting.room_email);
+                  return (
+                    <span className={`badge border ${room.tone}`} title={`Salle ${meeting.room_name || meeting.room_email} : ${room.label === 'a accepté' ? 'réservation acceptée' : room.label === 'a refusé' ? 'réservation refusée' : 'réservation en attente'}`}>
+                      <DoorOpen className="w-3 h-3" /> {room.mark}
+                    </span>
+                  );
+                })()}
+              </div>
+            )}
+            {meeting.status === 'planned' && !meeting.past && (() => {
+              // Alerte : invités (et salle) ayant refusé l'invitation.
+              const refused = meeting.attendee_ids
+                .filter((id) => responseOf(meeting.attendee_responses, project.members.find((m) => m.account_id === id)?.email) === RESPONSES.declined)
+                .map(nameOf);
+              if (meeting.room_email && responseOf(meeting.attendee_responses, meeting.room_email) === RESPONSES.declined) {
+                refused.push(`la salle ${meeting.room_name || ''}`.trim());
+              }
+              if (!refused.length) return null;
+              const list = refused.length > 1 ? `${refused.slice(0, -1).join(', ')} et ${refused[refused.length - 1]}` : refused[0];
+              return (
+                <p className="text-xs text-red-700 mt-1">
+                  {list.charAt(0).toUpperCase() + list.slice(1)} {refused.length > 1 ? 'ont refusé' : 'a refusé'} l'invitation.
+                </p>
+              );
+            })()}
             {meeting.outlook_error && (
               <p className="flex items-start gap-1.5 text-xs text-amber-800 bg-amber-50 rounded p-2 mt-2">
                 <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> Invitation Outlook non envoyée : {meeting.outlook_error}

@@ -175,6 +175,11 @@ CREATE INDEX IF NOT EXISTS idx_group_files_message ON group_files(message_id);
 ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS attachments_fetched boolean NOT NULL DEFAULT false;
 ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS attachments_note text;
 
+-- Réponses des invités (et de la salle) lues dans l'invitation Outlook :
+-- { "adresse@mail": "accepted" | "declined" | "tentativelyAccepted" | "notResponded" | "none" }
+ALTER TABLE group_meetings ADD COLUMN IF NOT EXISTS attendee_responses jsonb;
+ALTER TABLE group_meetings ADD COLUMN IF NOT EXISTS responses_synced_at timestamptz;
+
 -- Notifications de la page d'accueil : lien vers un projet Groupe.
 ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS group_project_id uuid REFERENCES group_projects(id) ON DELETE CASCADE;
 `;
