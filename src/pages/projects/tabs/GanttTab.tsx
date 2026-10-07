@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { formatDay } from '../ProjectUI';
 import TaskDetail from './TaskDetail';
-import { STATUS_LABELS, SUBTASK_STATUS_LABELS, type Account, type ProjectDetailData, type Subtask, type Task } from '../types';
+import { useProjectModule } from '../projectModule';
+import { SUBTASK_STATUS_LABELS, type Account, type ProjectDetailData, type Subtask, type Task } from '../types';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LABEL_WIDTH = 300;
@@ -68,6 +69,7 @@ export default function GanttTab({ project, team, onChanged, readOnly = false }:
   onChanged: () => void;
   readOnly?: boolean; // vue client : pas d'ouverture du détail des tâches
 }) {
+  const { statusLabels } = useProjectModule();
   const [zoom, setZoom] = useState<Zoom>('week');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [detailTaskId, setDetailTaskIdState] = useState<string | null>(null);
@@ -253,7 +255,7 @@ export default function GanttTab({ project, team, onChanged, readOnly = false }:
                         {renderBar({
                           span,
                           className: TASK_BAR[task.status],
-                          title: `${task.title} — ${STATUS_LABELS[task.status]}\n${formatDay(fromDay(span.start).toISOString())} → ${formatDay(fromDay(span.end).toISOString())}${span.derived ? '\n(période déduite des sous-tâches)' : ''}`,
+                          title: `${task.title} — ${statusLabels[task.status]}\n${formatDay(fromDay(span.start).toISOString())} → ${formatDay(fromDay(span.end).toISOString())}${span.derived ? '\n(période déduite des sous-tâches)' : ''}`,
                         })}
                       </div>
                     </div>
@@ -295,7 +297,7 @@ export default function GanttTab({ project, team, onChanged, readOnly = false }:
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-xs text-ink-500">
         {(Object.keys(TASK_BAR) as Task['status'][]).map((status) => (
           <span key={status} className="flex items-center gap-1.5">
-            <span className={`w-3 h-2.5 rounded-sm ${TASK_BAR[status]}`} /> {STATUS_LABELS[status]}
+            <span className={`w-3 h-2.5 rounded-sm ${TASK_BAR[status]}`} /> {statusLabels[status]}
           </span>
         ))}
         <span className="flex items-center gap-1.5"><span className="w-0.5 h-3 bg-red-500" /> Aujourd'hui</span>

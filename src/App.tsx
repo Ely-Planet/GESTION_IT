@@ -14,30 +14,36 @@ import OnboardingRequest from './pages/OnboardingRequest';
 import SignedDocuments from './pages/SignedDocuments';
 import Audit from './pages/Audit';
 import Projects from './pages/projects/Projects';
+import GroupProjects from './pages/group/GroupProjects';
+import { canSeeGroupProjects } from './components/Layout';
 import { Building2 } from 'lucide-react';
 
 // Lien reçu par e-mail (?projet=<id>) : mémorisé pour la durée de l'onglet,
 // afin de survivre à l'aller-retour de connexion Microsoft.
 const PENDING_PROJECT_KEY = 'gestionit.pendingProject';
+const PENDING_GROUP_PROJECT_KEY = 'gestionit.pendingGroupProject';
 
 function rememberProjectFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const projectId = params.get('projet');
-  if (!projectId) return;
+  const groupProjectId = params.get('projetGroupe');
+  if (!projectId && !groupProjectId) return;
   try {
-    sessionStorage.setItem(PENDING_PROJECT_KEY, projectId);
+    if (projectId) sessionStorage.setItem(PENDING_PROJECT_KEY, projectId);
+    if (groupProjectId) sessionStorage.setItem(PENDING_GROUP_PROJECT_KEY, groupProjectId);
   } catch {
     // stockage indisponible : le lien ouvrira simplement l'accueil
   }
   params.delete('projet');
+  params.delete('projetGroupe');
   const query = params.toString();
   window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
 }
 
-function takePendingProject(): string | null {
+function takePending(key: string): string | null {
   try {
-    const projectId = sessionStorage.getItem(PENDING_PROJECT_KEY);
-    sessionStorage.removeItem(PENDING_PROJECT_KEY);
+    const projectId = sessionStorage.getItem(key);
+    sessionStorage.removeItem(key);
     return projectId;
   } catch {
     return null;
@@ -50,7 +56,7 @@ function Shell() {
   const { user, loading } = useAuth();
 const [page, setPage] = useState<PageKey>(
   user?.projectsOnly
-    ? 'projects'
+    ? (user.hasProjectAccess ? 'projects' : 'groupprojects')
     : (user?.isIT || user?.isITManager)
       ? 'dashboard'
       : 'onboardingrequest'
@@ -63,17 +69,33 @@ const [page, setPage] = useState<PageKey>(
     setPage('projects');
   }
 
+  const [openGroupRequest, setOpenGroupRequest] = useState<{ projectId: string | null; nonce: number }>({ projectId: null, nonce: 0 });
+
+  function openGroupProject(projectId: string) {
+    setOpenGroupRequest((current) => ({ projectId, nonce: current.nonce + 1 }));
+    setPage('groupprojects');
+  }
+
   useEffect(() => {
     if (!user) return;
-    const projectId = takePendingProject();
+    const projectId = takePending(PENDING_PROJECT_KEY);
     if (projectId) openProject(projectId);
+    const groupProjectId = takePending(PENDING_GROUP_PROJECT_KEY);
+    if (groupProjectId) openGroupProject(groupProjectId);
   }, [user]);
 
 if (
   user?.projectsOnly &&
-  page !== 'projects'
+  page !== 'projects' &&
+  page !== 'groupprojects'
 ) {
-  setPage('projects');
+  setPage(user.hasProjectAccess ? 'projects' : 'groupprojects');
+} else if (
+  page === 'groupprojects' &&
+  user &&
+  !canSeeGroupProjects(user)
+) {
+  setPage(user.isIT || user.isITManager ? 'dashboard' : 'onboardingrequest');
 } else if (
   user &&
   !user.projectsOnly &&
@@ -84,7 +106,8 @@ if (
   !user.isDirector &&
   page !== 'onboardingrequest' &&
   page !== 'myrequests' &&
-  page !== 'projects'
+  page !== 'projects' &&
+  page !== 'groupprojects'
 ) {
   setPage('onboardingrequest');
 }
@@ -107,7 +130,7 @@ if (
 
   return (
     <Layout current={page} onNavigate={setPage}>
-<NotificationsPanel onOpenProject={openProject} />
+<NotificationsPanel onOpenProject={openProject} onOpenGroupProject={openGroupProject} />
 {page === 'dashboard' && <Dashboard />}
 {page === 'movements' && <Movements />}
 {page === 'inventory' && <Inventory />}
@@ -119,6 +142,7 @@ if (
 {page === 'documents' && <SignedDocuments />}
 {page === 'audit' && <Audit />}
 {page === 'projects' && <Projects key={openRequest.nonce} initialProjectId={openRequest.projectId} />}
+{page === 'groupprojects' && <GroupProjects key={openGroupRequest.nonce} initialProjectId={openGroupRequest.projectId} />}
 
     </Layout>
   );

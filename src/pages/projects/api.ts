@@ -1,4 +1,4 @@
-async function request(url: string, options: RequestInit = {}) {
+export async function request(url: string, options: RequestInit = {}) {
   // Pour un FormData, le navigateur doit poser lui-même le Content-Type multipart.
   const isJsonBody = options.body !== undefined && !(options.body instanceof FormData);
   const res = await fetch(url, {

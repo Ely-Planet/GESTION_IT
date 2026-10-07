@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CheckCircle2, Circle, Trash2 } from 'lucide-react';
-import { projectsApi } from '../api';
+import { useProjectModule } from '../projectModule';
 import { SUBTASK_STATUS_LABELS, type Account, type Subtask, type Task } from '../types';
 
 // Sous-tâches d'une tâche : découpage interne de l'équipe, jamais envoyé
@@ -10,6 +10,8 @@ export default function SubtasksSection({ task, team, onChanged }: {
   team: Account[];
   onChanged: () => void;
 }) {
+  const mod = useProjectModule();
+  const projectsApi = mod.api;
   const subtasks = task.subtasks || [];
   const emptyForm = { title: '', startDate: '', endDate: '', assigneeAccountId: '' };
   const [form, setForm] = useState(emptyForm);
@@ -60,7 +62,7 @@ export default function SubtasksSection({ task, team, onChanged }: {
         <h4 className="text-sm font-semibold text-ink-900">
           Sous-tâches {subtasks.length > 0 && `(${done}/${subtasks.length})`}
         </h4>
-        <span className="text-xs text-ink-400">Internes : le client n'est pas prévenu</span>
+        {mod.subtasksNote && <span className="text-xs text-ink-400">{mod.subtasksNote}</span>}
       </div>
 
       <div className="space-y-2 mt-2">

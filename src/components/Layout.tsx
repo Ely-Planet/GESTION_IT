@@ -10,6 +10,7 @@ import {
   LogOut,
   Settings2,
   FolderKanban,
+  Network,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -24,7 +25,15 @@ export type PageKey =
 | 'myrequests'
   | 'documents'
   | 'audit'
-  | 'projects';
+  | 'projects'
+  | 'groupprojects';
+
+const GROUP_ITEM = { key: 'groupprojects' as PageKey, label: 'Projets Groupe', icon: Network };
+
+// Projets Groupe : managers et directeurs (création), et tout membre d'un projet.
+export function canSeeGroupProjects(user: { isManager?: boolean; isDirector?: boolean; isITManager?: boolean; hasGroupProjectAccess?: boolean } | null) {
+  return Boolean(user && (user.isManager || user.isDirector || user.isITManager || user.hasGroupProjectAccess));
+}
 
 const NAV_IT: { key: PageKey; label: string; icon: typeof LayoutDashboard }[] = [
   { key: 'dashboard', label: 'Tableau de bord', icon: LayoutDashboard },
@@ -64,12 +73,20 @@ export default function Layout({
 }) {
 const { profile, user, signOut } = useAuth();
 
-const navItems =
+const baseNav =
   user?.projectsOnly
-    ? NAV_PROJECTS_ONLY
+    ? NAV_PROJECTS_ONLY.filter((item) => item.key !== 'projects' || user.hasProjectAccess)
     : (user?.isIT || user?.isITManager)
       ? NAV_IT
       : NAV_LIMITED;
+
+// "Projets Groupe" juste après les projets IT (ou en tête s'il n'y en a pas).
+const navItems = canSeeGroupProjects(user)
+  ? (() => {
+      const index = baseNav.findIndex((item) => item.key === 'projects');
+      return index === -1 ? [GROUP_ITEM, ...baseNav] : [...baseNav.slice(0, index + 1), GROUP_ITEM, ...baseNav.slice(index + 1)];
+    })()
+  : baseNav;
 
   return (
     <div className="min-h-screen flex bg-ink-50">

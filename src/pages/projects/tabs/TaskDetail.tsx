@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ExternalLink, Trash2, X } from 'lucide-react';
-import { projectsApi } from '../api';
+import { useProjectModule } from '../projectModule';
 import { StatusBadge } from '../ProjectUI';
 import SubtasksSection from './SubtasksSection';
 import AttachmentLink from '../AttachmentLink';
@@ -19,6 +19,8 @@ export default function TaskDetail({ task, team, canDelete, canPlan, onClose, on
   onDeleted: () => void;
   onChanged: () => void;
 }) {
+  const mod = useProjectModule();
+  const projectsApi = mod.api;
   const [deleting, setDeleting] = useState(false);
   const [newFiles, setNewFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -53,7 +55,7 @@ export default function TaskDetail({ task, team, canDelete, canPlan, onClose, on
     const githubNote = task.github_issue_url || task.github_item_id
       ? '\n\nLa carte sera aussi retirée du tableau GitHub (et l’issue fermée).'
       : '';
-    if (!confirm(`Supprimer définitivement la tâche « ${task.title} » ?\nSes commentaires et le temps passé saisi seront supprimés.${githubNote}`)) return;
+    if (!confirm(`Supprimer définitivement la tâche « ${task.title} » ?\nSes commentaires, sous-tâches et pièces jointes seront supprimés.${githubNote}`)) return;
     setDeleting(true);
     try {
       await projectsApi.deleteTask(task.id);
@@ -125,14 +127,16 @@ export default function TaskDetail({ task, team, canDelete, canPlan, onClose, on
           <div className="min-w-0">
             <div className="flex items-center gap-2 mb-1">
               <StatusBadge status={task.status} />
-              <span className="text-xs text-ink-400">
-                {task.origin === 'demande_client' ? 'Demande client' : 'Tâche interne'}
-              </span>
+              {mod.github && (
+                <span className="text-xs text-ink-400">
+                  {task.origin === 'demande_client' ? 'Demande client' : 'Tâche interne'}
+                </span>
+              )}
             </div>
             <h3 className="text-lg font-semibold text-ink-900 break-words">{task.title}</h3>
             <p className="text-xs text-ink-500 mt-1">
               {task.assignee_name ? `Assigné à ${task.assignee_name}` : 'Non assigné'}
-              {' · '}Temps passé {task.spent_hours} h / {task.estimated_hours} h
+              {mod.timeTracking && <>{' · '}Temps passé {task.spent_hours} h / {task.estimated_hours} h</>}
             </p>
             {task.github_issue_url && (
               <a href={task.github_issue_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-elyade-700 hover:underline mt-1">

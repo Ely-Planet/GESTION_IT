@@ -86,6 +86,7 @@ export type AppNotification = {
   project_id: string | null;
   task_id: string | null;
   project_name: string | null;
+  group_project_id?: string | null;
   read_at: string | null;
   created_at: string;
 };

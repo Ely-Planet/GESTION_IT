@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CalendarDays, GripVertical, ListTree, MessageSquare } from 'lucide-react';
-import { projectsApi } from '../api';
+import { useProjectModule } from '../projectModule';
 import { StatusBadge, formatPeriod } from '../ProjectUI';
 import TaskDetail from './TaskDetail';
 import AttachmentLink from '../AttachmentLink';
@@ -10,12 +10,13 @@ import type { Account, ProjectDetailData, Task } from '../types';
 const STATUSES = ['backlog', 'ready', 'in_progress', 'in_review', 'done'] as const;
 type TaskStatus = (typeof STATUSES)[number];
 
-const COLUMN_CONFIG: Record<TaskStatus, { title: string; subtitle: string; style: string }> = {
-  backlog: { title: 'BACKLOG', subtitle: 'Non démarré', style: 'border-emerald-200 bg-emerald-50/50' },
-  ready: { title: 'READY', subtitle: 'Prêt à démarrer', style: 'border-blue-200 bg-blue-50/50' },
-  in_progress: { title: 'IN PROGRESS', subtitle: 'En cours', style: 'border-amber-200 bg-amber-50/50' },
-  in_review: { title: 'IN REVIEW', subtitle: 'En revue', style: 'border-purple-200 bg-purple-50/50' },
-  done: { title: 'DONE', subtitle: 'Terminé', style: 'border-orange-200 bg-orange-50/50' },
+// Titres des colonnes : fournis par le module (anglais pour Projets IT, français pour Projets Groupe).
+const COLUMN_STYLE: Record<TaskStatus, string> = {
+  backlog: 'border-emerald-200 bg-emerald-50/50',
+  ready: 'border-blue-200 bg-blue-50/50',
+  in_progress: 'border-amber-200 bg-amber-50/50',
+  in_review: 'border-purple-200 bg-purple-50/50',
+  done: 'border-orange-200 bg-orange-50/50',
 };
 
 type TaskCardProps = {
@@ -48,6 +49,7 @@ function TaskCard({
   onAssigneeChange,
   onOpen,
 }: TaskCardProps) {
+  const mod = useProjectModule();
   const files = task.files || [];
   const subtasks = task.subtasks || [];
   const subtasksDone = subtasks.filter((subtask) => subtask.status === 'done').length;
@@ -108,11 +110,13 @@ function TaskCard({
       ) : (
         <p className="text-xs text-ink-400 mt-3">{task.assignee_name ? `Assigné à ${task.assignee_name}` : 'Non assigné'}</p>
       )}
-      <div className="flex items-center gap-2 mt-3">
-        <label className="text-xs text-ink-500">Temps passé</label>
-        <input type="number" min="0" step="0.5" defaultValue={task.spent_hours} className="input w-20 text-sm py-1" onBlur={(e) => onSpentHoursChange(task.id, e.target.value)} />
-        <span className="text-xs text-ink-400">/ {task.estimated_hours} h</span>
-      </div>
+      {mod.timeTracking && (
+        <div className="flex items-center gap-2 mt-3">
+          <label className="text-xs text-ink-500">Temps passé</label>
+          <input type="number" min="0" step="0.5" defaultValue={task.spent_hours} className="input w-20 text-sm py-1" onBlur={(e) => onSpentHoursChange(task.id, e.target.value)} />
+          <span className="text-xs text-ink-400">/ {task.estimated_hours} h</span>
+        </div>
+      )}
       {files.length > 0 && (
         <div className="mt-2 space-y-0.5">
           {files.map((file) => (
@@ -121,12 +125,10 @@ function TaskCard({
         </div>
       )}
       <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-ink-100">
-        <select className="input py-1 text-xs w-28" value={task.status} onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}>
-          <option value="backlog">Backlog</option>
-          <option value="ready">Ready</option>
-          <option value="in_progress">In progress</option>
-          <option value="in_review">In review</option>
-          <option value="done">Done</option>
+        <select className="input py-1 text-xs w-32" value={task.status} onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}>
+          {STATUSES.map((status) => (
+            <option key={status} value={status}>{mod.statusLabels[status]}</option>
+          ))}
         </select>
         <button
           type="button"
@@ -136,11 +138,11 @@ function TaskCard({
         >
           <MessageSquare className="w-3.5 h-3.5" /> {task.comment_count || 0}
         </button>
-        {task.github_issue_url ? (
+        {mod.github && (task.github_issue_url ? (
           <a href={task.github_issue_url} target="_blank" rel="noreferrer" className="text-xs text-elyade-700 hover:underline">GitHub</a>
         ) : (
           <span className="text-xs text-ink-400">{task.origin === 'demande_client' ? 'Demande client' : 'Tâche interne'}</span>
-        )}
+        ))}
       </div>
     </article>
   );
@@ -180,6 +182,8 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
   const [form, setForm] = useState(emptyForm);
   const [formFiles, setFormFiles] = useState<File[]>([]);
   const [creating, setCreating] = useState(false);
+  const mod = useProjectModule();
+  const projectsApi = mod.api;
   const canCreateTasks = !readOnly && Boolean(project.estChefDeProjet);
   const [localTasks, setLocalTasks] = useState<Task[]>(project.tasks || []);
   const tasks = localTasks;
@@ -293,8 +297,8 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
               onClick={() => setShowOldDone((value) => !value)}
             >
               {showOldDone
-                ? 'Masquer les Done anciens'
-                : `Afficher les Done anciens (${oldDoneTasks.length})`}
+                ? `Masquer les « ${mod.statusLabels.done} » anciens`
+                : `Afficher les « ${mod.statusLabels.done} » anciens (${oldDoneTasks.length})`}
             </button>
           )}
           {canCreateTasks && (
@@ -317,7 +321,9 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
               <option value="">Assigner à...</option>
               {team.map((a) => <option key={a.id} value={a.id}>{a.display_name}</option>)}
             </select>
-            <input className="input" type="number" min="0" step="0.5" placeholder="Temps estimé (h)" value={form.estimatedHours} onChange={(e) => setForm({ ...form, estimatedHours: e.target.value })} />
+            {mod.timeTracking && (
+              <input className="input" type="number" min="0" step="0.5" placeholder="Temps estimé (h)" value={form.estimatedHours} onChange={(e) => setForm({ ...form, estimatedHours: e.target.value })} />
+            )}
           </div>
           <div className="grid grid-cols-2 gap-2">
             <label className="text-xs text-ink-500">
@@ -340,7 +346,7 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
       <div className="flex gap-4 overflow-x-auto pb-4 items-start">
         {STATUSES.map((status) => {
           const columnTasks = visibleTasks.filter((task) => task.status === status);
-          const columnConfig = COLUMN_CONFIG[status];
+          const columnConfig = { ...mod.columns[status], style: COLUMN_STYLE[status] };
           return (
             <section
               key={status}

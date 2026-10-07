@@ -21,6 +21,7 @@ import { createOnboardingRequest } from './onboardingRequest.mjs';
 import { syncMicrosoftUsers } from './syncMicrosoftUsers.mjs';
 import { syncLuccaOffboardings } from './luccaOffboardingSync.mjs';
 import { registerProjectRoutes } from './projects.mjs';
+import { registerGroupProjectRoutes, hasGroupProjectAccess } from './groupProjects.mjs';
 import { registerForecastRoutes } from './forecast.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -589,7 +590,7 @@ app.use(
 // (voir /auth/callback). Un client de projet sans autre rôle (projectsOnly)
 // n'a accès qu'au module Projets IT, qui filtre lui-même ses projets.
 // Sans ce filtre, les API répondaient même sans connexion.
-const PROJECTS_ONLY_API = /^\/(projects(\/|-|$)|notifications(\/|$))/;
+const PROJECTS_ONLY_API = /^\/(projects(\/|-|$)|group-projects(\/|$)|notifications(\/|$))/;
 
 app.use('/api', (req, res, next) => {
   if (req.path === '/me') return next();
@@ -1008,16 +1009,25 @@ try {
   );
 }
 
+let hasGroupAccess = false;
+try {
+  hasGroupAccess = await hasGroupProjectAccess(user.id);
+} catch (groupAccessError) {
+  console.error('[AUTH] Vérification accès aux projets Groupe impossible', groupAccessError);
+}
+
 const hasApplicationAccess =
   isIT ||
   isRH ||
   isManager ||
   isDirector ||
   isITManager ||
-  hasProjectAccess;
+  hasProjectAccess ||
+  hasGroupAccess;
 
+// "Projets seulement" : accès limité aux projets (IT et/ou Groupe).
 const projectsOnly =
-  hasProjectAccess &&
+  (hasProjectAccess || hasGroupAccess) &&
   !isIT &&
   !isRH &&
   !isManager &&
@@ -1052,6 +1062,7 @@ req.session.user = {
   isDirector,
   isITManager,
   hasProjectAccess,
+  hasGroupProjectAccess: hasGroupAccess,
   projectsOnly
 };
 
@@ -1105,10 +1116,15 @@ app.get('/api/me', (req, res) => {
     });
   }
 
-  res.json({
-    authenticated: true,
-    user: req.session.user
-  });
+  hasGroupProjectAccess(req.session.user.id)
+    .catch(() => Boolean(req.session.user.hasGroupProjectAccess))
+    .then((hasGroupAccess) => {
+      req.session.user.hasGroupProjectAccess = hasGroupAccess;
+      res.json({
+        authenticated: true,
+        user: req.session.user
+      });
+    });
 
 });
 
@@ -4596,7 +4612,8 @@ app.post('/api/inventory/preferences', async (req, res) => {
 
 
 
-registerProjectRoutes(app);
+const projectsSchemaReady = registerProjectRoutes(app);
+registerGroupProjectRoutes(app, { afterSchema: projectsSchemaReady });
 registerForecastRoutes(app);
 
 app.use((req, res) => {

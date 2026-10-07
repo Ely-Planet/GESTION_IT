@@ -1,4 +1,5 @@
 import { STATUS_LABELS, STATUS_BADGE_CLASSES } from './types';
+import { useProjectModule } from './projectModule';
 
 export function ProgressBar({ value }: { value: number }) {
   return (
@@ -26,9 +27,10 @@ export function formatPeriod(start: string | null | undefined, end: string | nul
 }
 
 export function StatusBadge({ status }: { status: string }) {
+  const { statusLabels } = useProjectModule();
   return (
     <span className={`badge ${STATUS_BADGE_CLASSES[status] || 'bg-ink-100 text-ink-700'}`}>
-      {STATUS_LABELS[status] || status}
+      {(statusLabels as Record<string, string>)[status] || STATUS_LABELS[status] || status}
     </span>
   );
 }

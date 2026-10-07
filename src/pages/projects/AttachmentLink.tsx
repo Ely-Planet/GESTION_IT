@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Download, Paperclip, X } from 'lucide-react';
+import { useProjectModule } from './projectModule';
 import type { ProjectFile } from './types';
 
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
@@ -30,8 +31,9 @@ export default function AttachmentLink({ file, className = '' }: { file: Project
 }
 
 function AttachmentPreview({ file, onClose }: { file: ProjectFile; onClose: () => void }) {
+  const { filesBase } = useProjectModule();
   const ext = extensionOf(file.filename);
-  const downloadUrl = `/api/projects/files/${file.id}/download`;
+  const downloadUrl = `${filesBase}/${file.id}/download`;
   const inlineUrl = `${downloadUrl}?inline=1`;
   const isImage = IMAGE_EXT.includes(ext);
   const isFramed = FRAME_EXT.includes(ext);

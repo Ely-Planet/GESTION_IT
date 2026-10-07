@@ -1204,9 +1204,10 @@ export function registerProjectRoutes(app) {
     try {
       const result = await pool.query(
         `SELECT n.id, n.type, n.title, n.body, n.project_id, n.task_id, n.read_at, n.created_at,
-                p.name AS project_name
+                n.group_project_id, COALESCE(p.name, gp.name) AS project_name
          FROM user_notifications n
          LEFT JOIN projects p ON p.id = n.project_id
+         LEFT JOIN group_projects gp ON gp.id = n.group_project_id
          WHERE n.account_id = $1
            AND (n.read_at IS NULL OR n.created_at > now() - interval '7 days')
          ORDER BY n.read_at IS NULL DESC, n.created_at DESC
@@ -2962,4 +2963,7 @@ export function registerProjectRoutes(app) {
       res.status(500).json({ error: error.message });
     }
   });
+
+  // Le module Projets Groupe attend ce schéma (table user_notifications).
+  return schemaReady;
 }

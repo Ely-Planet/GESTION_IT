@@ -5,7 +5,10 @@ import type { AppNotification } from '../pages/projects/types';
 
 // Notifications de l'utilisateur (tâche affectée ou en retard, nouvelle demande client),
 // affichées en haut de sa page d'accueil.
-export default function NotificationsPanel({ onOpenProject }: { onOpenProject: (projectId: string) => void }) {
+export default function NotificationsPanel({ onOpenProject, onOpenGroupProject }: {
+  onOpenProject: (projectId: string) => void;
+  onOpenGroupProject: (projectId: string) => void;
+}) {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
   async function load() {
@@ -28,7 +31,8 @@ export default function NotificationsPanel({ onOpenProject }: { onOpenProject: (
   async function open(notification: AppNotification) {
     await projectsApi.markNotificationRead(notification.id).catch(() => {});
     setNotifications((current) => current.filter((n) => n.id !== notification.id));
-    if (notification.project_id) onOpenProject(notification.project_id);
+    if (notification.group_project_id) onOpenGroupProject(notification.group_project_id);
+    else if (notification.project_id) onOpenProject(notification.project_id);
   }
 
   async function markAllRead() {

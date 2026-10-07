@@ -12,6 +12,7 @@ type MicrosoftUser = {
   isManager: boolean;
   isDirector: boolean;
   hasProjectAccess: boolean;
+  hasGroupProjectAccess?: boolean;
   projectsOnly: boolean;
 };
 
