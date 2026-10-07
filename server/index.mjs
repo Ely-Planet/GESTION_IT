@@ -599,7 +599,11 @@ app.use('/api', (req, res, next) => {
     return res.status(401).json({ error: 'Non authentifié' });
   }
   if (user.projectsOnly && !PROJECTS_ONLY_API.test(req.path)) {
-    return res.status(403).json({ error: 'Accès réservé au module Projets IT' });
+    return res.status(403).json({
+      error:
+        "Votre session ne donne accès qu'aux projets. Si vous venez d'être ajouté à un groupe " +
+        '(Managers, Directeurs, RH…), déconnectez-vous puis reconnectez-vous pour obtenir vos nouveaux droits.'
+    });
   }
   next();
 });
@@ -890,9 +894,12 @@ app.get('/api/test-lucca-mails', async (req, res) => {
 
 app.get('/auth/login', async (req, res) => {
   try {
+    // ?choisir=1 : Microsoft propose de choisir le compte (personnes ayant
+    // plusieurs comptes, ou connectées avec le mauvais).
     const authUrl = await msalClient.getAuthCodeUrl({
       scopes,
-      redirectUri: process.env.MICROSOFT_REDIRECT_URI
+      redirectUri: process.env.MICROSOFT_REDIRECT_URI,
+      ...(req.query.choisir ? { prompt: 'select_account' } : {})
     });
 
     res.redirect(authUrl);
@@ -1043,11 +1050,19 @@ if (!hasApplicationAccess) {
     isDirector
   });
 
+  const usedAccount = String(user.mail || user.userPrincipalName || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return res
     .status(403)
-    .send(
-      'Accès refusé : votre compte Microsoft ne fait partie d’aucun groupe autorisé.'
-    );
+    .send(`<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Accès refusé</title></head>
+<body style="font-family:Inter,'Segoe UI',Arial,sans-serif;background:#f8fafc;color:#1f2937;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px">
+<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:28px;max-width:460px">
+<h1 style="font-size:18px;margin:0 0 12px">Accès refusé</h1>
+<p style="font-size:14px;line-height:1.6;margin:0 0 8px">Vous êtes connecté avec le compte <strong>${usedAccount}</strong>, qui ne fait partie d’aucun groupe autorisé à utiliser l’application.</p>
+<p style="font-size:14px;line-height:1.6;margin:0 0 20px">Si vous avez un autre compte Microsoft Elyade, reconnectez-vous avec celui-ci.</p>
+<a href="/auth/login?choisir=1" style="display:inline-block;padding:10px 18px;background:#ca0088;color:#fff;border-radius:8px;font-weight:600;font-size:14px;text-decoration:none">Se connecter avec un autre compte</a>
+</div></body></html>`);
 }
 
 req.session.user = {

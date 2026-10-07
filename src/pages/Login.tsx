@@ -48,12 +48,24 @@ export default function Login() {
             {busy ? 'Connexion Microsoft en cours…' : 'Se connecter avec Microsoft'}
           </button>
 
+          <button
+            type="button"
+            onClick={() => {
+              setBusy(true);
+              signInWithMicrosoft(true);
+            }}
+            disabled={busy}
+            className="btn-ghost w-full justify-center text-sm mt-2"
+          >
+            Se connecter avec un autre compte Microsoft
+          </button>
+
           <div className="mt-6 border-t border-ink-100 pt-5 flex items-start gap-3 text-xs text-ink-500">
             <ShieldCheck className="w-4 h-4 text-elyade-600 shrink-0 mt-0.5" />
             <p>
-              L'accès est réservé aux membres du groupe Microsoft
-              <strong> 🏢 Service Informatique</strong>. Toutes les actions sont
-              horodatées dans le journal d'audit.
+              L'accès est réservé aux membres des groupes Microsoft autorisés
+              (Service Informatique, RH, Managers, Directeurs) et aux membres des
+              projets. Toutes les actions sont horodatées dans le journal d'audit.
             </p>
           </div>
         </div>

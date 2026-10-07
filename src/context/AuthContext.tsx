@@ -29,7 +29,7 @@ type AuthContextValue = {
   user: MicrosoftUser | null;
   profile: Profile | null;
   loading: boolean;
-  signInWithMicrosoft: () => void;
+  signInWithMicrosoft: (chooseAccount?: boolean) => void;
   signOut: () => Promise<void>;
 };
 
@@ -75,8 +75,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void loadMe();
   }, []);
 
-  function signInWithMicrosoft() {
-    window.location.href = '/auth/login';
+  function signInWithMicrosoft(chooseAccount = false) {
+    window.location.href = chooseAccount ? '/auth/login?choisir=1' : '/auth/login';
   }
 
   async function signOut() {
