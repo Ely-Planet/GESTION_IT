@@ -290,6 +290,47 @@ async function resolvePendingSentMessages() {
   }
 }
 
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+// Nom de fichier sûr pour le disque (le nom d'origine est conservé en base).
+const diskName = (name) => `${Date.now()}-${Math.round(Math.random() * 1e9)}-${String(name || 'piece-jointe').replace(/[^\w.\-]+/g, '_').slice(-120)}`;
+
+// Télécharge les pièces jointes d'un mail Outlook et les range dans le projet.
+// Les images intégrées au corps (logos de signature) sont ignorées ; les liens
+// OneDrive, mails joints et fichiers trop volumineux sont signalés.
+async function fetchMailAttachments({ messageRowId, projectId, mailboxId, graphMessageId }) {
+  const page = await graph(
+    'GET',
+    `/users/${encodeURIComponent(mailboxId)}/messages/${encodeURIComponent(graphMessageId)}/attachments`
+  );
+  const skipped = [];
+  let saved = 0;
+  for (const attachment of page?.value || []) {
+    const type = attachment['@odata.type'] || '';
+    if (attachment.isInline) continue;
+    if (!type.endsWith('fileAttachment')) {
+      skipped.push(`${attachment.name || 'élément'} (${type.endsWith('referenceAttachment') ? 'lien OneDrive' : 'élément Outlook joint'})`);
+      continue;
+    }
+    if (!attachment.contentBytes || (attachment.size || 0) > MAX_ATTACHMENT_BYTES) {
+      skipped.push(`${attachment.name} (trop volumineux)`);
+      continue;
+    }
+    const storagePath = diskName(attachment.name);
+    await fsp.writeFile(path.join(FILES_DIR, storagePath), Buffer.from(attachment.contentBytes, 'base64'));
+    await pool.query(
+      `INSERT INTO group_files (project_id, message_id, filename, storage_path) VALUES ($1, $2, $3, $4)`,
+      [projectId, messageRowId, attachment.name || 'piece-jointe', storagePath]
+    );
+    saved += 1;
+  }
+  await pool.query(
+    `UPDATE group_messages SET attachments_fetched = true, attachments_note = $1 WHERE id = $2`,
+    [skipped.length ? `Non récupéré : ${skipped.join(', ')} — à ouvrir dans Outlook` : null, messageRowId]
+  );
+  return saved;
+}
+
 async function syncMailReplies() {
   await resolvePendingSentMessages();
   const conversations = (
@@ -305,7 +346,7 @@ async function syncMailReplies() {
     try {
       const params = new URLSearchParams({
         $filter: `conversationId eq '${conversation.conversation_id.replace(/'/g, "''")}'`,
-        $select: 'internetMessageId,from,toRecipients,ccRecipients,subject,uniqueBody,receivedDateTime,sentDateTime,hasAttachments,isDraft',
+        $select: 'id,internetMessageId,from,toRecipients,ccRecipients,subject,uniqueBody,receivedDateTime,sentDateTime,hasAttachments,isDraft',
         $top: '100'
       });
       const page = await graph('GET', `/users/${encodeURIComponent(conversation.mailbox_account_id)}/messages?${params}`, null, {
@@ -344,6 +385,26 @@ async function syncMailReplies() {
             body: `Projet ${await projectName(conversation.project_id)} — Communications`,
             projectId: conversation.project_id
           });
+        }
+        if (message.hasAttachments) {
+          const row = (
+            await pool.query(
+              `SELECT id, project_id FROM group_messages WHERE internet_message_id = $1 AND NOT attachments_fetched`,
+              [message.internetMessageId]
+            )
+          ).rows[0];
+          if (row) {
+            try {
+              await fetchMailAttachments({
+                messageRowId: row.id,
+                projectId: row.project_id,
+                mailboxId: conversation.mailbox_account_id,
+                graphMessageId: message.id
+              });
+            } catch (attachmentError) {
+              console.error('[Projets Groupe] Pièces jointes du mail impossibles à récupérer', attachmentError.message || attachmentError);
+            }
+          }
         }
       }
     } catch (error) {
@@ -1403,7 +1464,9 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       if (!(await requireMember(req, res, req.params.id))) return;
       const result = await pool.query(
         `SELECT g.id, g.direction, g.conversation_id, g.from_name, g.from_email, g.recipients, g.subject, g.body,
-                g.has_attachments, g.sent_at, a.display_name AS mailbox_name
+                g.has_attachments, g.attachments_fetched, g.attachments_note, g.sent_at, a.display_name AS mailbox_name,
+                (SELECT COALESCE(json_agg(json_build_object('id', f.id, 'filename', f.filename) ORDER BY f.created_at), '[]'::json)
+                 FROM group_files f WHERE f.message_id = g.id) AS files
          FROM group_messages g LEFT JOIN app_accounts a ON a.id = g.mailbox_account_id
          WHERE g.project_id = $1
          ORDER BY g.sent_at`,

@@ -167,6 +167,14 @@ ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS tracking_ref text;
 -- rappel ne s'arrête qu'une fois le compte rendu validé.
 ALTER TABLE group_minutes ADD COLUMN IF NOT EXISTS is_draft boolean NOT NULL DEFAULT false;
 
+-- Pièces jointes des mails (récupérées depuis Outlook à la relève).
+ALTER TABLE group_files ADD COLUMN IF NOT EXISTS message_id uuid REFERENCES group_messages(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_group_files_message ON group_files(message_id);
+-- true une fois les pièces jointes du mail récupérées ; attachments_note :
+-- pièces non récupérables (lien OneDrive, mail joint, trop volumineuse).
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS attachments_fetched boolean NOT NULL DEFAULT false;
+ALTER TABLE group_messages ADD COLUMN IF NOT EXISTS attachments_note text;
+
 -- Notifications de la page d'accueil : lien vers un projet Groupe.
 ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS group_project_id uuid REFERENCES group_projects(id) ON DELETE CASCADE;
 `;

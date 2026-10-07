@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Mail, Paperclip, RefreshCw, Reply, Send } from 'lucide-react';
 import { groupApi } from '../groupApi';
+import AttachmentLink from '../../projects/AttachmentLink';
 import { useAuth } from '../../../context/AuthContext';
 import type { GroupMessage, GroupProjectDetail } from '../types';
 
@@ -184,9 +185,21 @@ export default function CommunicationsTab({ project }: { project: GroupProjectDe
                       <span>{formatSentAt(message.sent_at)}</span>
                     </div>
                     <p className="text-sm text-ink-800 whitespace-pre-wrap break-words">{message.body || ''}</p>
-                    {message.has_attachments && (
+                    {message.files.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                        {message.files.map((file) => (
+                          <AttachmentLink key={file.id} file={file} className="text-xs" />
+                        ))}
+                      </div>
+                    )}
+                    {message.attachments_note && (
                       <p className="text-xs text-ink-400 mt-1 flex items-center gap-1">
-                        <Paperclip className="w-3 h-3" /> Pièce(s) jointe(s) dans le mail Outlook
+                        <Paperclip className="w-3 h-3" /> {message.attachments_note}
+                      </p>
+                    )}
+                    {message.has_attachments && !message.attachments_fetched && (
+                      <p className="text-xs text-ink-400 mt-1 flex items-center gap-1">
+                        <Paperclip className="w-3 h-3" /> Pièce(s) jointe(s) en cours de récupération depuis Outlook…
                       </p>
                     )}
                   </li>

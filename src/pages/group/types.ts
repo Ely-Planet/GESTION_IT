@@ -66,6 +66,9 @@ export type GroupMessage = {
   subject: string | null;
   body: string | null;
   has_attachments: boolean;
+  attachments_fetched: boolean;
+  attachments_note: string | null;
+  files: { id: string; filename: string }[];
   sent_at: string;
   mailbox_name: string | null;
 };
