@@ -133,7 +133,9 @@ export default function WorkloadPanel() {
                     {' '}= <strong className="text-ink-700">{t.capaciteH} h</strong>
                     {' · '}Charge planifiée {t.chargePlanifieeH} h
                     {t.chargeNonPlanifieeH > 0 && <> + {t.chargeNonPlanifieeH} h sans dates</>}
-                    {' · '}Temps saisi sur la période {t.tempsSaisiH} h
+                    {' · '}<span title="Même calcul que le tableau « Temps passé par mois » (en vue Mois, c'est la colonne du mois)">
+                      Temps déjà saisi sur la période {t.tempsSaisiH} h
+                    </span>
                   </p>
 
                   {t.chargeParProjet.length > 0 ? (
@@ -172,6 +174,7 @@ export default function WorkloadPanel() {
           </div>
 
           <p className="text-xs text-ink-400 mt-4">
+            La charge porte sur le travail qui reste (à venir), le temps saisi sur le travail fait : ils ne s'additionnent pas.
             Charge = reste à faire des tâches actives (estimé − temps passé), réparti sur les jours ouvrés entre aujourd'hui et la date
             de fin de chaque tâche ; une tâche en retard compte entièrement aujourd'hui, une tâche sans dates compte dans la période en
             cours. Une tâche découpée en sous-tâches est partagée à parts égales entre ses sous-tâches non terminées, au profit de la

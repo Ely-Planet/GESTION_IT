@@ -223,6 +223,31 @@ export const TIME_PARTS_SQL = `(
   WHERE NOT EXISTS (SELECT 1 FROM project_subtasks s WHERE s.task_id = e.task_id)
 )`;
 
+// Reste à faire total des tâches actives, avec la part qui n'est affectée à
+// personne (ni la tâche ni ses sous-tâches ouvertes) : mêmes règles que la charge.
+export async function computeTeamRemaining() {
+  const tasks = (
+    await pool.query(
+      `SELECT t.id, t.assignee_account_id, t.estimated_hours, t.spent_hours
+       FROM project_tasks t JOIN projects p ON p.id = t.project_id
+       WHERE t.status <> 'done' AND p.status <> 'archive' AND p.project_state IS DISTINCT FROM 'closed'`
+    )
+  ).rows;
+  const subtasks = tasks.length
+    ? (await pool.query(
+        `SELECT task_id, status, assignee_account_id FROM project_subtasks WHERE task_id = ANY($1::uuid[])`,
+        [tasks.map((task) => task.id)]
+      )).rows
+    : [];
+  let total = 0;
+  let assigned = 0;
+  for (const task of tasks) {
+    total += Math.max(Number(task.estimated_hours) - Number(task.spent_hours), 0);
+    for (const item of splitTaskWork(task, subtasks.filter((s) => s.task_id === task.id))) assigned += item.remaining;
+  }
+  return { resteAFaireH: round1(total), nonAffecteH: round1(total - assigned) };
+}
+
 export async function computeWorkload({ period, date, getGraphToken }) {
   const kind = PERIODS.includes(period) ? period : 'week';
   const today = parisToday();
@@ -281,10 +306,13 @@ export async function computeWorkload({ period, date, getGraphToken }) {
   // Temps réellement saisi sur la période (journal daté).
   const timeRows = (
     await pool.query(
-      `SELECT account_id, SUM(hours)::float AS hours
+      `SELECT parts.account_id, SUM(parts.hours)::float AS hours
        FROM ${TIME_PARTS_SQL} parts
-       WHERE (logged_at AT TIME ZONE 'Europe/Paris')::date BETWEEN $1::date AND $2::date
-       GROUP BY account_id`,
+       JOIN project_tasks t ON t.id = parts.task_id
+       JOIN projects p ON p.id = t.project_id
+       WHERE (parts.logged_at AT TIME ZONE 'Europe/Paris')::date BETWEEN $1::date AND $2::date
+         AND p.status <> 'archive'
+       GROUP BY parts.account_id`,
       [fromDay(range.start), fromDay(range.end)]
     )
   ).rows;

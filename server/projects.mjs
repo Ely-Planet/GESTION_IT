@@ -1,7 +1,7 @@
 import { pool } from './db.mjs';
 import { sendMailWithAttachments } from './graphMail.mjs';
 import { ensureProjectsSchema } from './projectsSchema.mjs';
-import { computeWorkload, TIME_PARTS_SQL } from './workload.mjs';
+import { computeTeamRemaining, computeWorkload, TIME_PARTS_SQL } from './workload.mjs';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -2863,7 +2863,7 @@ export function registerProjectRoutes(app) {
          JOIN project_tasks t ON t.id = e.task_id
          JOIN projects p ON p.id = t.project_id
          LEFT JOIN app_accounts a ON a.id = e.account_id
-         WHERE e.logged_at >= date_trunc('month', now() AT TIME ZONE 'Europe/Paris') - interval '11 months'
+         WHERE (e.logged_at AT TIME ZONE 'Europe/Paris') >= date_trunc('month', now() AT TIME ZONE 'Europe/Paris') - interval '11 months'
            AND p.status <> 'archive'
          GROUP BY 1, 2, 3, 4, 5
          HAVING SUM(e.hours) <> 0
@@ -2876,6 +2876,7 @@ export function registerProjectRoutes(app) {
         chargeParProjet,
         chargeParTechnicien,
         chargeGlobaleEquipeH: chargeParTechnicien.reduce((s, u) => s + u.chargeEstimeeH, 0),
+        ...(await computeTeamRemaining()),
         demandesEnAttente: Number(demandesResult.rows[0].count),
         tempsParMois: tempsResult.rows
       });

@@ -134,6 +134,7 @@ export default function TimeByMonth({ rows }: { rows: TimeByMonthRow[] }) {
       <p className="text-xs text-ink-400 mt-3">
         Temps rattaché au mois de sa saisie dans « Temps passé ». Le temps saisi avant cette évolution est rattaché au mois de la dernière modification de la tâche.
         Sur une tâche découpée en sous-tâches, le temps est partagé à parts égales entre ses sous-tâches, au profit de la personne affectée à chacune.
+        La colonne d'un mois correspond au « Temps déjà saisi » de la charge par technicien en vue Mois ; la charge, elle, mesure le travail restant.
       </p>
     </div>
   );

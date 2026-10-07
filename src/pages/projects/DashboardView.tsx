@@ -29,8 +29,12 @@ export default function DashboardView() {
           <p className="text-2xl font-semibold text-ink-900">{data.demandesEnAttente}</p>
         </div>
         <div className="card p-4">
-          <p className="text-sm text-ink-500">Charge globale équipe</p>
-          <p className="text-2xl font-semibold text-ink-900">{data.chargeGlobaleEquipeH}h</p>
+          <p className="text-sm text-ink-500">Reste à faire équipe</p>
+          <p className="text-2xl font-semibold text-ink-900">{data.resteAFaireH}h</p>
+          <p className="text-xs text-ink-400 mt-0.5">
+            Estimé − temps passé des tâches actives
+            {data.nonAffecteH > 0 && <> · dont {data.nonAffecteH}h non affectées</>}
+          </p>
         </div>
         <div className="card p-4">
           <p className="text-sm text-ink-500 mb-1">Répartition par statut</p>
@@ -47,7 +51,7 @@ export default function DashboardView() {
 
       <div className="card p-5">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
-          <h2 className="font-semibold text-ink-900">Temps par projet : estimé et réel</h2>
+          <h2 className="font-semibold text-ink-900">Temps par projet : estimé et réel (depuis le début du projet)</h2>
           <div className="flex items-center gap-4 text-xs text-ink-500">
             <span className="flex items-center gap-1"><span className="w-3 h-2 rounded-full bg-elyade-200" /> Estimé</span>
             <span className="flex items-center gap-1"><span className="w-3 h-2 rounded-full bg-elyade-600" /> Réel</span>

@@ -168,6 +168,8 @@ export type DashboardData = {
     enSurcharge: boolean;
   }[];
   chargeGlobaleEquipeH: number;
+  resteAFaireH: number; // estimé - passé des tâches actives (même calcul que la charge)
+  nonAffecteH: number;
   demandesEnAttente: number;
   tempsParMois: TimeByMonthRow[];
 };
