@@ -38,7 +38,11 @@ export type GroupProjectDetail = {
   members: GroupMember[];
   tasks: Task[];
   tauxCompletude: number;
+  columns: KanbanColumn[];
 };
+
+// Colonne du Kanban d'un projet Groupe ; « done » (colonne de fin) compte pour l'avancement.
+export type KanbanColumn = { key: string; title: string; subtitle?: string | null };
 
 export type DirectoryAccount = { id: string; display_name: string; email: string };
 

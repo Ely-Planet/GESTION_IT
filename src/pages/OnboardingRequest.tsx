@@ -60,6 +60,9 @@ const [contractType, setContractType] = useState('CDI');
 const [contractEndDate, setContractEndDate] = useState('');
 const fileInputRef = useRef<HTMLInputElement>(null);
 const [companyCar, setCompanyCar] = useState(false);
+const [partTime, setPartTime] = useState(false);
+const [partTimeHours, setPartTimeHours] = useState('');
+const [partTimeSchedule, setPartTimeSchedule] = useState('');
 
 const stageDurationDays =
   effectiveDate && contractEndDate
@@ -154,6 +157,18 @@ const filteredReferralEmployees = employees
       return;
     }
 
+    if (partTime) {
+      const hours = Number(partTimeHours);
+      if (!partTimeHours || !Number.isFinite(hours) || hours <= 0 || hours > 35) {
+        setError('Temps partiel : indiquez un nombre d’heures par semaine entre 1 et 35.');
+        return;
+      }
+      if (!partTimeSchedule.trim()) {
+        setError('Temps partiel : indiquez la répartition horaire sur la semaine.');
+        return;
+      }
+    }
+
     setBusy(true);
 
     try {
@@ -210,6 +225,10 @@ formData.append(
   String(companyCar)
 );
 
+formData.append('part_time', String(partTime));
+formData.append('part_time_hours', partTime ? partTimeHours : '');
+formData.append('part_time_schedule', partTime ? partTimeSchedule : '');
+
 formData.append(
   'license_type_ids',
   JSON.stringify(selectedLicenses)
@@ -263,6 +282,9 @@ setEmployeeLevel('');
 setReferralEmployee('');
 setReferralSearch('');
 setIsReferral(false);
+setPartTime(false);
+setPartTimeHours('');
+setPartTimeSchedule('');
 setCvFile(null);
 if (fileInputRef.current) {
   fileInputRef.current.value = '';
@@ -581,6 +603,72 @@ type="file"
     }
   />
 </div>
+
+<div>
+  <label className="label">
+    Temps de travail
+  </label>
+
+  <label className="flex items-center gap-3 mt-2 text-sm">
+    <input
+      type="checkbox"
+      checked={partTime}
+      onChange={(e) => {
+        setPartTime(e.target.checked);
+
+        if (!e.target.checked) {
+          setPartTimeHours('');
+          setPartTimeSchedule('');
+        }
+      }}
+    />
+
+    <span>
+      Temps partiel
+    </span>
+  </label>
+</div>
+
+{partTime && (
+  <div>
+    <label className="label">
+      Nombre d’heures par semaine
+    </label>
+
+    <input
+      type="number"
+      className="input"
+      min={1}
+      max={35}
+      step={0.5}
+      required
+      placeholder="35 maximum"
+      value={partTimeHours}
+      onChange={(e) =>
+        setPartTimeHours(e.target.value)
+      }
+    />
+  </div>
+)}
+
+{partTime && (
+  <div className="md:col-span-2">
+    <label className="label">
+      Répartition horaire sur la semaine
+    </label>
+
+    <textarea
+      rows={3}
+      className="input"
+      required
+      placeholder="Exemple : lundi au jeudi, 9h-12h30 / 13h30-17h ; vendredi non travaillé"
+      value={partTimeSchedule}
+      onChange={(e) =>
+        setPartTimeSchedule(e.target.value)
+      }
+    />
+  </div>
+)}
 
 <div>
   <label className="label">

@@ -141,6 +141,18 @@ pdf.font('Helvetica')
   }`
 );
 
+pdf.font('Helvetica')
+.text(
+  `Temps de travail : ${
+    data.partTime ? `Temps partiel, ${data.partTimeHours} h par semaine` : 'Temps plein'
+  }`
+);
+
+if (data.partTime && data.partTimeSchedule) {
+  pdf.font('Helvetica')
+  .text(`Répartition horaire : ${data.partTimeSchedule}`);
+}
+
 
 pdf.font('Helvetica')
 .text(

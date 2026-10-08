@@ -182,6 +182,11 @@ ALTER TABLE group_meetings ADD COLUMN IF NOT EXISTS responses_synced_at timestam
 
 -- Notifications de la page d'accueil : lien vers un projet Groupe.
 ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS group_project_id uuid REFERENCES group_projects(id) ON DELETE CASCADE;
+
+-- Colonnes du Kanban personnalisables par projet ([{key, title, subtitle}] ; NULL = colonnes standard).
+-- Le statut d'une tâche est la clé de sa colonne : plus de liste figée.
+ALTER TABLE group_projects ADD COLUMN IF NOT EXISTS kanban_columns jsonb;
+ALTER TABLE group_tasks DROP CONSTRAINT IF EXISTS group_tasks_status_check;
 `;
 
 export async function ensureGroupProjectsSchema() {

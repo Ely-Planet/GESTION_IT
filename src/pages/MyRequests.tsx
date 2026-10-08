@@ -289,6 +289,20 @@ title="Marquer comme non embauché"
         </p>
 
         <p>
+          <strong>Temps de travail :</strong>{' '}
+          {selectedRequest.part_time
+            ? `Temps partiel, ${Number(selectedRequest.part_time_hours)} h par semaine`
+            : 'Temps plein'}
+        </p>
+
+{selectedRequest.part_time && selectedRequest.part_time_schedule && (
+  <p className="whitespace-pre-line">
+    <strong>Répartition horaire :</strong>{' '}
+    {selectedRequest.part_time_schedule}
+  </p>
+)}
+
+        <p>
           <strong>Statut :</strong>{' '}
           {selectedRequest.status}
         </p>

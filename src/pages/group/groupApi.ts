@@ -1,5 +1,6 @@
 import { request } from '../projects/api';
 import type { ProjectModuleConfig } from '../projects/projectModule';
+import type { KanbanColumn } from './types';
 
 const BASE = '/api/group-projects';
 const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) });
@@ -17,6 +18,7 @@ export const groupApi = {
   createProject: (body: unknown) => request(BASE, json('POST', body)),
   updateProject: (id: string, body: unknown) => request(`${BASE}/${id}`, json('PUT', body)),
   deleteProject: (id: string) => request(`${BASE}/${id}`, { method: 'DELETE' }),
+  setColumns: (id: string, columns: { key?: string; title: string }[]) => request(`${BASE}/${id}/columns`, json('PUT', { columns })),
 
   addMember: (id: string, accountId: string, role = 'membre') => request(`${BASE}/${id}/members`, json('POST', { accountId, role })),
   setMemberRole: (id: string, accountId: string, role: string) => request(`${BASE}/${id}/members/${accountId}`, json('PUT', { role })),
@@ -71,3 +73,17 @@ export const GROUP_MODULE: ProjectModuleConfig = {
   timeTracking: false,
   subtasksNote: '',
 };
+
+// Module d'un projet : ses propres colonnes (noms, ordre) à la place des 5 standard.
+export function groupModuleFor(columns: KanbanColumn[] | undefined): ProjectModuleConfig {
+  if (!columns?.length) return GROUP_MODULE;
+  return {
+    ...GROUP_MODULE,
+    columnOrder: columns.map((c) => c.key),
+    statusLabels: { ...GROUP_MODULE.statusLabels, ...Object.fromEntries(columns.map((c) => [c.key, c.title])) },
+    columns: {
+      ...GROUP_MODULE.columns,
+      ...Object.fromEntries(columns.map((c) => [c.key, { title: c.title.toUpperCase(), subtitle: c.subtitle || '' }])),
+    },
+  };
+}

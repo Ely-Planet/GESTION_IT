@@ -22,6 +22,23 @@ const FILES_DIR = path.join(process.cwd(), 'storage', 'group-projects');
 const TASK_STATUSES = ['backlog', 'ready', 'in_progress', 'in_review', 'done'];
 const SUBTASK_STATUSES = ['todo', 'in_progress', 'done'];
 const TASK_STATUS_FR = { backlog: 'À faire', ready: 'Prêt', in_progress: 'En cours', in_review: 'En validation', done: 'Terminé' };
+
+// Colonnes du Kanban : celles du projet, sinon les 5 standard. La clé « done »
+// (colonne de fin) ne peut pas être supprimée : avancement, retards, date de fin.
+const DEFAULT_COLUMNS = [
+  { key: 'backlog', title: 'À faire', subtitle: 'Non démarré' },
+  { key: 'ready', title: 'Prêt', subtitle: 'Prêt à démarrer' },
+  { key: 'in_progress', title: 'En cours', subtitle: 'En cours de réalisation' },
+  { key: 'in_review', title: 'En validation', subtitle: 'À valider' },
+  { key: 'done', title: 'Terminé', subtitle: 'Terminé' }
+];
+const MAX_COLUMNS = 12;
+const columnsOf = (value) => (Array.isArray(value) && value.length ? value : DEFAULT_COLUMNS);
+
+async function projectColumns(projectId, db = pool) {
+  const row = (await db.query(`SELECT kanban_columns FROM group_projects WHERE id = $1`, [projectId])).rows[0];
+  return columnsOf(row?.kanban_columns);
+}
 const INLINE_PREVIEW_TYPES = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -566,6 +583,46 @@ async function remindMissingMinutes() {
   }
 }
 
+// Mail d'invitation aux membres ajoutés, envoyé depuis la boîte de la personne
+// qui les ajoute (permission Mail.Send) : à la création ou ultérieurement.
+async function mailAddedMembers({ projectId, accountIds, sender, isCreation = false }) {
+  if (!accountIds.length) return;
+  const project = (
+    await pool.query(
+      `SELECT name, description, to_char(start_date, 'DD/MM/YYYY') AS start_fr, to_char(due_date, 'DD/MM/YYYY') AS due_fr
+       FROM group_projects WHERE id = $1`,
+      [projectId]
+    )
+  ).rows[0];
+  if (!project) return;
+  const recipients = (await listMembers(projectId)).filter((m) => accountIds.includes(m.account_id) && m.email);
+  const period = [project.start_fr ? `début le ${project.start_fr}` : null, project.due_fr ? `échéance le ${project.due_fr}` : null]
+    .filter(Boolean)
+    .join(', ');
+  const subject = `${await mailSubjectPrefix(projectId)} Invitation au projet ${project.name}`;
+  const intro = isCreation
+    ? `Je viens de créer le projet <strong>« ${escapeHtml(project.name)} »</strong> et je vous y ai ajouté comme membre.`
+    : `Je vous ai ajouté comme membre du projet <strong>« ${escapeHtml(project.name)} »</strong>.`;
+  for (const member of recipients) {
+    const html = `<div style="font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.6;color:#1f2937">
+        <p>Bonjour ${escapeHtml(member.display_name)},</p>
+        <p>${intro}</p>
+        ${project.description ? `<p style="color:#4b5563">${escapeHtml(project.description).replace(/\n/g, '<br/>')}</p>` : ''}
+        ${period ? `<p>Planning : ${escapeHtml(period)}.</p>` : ''}
+        <p style="margin:24px 0"><a href="${appLink(projectId)}" style="display:inline-block;padding:10px 20px;background:#ca0088;color:#ffffff;border-radius:8px;font-weight:600;text-decoration:none">Ouvrir le projet</a></p>
+        <p>${escapeHtml(sender.displayName)}</p>
+      </div>`;
+    await graph('POST', `/users/${encodeURIComponent(sender.id)}/sendMail`, {
+      message: {
+        subject,
+        body: { contentType: 'HTML', content: html },
+        toRecipients: [{ emailAddress: { address: member.email, name: member.display_name } }]
+      },
+      saveToSentItems: true
+    }).catch((error) => console.error('[Projets Groupe] Mail d\'invitation impossible', member.email, error.message || error));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Requêtes communes
 // ---------------------------------------------------------------------------
@@ -957,6 +1014,13 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
         projectId: project.id,
         exceptId: req.session.user.id
       });
+      // Envoi en arrière-plan : la création ne doit pas attendre Microsoft Graph.
+      mailAddedMembers({
+        projectId: project.id,
+        accountIds: added.filter((id) => id !== req.session.user.id),
+        sender: req.session.user,
+        isCreation: true
+      }).catch((error) => console.error('[Projets Groupe] Mails d\'invitation', error.message || error));
       res.status(201).json(project);
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
@@ -973,12 +1037,14 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       if (!role) return;
       const project = (
         await pool.query(
-          `SELECT p.id, p.name, p.description, p.status, p.created_by, p.ref_number,
+          `SELECT p.id, p.name, p.description, p.status, p.created_by, p.ref_number, p.kanban_columns,
                   to_char(p.start_date, 'YYYY-MM-DD') AS start_date, to_char(p.due_date, 'YYYY-MM-DD') AS due_date
            FROM group_projects p WHERE p.id = $1`,
           [req.params.id]
         )
       ).rows[0];
+      const columns = columnsOf(project.kanban_columns);
+      delete project.kanban_columns;
       const tasks = (await pool.query(`${TASKS_SELECT} WHERE t.project_id = $1 ORDER BY t.created_at`, [req.params.id])).rows;
       res.json({
         ...project,
@@ -989,6 +1055,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
         estChefDeProjet: true,
         members: await listMembers(req.params.id),
         tasks,
+        columns,
         tauxCompletude: completionRate(tasks)
       });
     } catch (error) {
@@ -1015,6 +1082,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       const start = startDate !== undefined ? startDate || null : current.start_date;
       const due = dueDate !== undefined ? dueDate || null : current.due_date;
       if (start && due && start > due) return res.status(400).json({ error: "La date de début doit précéder l'échéance" });
+      const previousStatus = (await pool.query(`SELECT status FROM group_projects WHERE id = $1`, [req.params.id])).rows[0]?.status;
       const result = await pool.query(
         `UPDATE group_projects SET
            name = COALESCE($1, name), description = COALESCE($2, description), status = COALESCE($3, status),
@@ -1022,7 +1090,19 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
          WHERE id = $6 RETURNING *`,
         [name ? String(name).trim() : null, description ?? null, status ?? null, start, due, req.params.id]
       );
-      res.json(result.rows[0]);
+      const updated = result.rows[0];
+      if (status && status !== previousStatus) {
+        const closed = status === 'closed';
+        await notify({
+          accountIds: (await listMembers(req.params.id)).map((m) => m.account_id),
+          type: closed ? 'group_project_closed' : 'group_project_reopened',
+          title: `${closed ? 'Projet clôturé' : 'Projet réactivé'} : ${updated.name}`,
+          body: `${closed ? 'Clôturé' : 'Réactivé'} par ${req.session.user.displayName}`,
+          projectId: req.params.id,
+          exceptId: req.session.user.id
+        });
+      }
+      res.json(updated);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: error.message });
@@ -1033,11 +1113,73 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
   app.delete('/api/group-projects/:id', requireAuth, async (req, res) => {
     try {
       if (!(await requireMember(req, res, req.params.id, { responsable: true }))) return;
+      const members = await listMembers(req.params.id);
+      const name = await projectName(req.params.id);
       await pool.query(`UPDATE group_projects SET status = 'archive', updated_at = now() WHERE id = $1`, [req.params.id]);
+      // Projet archivé : la notification ne pointe plus vers lui (il n'est plus accessible).
+      await notify({
+        accountIds: members.map((m) => m.account_id),
+        type: 'group_project_deleted',
+        title: `Projet supprimé : ${name}`,
+        body: `Supprimé par ${req.session.user.displayName}`,
+        projectId: null,
+        exceptId: req.session.user.id
+      });
       res.status(204).end();
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ---- Colonnes du Kanban (responsables) ----
+  // Corps : { columns: [{ key?, title }] } dans l'ordre d'affichage. Sans clé = nouvelle
+  // colonne. Les tâches d'une colonne supprimée passent dans la première colonne.
+  app.put('/api/group-projects/:id/columns', requireAuth, async (req, res) => {
+    const client = await pool.connect();
+    try {
+      if (!(await requireMember(req, res, req.params.id, { responsable: true }))) return;
+      const input = Array.isArray(req.body.columns) ? req.body.columns : null;
+      if (!input || input.length < 2 || input.length > MAX_COLUMNS) {
+        return res.status(400).json({ error: `Le tableau doit avoir entre 2 et ${MAX_COLUMNS} colonnes` });
+      }
+      const current = await projectColumns(req.params.id);
+      const seen = new Set();
+      const columns = [];
+      for (const item of input) {
+        const title = String(item?.title || '').trim().slice(0, 40);
+        if (!title) return res.status(400).json({ error: 'Chaque colonne doit avoir un nom' });
+        let key = item?.key ? String(item.key) : null;
+        if (key && !current.some((c) => c.key === key)) return res.status(400).json({ error: 'Colonne inconnue' });
+        if (!key) key = `col_${crypto.randomBytes(4).toString('hex')}`;
+        if (seen.has(key)) return res.status(400).json({ error: 'Colonne en double' });
+        seen.add(key);
+        const previous = current.find((c) => c.key === key);
+        // Sous-titre d'origine gardé tant que la colonne n'est pas renommée.
+        columns.push({ key, title, subtitle: previous && previous.title === title ? previous.subtitle || null : null });
+      }
+      if (!seen.has('done')) return res.status(400).json({ error: 'La colonne de fin ne peut pas être supprimée' });
+
+      await client.query('BEGIN');
+      const removedKeys = current.map((c) => c.key).filter((key) => !seen.has(key));
+      if (removedKeys.length) {
+        await client.query(
+          `UPDATE group_tasks SET status = $1, updated_at = now() WHERE project_id = $2 AND status = ANY($3::text[])`,
+          [columns[0].key, req.params.id, removedKeys]
+        );
+      }
+      await client.query(`UPDATE group_projects SET kanban_columns = $1::jsonb, updated_at = now() WHERE id = $2`, [
+        JSON.stringify(columns),
+        req.params.id
+      ]);
+      await client.query('COMMIT');
+      res.json(columns);
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    } finally {
+      client.release();
     }
   });
 
@@ -1067,6 +1209,10 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
           projectId: req.params.id,
           exceptId: req.session.user.id
         });
+        if (accountId !== req.session.user.id) {
+          mailAddedMembers({ projectId: req.params.id, accountIds: [accountId], sender: req.session.user })
+            .catch((error) => console.error('[Projets Groupe] Mail d\'invitation', error.message || error));
+        }
       }
       res.status(201).json(await listMembers(req.params.id));
     } catch (error) {
@@ -1178,7 +1324,9 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       const task = await loadTask(req, res, req.params.id);
       if (!task) return;
       const { status, spentHours, estimatedHours, assigneeAccountId, title, description } = req.body;
-      if (status != null && !TASK_STATUSES.includes(status)) return res.status(400).json({ error: 'Statut invalide' });
+      if (status != null && !(await projectColumns(task.project_id)).some((c) => c.key === status)) {
+        return res.status(400).json({ error: 'Colonne inconnue pour ce projet' });
+      }
       const current = (
         await pool.query(
           `SELECT to_char(start_date, 'YYYY-MM-DD') AS start_date, to_char(end_date, 'YYYY-MM-DD') AS end_date FROM group_tasks WHERE id = $1`,

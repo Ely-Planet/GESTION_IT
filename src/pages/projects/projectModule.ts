@@ -22,8 +22,10 @@ export type ProjectModuleApi = {
 export type ProjectModuleConfig = {
   api: ProjectModuleApi;
   filesBase: string; // préfixe des téléchargements de pièces jointes
-  statusLabels: Record<TaskStatusKey, string>;
-  columns: Record<TaskStatusKey, { title: string; subtitle: string }>;
+  // Projets Groupe : colonnes du Kanban personnalisables par projet (clés libres).
+  statusLabels: Record<TaskStatusKey, string> & Record<string, string>;
+  columns: Record<TaskStatusKey, { title: string; subtitle: string }> & Record<string, { title: string; subtitle: string }>;
+  columnOrder?: string[]; // ordre des colonnes ; à défaut, les 5 statuts standard
   github: boolean; // liens et synchronisation GitHub
   timeTracking: boolean; // saisie du temps passé / estimé
   subtasksNote: string;

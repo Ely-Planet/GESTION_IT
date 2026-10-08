@@ -23,6 +23,8 @@ const TASK_BAR: Record<Task['status'], string> = {
   in_review: 'bg-purple-500',
   done: 'bg-emerald-500',
 };
+// Colonnes ajoutées dans un projet Groupe : couleur commune.
+const barOf = (status: string) => (TASK_BAR as Record<string, string>)[status] ?? 'bg-elyade-400';
 const SUBTASK_BAR: Record<Subtask['status'], string> = {
   todo: 'bg-slate-300',
   in_progress: 'bg-amber-300',
@@ -69,7 +71,7 @@ export default function GanttTab({ project, team, onChanged, readOnly = false }:
   onChanged: () => void;
   readOnly?: boolean; // vue client : pas d'ouverture du détail des tâches
 }) {
-  const { statusLabels } = useProjectModule();
+  const { statusLabels, columnOrder } = useProjectModule();
   const [zoom, setZoom] = useState<Zoom>('week');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [detailTaskId, setDetailTaskIdState] = useState<string | null>(null);
@@ -248,14 +250,14 @@ export default function GanttTab({ project, team, onChanged, readOnly = false }:
                             {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                           </button>
                         ) : <span className="w-5" />}
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${TASK_BAR[task.status]}`} />
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${barOf(task.status)}`} />
                         <span className="text-sm font-medium text-ink-900 truncate" title={task.title}>{task.title}</span>
                       </div>
                       <div className="relative" style={{ width }}>
                         {renderBar({
                           span,
-                          className: TASK_BAR[task.status],
-                          title: `${task.title} — ${statusLabels[task.status]}\n${formatDay(fromDay(span.start).toISOString())} → ${formatDay(fromDay(span.end).toISOString())}${span.derived ? '\n(période déduite des sous-tâches)' : ''}`,
+                          className: barOf(task.status),
+                          title: `${task.title} — ${statusLabels[task.status] ?? task.status}\n${formatDay(fromDay(span.start).toISOString())} → ${formatDay(fromDay(span.end).toISOString())}${span.derived ? '\n(période déduite des sous-tâches)' : ''}`,
                         })}
                       </div>
                     </div>
@@ -295,9 +297,9 @@ export default function GanttTab({ project, team, onChanged, readOnly = false }:
       )}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-xs text-ink-500">
-        {(Object.keys(TASK_BAR) as Task['status'][]).map((status) => (
+        {(columnOrder ?? Object.keys(TASK_BAR)).map((status: string) => (
           <span key={status} className="flex items-center gap-1.5">
-            <span className={`w-3 h-2.5 rounded-sm ${TASK_BAR[status]}`} /> {statusLabels[status]}
+            <span className={`w-3 h-2.5 rounded-sm ${barOf(status)}`} /> {statusLabels[status] ?? status}
           </span>
         ))}
         <span className="flex items-center gap-1.5"><span className="w-0.5 h-3 bg-red-500" /> Aujourd'hui</span>

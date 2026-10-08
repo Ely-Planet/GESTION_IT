@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
-import { groupApi, GROUP_MODULE } from './groupApi';
+import { ArrowLeft, Columns3 } from 'lucide-react';
+import { groupApi, groupModuleFor } from './groupApi';
+import KanbanColumnsEditor from './KanbanColumnsEditor';
 import { ProjectModuleProvider } from '../projects/projectModule';
 import { ProgressBar, formatDay } from '../projects/ProjectUI';
 import TasksTab from '../projects/tabs/TasksTab';
@@ -25,6 +26,7 @@ export default function GroupProjectDetail({ projectId, onBack }: { projectId: s
   const [project, setProject] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState('tasks');
+  const [editingColumns, setEditingColumns] = useState(false);
   // Ouverture du compte rendu d'une réunion depuis l'onglet Réunions.
   const [minuteForMeeting, setMinuteForMeeting] = useState<{ id: string; title: string; date: string; minuteId: string | null } | null>(null);
 
@@ -74,7 +76,7 @@ export default function GroupProjectDetail({ projectId, onBack }: { projectId: s
   const shared = project as unknown as ProjectDetailData;
 
   return (
-    <ProjectModuleProvider value={GROUP_MODULE}>
+    <ProjectModuleProvider value={groupModuleFor(project.columns)}>
       <div className="p-6 w-full max-w-[1800px] mx-auto">
         <button onClick={onBack} className="btn-ghost text-sm mb-4 -ml-2">
           <ArrowLeft className="w-4 h-4" /> Retour aux projets
@@ -165,6 +167,17 @@ export default function GroupProjectDetail({ projectId, onBack }: { projectId: s
           ))}
         </div>
 
+        {tab === 'tasks' && project.estResponsable && (
+          editingColumns ? (
+            <KanbanColumnsEditor project={project} onSaved={() => void load()} onClose={() => setEditingColumns(false)} />
+          ) : (
+            <div className="flex justify-end mb-2">
+              <button type="button" className="btn-ghost text-sm" onClick={() => setEditingColumns(true)}>
+                <Columns3 className="w-4 h-4" /> Personnaliser les colonnes
+              </button>
+            </div>
+          )
+        )}
         {tab === 'tasks' && <TasksTab project={shared} team={team} onChanged={load} />}
         {tab === 'gantt' && <GanttTab project={shared} team={team} onChanged={load} />}
         {tab === 'meetings' && (

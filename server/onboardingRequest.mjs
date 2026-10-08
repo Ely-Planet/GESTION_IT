@@ -27,6 +27,24 @@ function parseBoolean(value) {
   return value === true || value === 'true';
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Temps partiel : colonnes ajoutées au démarrage (le dossier db/ n'est pas
+// copié dans l'image Docker).
+export const onboardingSchemaReady = pool
+  .query(
+    `ALTER TABLE onboarding_details ADD COLUMN IF NOT EXISTS part_time boolean NOT NULL DEFAULT false;
+     ALTER TABLE onboarding_details ADD COLUMN IF NOT EXISTS part_time_hours numeric;
+     ALTER TABLE onboarding_details ADD COLUMN IF NOT EXISTS part_time_schedule text;`
+  )
+  .catch((error) => console.error('[Onboarding] Colonnes temps partiel impossibles', error.message || error));
+
 
 export async function createOnboardingRequest(req, res) {
   if (!req.session?.user) {
@@ -55,6 +73,9 @@ referral_employee,
   service_groups,
 shared_mailboxes,
   company_car,
+  part_time,
+  part_time_hours,
+  part_time_schedule,
 hardware_category_ids,
   license_type_ids
 } = req.body;
@@ -69,6 +90,24 @@ hardware_category_ids,
       error: 'Prénom, nom et date d’arrivée sont obligatoires.'
     });
   }
+
+  const partTime = parseBoolean(part_time);
+  const partTimeHours = partTime ? Number(String(part_time_hours ?? '').replace(',', '.')) : null;
+  const partTimeSchedule = partTime ? cleanString(part_time_schedule) : null;
+
+  if (partTime && (!Number.isFinite(partTimeHours) || partTimeHours <= 0 || partTimeHours > 35)) {
+    return res.status(400).json({
+      error: 'Temps partiel : le nombre d’heures par semaine doit être compris entre 1 et 35.'
+    });
+  }
+
+  if (partTime && !partTimeSchedule) {
+    return res.status(400).json({
+      error: 'Temps partiel : la répartition horaire sur la semaine est obligatoire.'
+    });
+  }
+
+  await onboardingSchemaReady;
 
 const selectedGroups = parseJsonArray(service_groups)
   .filter(g => g?.id);
@@ -224,6 +263,10 @@ contractReason: contract_reason,
 companyCar:
   company_car === 'true',
 
+partTime,
+partTimeHours,
+partTimeSchedule,
+
     internshipMission:
       internship_mission,
 referral:
@@ -300,6 +343,20 @@ ${
 <p>
   <strong>Date de fin de contrat :</strong>
   ${contract_end_date}
+</p>
+`
+    : ''
+}
+${
+  partTime
+    ? `
+<p>
+  <strong>Temps partiel :</strong>
+  ${partTimeHours} h par semaine
+</p>
+<p>
+  <strong>Répartition horaire :</strong><br>
+  ${escapeHtml(partTimeSchedule).replace(/\n/g, '<br>')}
 </p>
 `
     : ''
@@ -465,11 +522,14 @@ employee_status,
     cv_file_name,
     cv_file_path,
 pdf_file_path,
-company_car
+company_car,
+part_time,
+part_time_hours,
+part_time_schedule
   )
 
 VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
 )
  `,
 
@@ -506,7 +566,13 @@ VALUES (
 
   pdfInfo.filePath,
 
-  company_car === 'true'
+  company_car === 'true',
+
+  partTime,
+
+  partTimeHours,
+
+  partTimeSchedule
 ]
 
 );

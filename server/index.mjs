@@ -1433,7 +1433,11 @@ app.get(
           od.gross_annual_salary,
           od.variable_bonus,
           od.referral_employee,
-          od.company_car
+          od.company_car,
+          od.contract_end_date,
+          od.part_time,
+          od.part_time_hours,
+          od.part_time_schedule
 
         FROM movements m
 
@@ -3892,7 +3896,21 @@ async function findReleasableLicenses(db, employeeId, { lock = false } = {}) {
     FROM licenses l
     JOIN license_types lt ON lt.id = l.license_type_id
     WHERE l.status = 'assigned'
-      AND l.assigned_employee_id IN (SELECT id FROM same_person)
+      AND (
+        l.assigned_employee_id IN (SELECT id FROM same_person)
+        -- Licence attribuée depuis un mouvement (onboarding) sans que la
+        -- licence ait été rattachée à la fiche : jamais celle d'un autre titulaire.
+        OR (
+          l.assigned_employee_id IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM movement_licenses ml
+            JOIN movements m ON m.id = ml.movement_id
+            WHERE ml.license_id = l.id
+              AND m.employee_id IN (SELECT id FROM same_person)
+          )
+        )
+      )
       AND upper(lt.code) <> 'OFFICE365'
       ${hasMicrosoftFilters
         ? 'AND NOT EXISTS (SELECT 1 FROM microsoft_license_filters f WHERE f.sku_part_number = lt.code)'

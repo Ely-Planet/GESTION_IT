@@ -8,16 +8,18 @@ import FilePicker from '../FilePicker';
 import type { Account, ProjectDetailData, Task } from '../types';
 
 const STATUSES = ['backlog', 'ready', 'in_progress', 'in_review', 'done'] as const;
-type TaskStatus = (typeof STATUSES)[number];
+// Clé de colonne : un des 5 statuts standard, ou une colonne ajoutée dans un projet Groupe.
+type TaskStatus = string;
 
 // Titres des colonnes : fournis par le module (anglais pour Projets IT, français pour Projets Groupe).
-const COLUMN_STYLE: Record<TaskStatus, string> = {
+const COLUMN_STYLE: Record<string, string> = {
   backlog: 'border-emerald-200 bg-emerald-50/50',
   ready: 'border-blue-200 bg-blue-50/50',
   in_progress: 'border-amber-200 bg-amber-50/50',
   in_review: 'border-purple-200 bg-purple-50/50',
   done: 'border-orange-200 bg-orange-50/50',
 };
+const styleOf = (status: string) => COLUMN_STYLE[status] ?? 'border-elyade-200 bg-elyade-50/40';
 
 type TaskCardProps = {
   task: Task;
@@ -126,8 +128,8 @@ function TaskCard({
       )}
       <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t border-ink-100">
         <select className="input py-1 text-xs w-auto max-w-full" value={task.status} onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}>
-          {STATUSES.map((status) => (
-            <option key={status} value={status}>{mod.statusLabels[status]}</option>
+          {((mod.columnOrder ?? STATUSES) as readonly string[]).map((status) => (
+            <option key={status} value={status}>{mod.statusLabels[status] ?? status}</option>
           ))}
         </select>
         <button
@@ -184,6 +186,7 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
   const [creating, setCreating] = useState(false);
   const mod = useProjectModule();
   const projectsApi = mod.api;
+  const columnKeys: readonly string[] = mod.columnOrder ?? STATUSES;
   // Créer : toute l'équipe du projet ; affecter, planifier, supprimer : chef de projet / manager.
   const canManageTasks = !readOnly && Boolean(project.estChefDeProjet);
   const canCreateTasks = !readOnly && Boolean(project.peutCreerTaches ?? project.estChefDeProjet);
@@ -234,7 +237,7 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
 
     setLocalTasks((current) =>
       current.map((task) =>
-        task.id === taskId ? { ...task, status } : task
+        task.id === taskId ? { ...task, status: status as Task['status'] } : task
       )
     );
     setUpdatingTaskId(taskId);
@@ -347,10 +350,10 @@ export default function TasksTab({ project, team, onChanged, readOnly = false }:
 
       {/* Colonnes souples : elles se partagent la largeur de l'écran ; défilement
           horizontal seulement sous ~1 000 px de large. */}
-      <div className="grid gap-3 overflow-x-auto pb-4 items-start" style={{ gridTemplateColumns: 'repeat(5, minmax(190px, 1fr))' }}>
-        {STATUSES.map((status) => {
+      <div className="grid gap-3 overflow-x-auto pb-4 items-start" style={{ gridTemplateColumns: `repeat(${columnKeys.length}, minmax(190px, 1fr))` }}>
+        {columnKeys.map((status) => {
           const columnTasks = visibleTasks.filter((task) => task.status === status);
-          const columnConfig = { ...mod.columns[status], style: COLUMN_STYLE[status] };
+          const columnConfig = { title: status, subtitle: '', ...mod.columns[status], style: styleOf(status) };
           return (
             <section
               key={status}
