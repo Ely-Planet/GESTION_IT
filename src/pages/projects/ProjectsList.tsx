@@ -9,7 +9,7 @@ import type { Account, ProjectListItem } from './types';
 export default function ProjectsList({ onOpen }: { onOpen: (id: string) => void }) {
   const { user } = useAuth();
   const isManager = Boolean(user?.isITManager);
-  const isClient = !user?.isIT && !user?.isITManager && !user?.isDirector;
+  const isClient = !user?.isIT && !user?.isITManager;
 
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);

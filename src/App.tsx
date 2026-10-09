@@ -98,6 +98,16 @@ if (
 ) {
   setPage(user.isIT || user.isITManager ? 'dashboard' : 'onboardingrequest');
 } else if (
+  // Projets IT : groupe informatique, ou personne désignée sur un projet.
+  page === 'projects' &&
+  user &&
+  !user.projectsOnly &&
+  !user.isIT &&
+  !user.isITManager &&
+  !user.hasProjectAccess
+) {
+  setPage('onboardingrequest');
+} else if (
   user &&
   !user.projectsOnly &&
   !user.isIT &&

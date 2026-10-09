@@ -78,7 +78,8 @@ const baseNav =
     ? NAV_PROJECTS_ONLY.filter((item) => item.key !== 'projects' || user.hasProjectAccess)
     : (user?.isIT || user?.isITManager)
       ? NAV_IT
-      : NAV_LIMITED;
+      // Hors informatique : "Mes projets IT" seulement si désigné sur un projet.
+      : NAV_LIMITED.filter((item) => item.key !== 'projects' || user?.hasProjectAccess);
 
 // "Projets Groupe" juste après les projets IT (ou en tête s'il n'y en a pas).
 const navItems = canSeeGroupProjects(user)

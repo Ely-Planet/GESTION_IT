@@ -4,7 +4,6 @@ import { useAuth } from '../../context/AuthContext';
 import ProjectsList from './ProjectsList';
 import ProjectDetail from './ProjectDetail';
 import DashboardView from './DashboardView';
-import ReportingView from './ReportingView';
 
 export default function Projects({ initialProjectId = null }: { initialProjectId?: string | null }) {
   const { user } = useAuth();
@@ -13,14 +12,9 @@ export default function Projects({ initialProjectId = null }: { initialProjectId
   const [view, setView] = useState<'list' | 'dashboard'>('list');
 
   const isManager = Boolean(user?.isITManager);
-  const isDirector = Boolean(user?.isDirector) && !user?.isIT && !user?.isITManager;
 
   if (selectedId) {
     return <ProjectDetail projectId={selectedId} onBack={() => setSelectedId(null)} />;
-  }
-
-  if (isDirector) {
-    return <ReportingView />;
   }
 
   return (

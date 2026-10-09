@@ -223,8 +223,9 @@ const upload = multer({
 // (voir /auth/callback dans index.mjs) :
 //   - isITManager (groupe "🔐 Manager Service Informatique") -> manager
 //   - isIT (sans isITManager)                                 -> dev
-//   - isDirector                                               -> directeur (lecture seule)
-//   - tout le reste (isRH, isManager RH, ou aucun groupe)      -> client interne
+//   - tout le reste (directeurs, RH, managers, aucun groupe)   -> client interne
+// Hors groupe informatique, on ne voit que les projets où l'on est désigné.
+// Le rôle "directeur" (lecture de tous les projets) n'est plus attribué.
 // ---------------------------------------------------------------------
 
 function isAuthenticated(req) {
@@ -235,7 +236,6 @@ function getModuleRole(user) {
   if (!user) return null;
   if (user.isITManager) return 'manager';
   if (user.isIT) return 'dev';
-  if (user.isDirector) return 'directeur';
   return 'client';
 }
 
