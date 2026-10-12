@@ -1,0 +1,17 @@
+{
+  "id": "/",
+  "name": "ELYADE — Gestion IT",
+  "short_name": "Gestion IT",
+  "description": "Gestion interne ELYADE : arrivées et départs, inventaire, licences, projets IT et projets groupe.",
+  "lang": "fr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f9",
+  "theme_color": "#ca0088",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
