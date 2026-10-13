@@ -1,33 +1,43 @@
-// Automatisation Microsoft (Graph) depuis « Arrivées & Départs ».
+// Automatisation Microsoft depuis « Arrivées & Départs ».
 //
-// Onboarding : création du compte Entra ID (mot de passe provisoire à changer),
-// manager, groupes demandés + groupe de synchro 3CX, licences Microsoft.
-// Offboarding : réponse automatique, blocage de la connexion, déconnexion
-// des sessions, retrait des groupes et (au choix) des licences.
+// Onboarding : création du compte Entra ID (adresse pnom@domaine, mot de passe
+// par défaut à changer à la première connexion), manager, groupes et licences
+// (ajustables par l'informatique), groupe de synchro 3CX. Mail au manager à la
+// clôture de l'arrivée.
+// Offboarding : réponse automatique, conversion en boîte partagée avec
+// délégation, blocage de la connexion, déconnexion des sessions, retrait des
+// groupes et des licences.
+// Chaque traitement ajoute un récapitulatif dans la check-list du mouvement.
 //
-// Chaque action est d'abord présentée (aperçu) puis lancée par l'informatique.
-// Permissions d'application Graph nécessaires : User.ReadWrite.All,
-// GroupMember.ReadWrite.All, LicenseAssignment.ReadWrite.All,
-// User.RevokeSessions.All, MailboxSettings.ReadWrite.
+// Permissions d'application :
+//   Microsoft Graph : User.ReadWrite.All, GroupMember.ReadWrite.All,
+//     Group.Read.All, LicenseAssignment.ReadWrite.All, User.RevokeSessions.All,
+//     MailboxSettings.ReadWrite
+//   Office 365 Exchange Online : Exchange.ManageAsApp + rôle Entra
+//     « Exchange Recipient Administrator » attribué à l'application
+//     (boîte partagée et délégation : Graph ne le permet pas).
 //
 // Variables d'environnement (facultatives) :
-//   MICROSOFT_USER_DOMAIN      domaine des adresses (défaut : elyade.com)
-//   MICROSOFT_USAGE_LOCATION   pays des licences (défaut : FR)
-//   MICROSOFT_3CX_GROUP_ID     groupe Microsoft synchronisé par le 3CX
-import crypto from 'crypto';
+//   MICROSOFT_USER_DOMAIN        domaine des adresses (défaut : elyade.com)
+//   MICROSOFT_USAGE_LOCATION     pays des licences (défaut : FR)
+//   MICROSOFT_DEFAULT_PASSWORD   mot de passe initial (défaut : Elyade@changer2026)
+//   MICROSOFT_3CX_GROUP_ID       groupe Microsoft synchronisé par le 3CX
 import { pool } from './db.mjs';
-import { getGraphAppToken } from './graphMail.mjs';
+import { getGraphAppToken, sendMailWithAttachments } from './graphMail.mjs';
 
 const DOMAIN = () => String(process.env.MICROSOFT_USER_DOMAIN || 'elyade.com').toLowerCase();
 const USAGE_LOCATION = () => process.env.MICROSOFT_USAGE_LOCATION || 'FR';
+const DEFAULT_PASSWORD = () => process.env.MICROSOFT_DEFAULT_PASSWORD || 'Elyade@changer2026';
 const THREECX_GROUP_ID = () => process.env.MICROSOFT_3CX_GROUP_ID || null;
+// Groupes proposés : services (🏢) et groupes de sécurité (🔐).
+const GROUP_PREFIXES = ['🏢', '🔐'];
 
 // ---------------------------------------------------------------------------
 // Microsoft Graph
 // ---------------------------------------------------------------------------
 async function graph(method, url, body) {
   const token = await getGraphAppToken();
-  const response = await fetch(`https://graph.microsoft.com/v1.0${url}`, {
+  const response = await fetch(url.startsWith('http') ? url : `https://graph.microsoft.com/v1.0${url}`, {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -45,9 +55,7 @@ async function graph(method, url, body) {
       // réponse non JSON
     }
     const error = new Error(
-      response.status === 403
-        ? `Permission Microsoft Graph manquante (403) : ${message}`
-        : `Microsoft Graph ${response.status} : ${message}`
+      response.status === 403 ? `Permission Microsoft Graph manquante (403) : ${message}` : `Microsoft Graph ${response.status} : ${message}`
     );
     error.status = response.status;
     throw error;
@@ -55,6 +63,26 @@ async function graph(method, url, body) {
   if (response.status === 202 || response.status === 204) return null;
   const text = await response.text();
   return text ? JSON.parse(text) : null;
+}
+
+async function graphOrNull(url) {
+  try {
+    return await graph('GET', url);
+  } catch (error) {
+    if (error.status === 404) return null;
+    throw error;
+  }
+}
+
+async function graphAll(url) {
+  const items = [];
+  let next = url;
+  while (next) {
+    const page = await graph('GET', next);
+    items.push(...(page?.value || []));
+    next = page?.['@odata.nextLink'] || null;
+  }
+  return items;
 }
 
 // Un compte tout juste créé met quelques secondes à être visible partout dans
@@ -70,13 +98,51 @@ async function withRetry(run, attempts = 5) {
   }
 }
 
-async function graphOrNull(url) {
-  try {
-    return await graph('GET', url);
-  } catch (error) {
-    if (error.status === 404) return null;
-    throw error;
+// ---------------------------------------------------------------------------
+// Exchange Online (API d'administration utilisée par le module PowerShell)
+// ---------------------------------------------------------------------------
+async function exchangeToken() {
+  const response = await fetch(`https://login.microsoftonline.com/${process.env.MICROSOFT_TENANT_ID}/oauth2/v2.0/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: process.env.MICROSOFT_CLIENT_ID,
+      client_secret: process.env.MICROSOFT_CLIENT_SECRET,
+      scope: 'https://outlook.office365.com/.default',
+      grant_type: 'client_credentials'
+    })
+  });
+  if (!response.ok) throw new Error(`Jeton Exchange Online impossible : ${(await response.text()).slice(0, 200)}`);
+  return (await response.json()).access_token;
+}
+
+async function exchange(cmdletName, parameters) {
+  const token = await exchangeToken();
+  const response = await fetch(`https://outlook.office365.com/adminapi/beta/${process.env.MICROSOFT_TENANT_ID}/InvokeCommand`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'X-AnchorMailbox': `UPN:SystemMailbox{bb558c35-97f1-4cb9-8ff7-d53741dc928c}@${DOMAIN()}`
+    },
+    body: JSON.stringify({ CmdletInput: { CmdletName: cmdletName, Parameters: parameters } })
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    let message = text.slice(0, 300);
+    try {
+      const json = JSON.parse(text);
+      message = json?.error?.details?.[0]?.message || json?.error?.message || message;
+    } catch {
+      // réponse non JSON
+    }
+    throw new Error(
+      response.status === 401 || response.status === 403
+        ? `Exchange Online refuse l'accès (${response.status}) : autorisation Exchange.ManageAsApp ou rôle Exchange manquant. ${message}`
+        : `Exchange Online ${response.status} : ${message}`
+    );
   }
+  return text ? JSON.parse(text) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,31 +157,21 @@ function requireIT(req, res) {
   return true;
 }
 
-// "Jean-Marc Dupont" -> "jean-marc.dupont"
-function slug(value) {
-  return String(value || '')
+const letters = (value) =>
+  String(value || '')
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
     .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
+    .replace(/[^a-z]/g, '');
+
+const escapeHtml = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 
 const isValidUpn = (upn) => /^[a-z0-9][a-z0-9._-]*@[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(upn || ''));
-
-// Mot de passe provisoire : 16 caractères, majuscules, minuscules, chiffres, symboles.
-function temporaryPassword() {
-  const sets = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%*?-+='];
-  const all = sets.join('');
-  const chars = sets.map((set) => set[crypto.randomInt(set.length)]);
-  while (chars.length < 16) chars.push(all[crypto.randomInt(all.length)]);
-  for (let i = chars.length - 1; i > 0; i--) {
-    const j = crypto.randomInt(i + 1);
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-  return chars.join('');
-}
 
 async function upnTaken(upn) {
   const value = upn.replace(/'/g, "''");
@@ -126,8 +182,9 @@ async function upnTaken(upn) {
   return (result?.value || []).length > 0;
 }
 
+// Adresse au format pnom@domaine (Jean-Marc Le Gall -> jlegall), suffixe 2, 3… si prise.
 async function suggestUpn(firstName, lastName) {
-  const base = [slug(firstName), slug(lastName)].filter(Boolean).join('.');
+  const base = `${letters(firstName).slice(0, 1)}${letters(lastName)}`;
   if (!base) return null;
   for (let i = 1; i <= 9; i++) {
     const candidate = `${base}${i === 1 ? '' : i}@${DOMAIN()}`;
@@ -148,20 +205,54 @@ async function loadMovement(movementId) {
   ).rows[0];
 }
 
-// Licences Microsoft demandées : type de licence dont le code est un SKU du tenant.
-async function requestedMicrosoftLicenses(movementId) {
+// Comptes Microsoft actifs (choix du manager, délégation de la boîte).
+async function microsoftPeople() {
   return (
     await pool.query(
-      `SELECT ml.id AS movement_license_id, lt.label, s.sku_id, s.display_name AS sku_part_number,
+      `SELECT DISTINCT ON (microsoft_object_id) microsoft_object_id AS id,
+              TRIM(CONCAT_WS(' ', first_name, last_name)) AS name, microsoft_upn AS upn
+       FROM employees
+       WHERE microsoft_object_id IS NOT NULL AND microsoft_upn IS NOT NULL AND COALESCE(account_enabled, true)
+       ORDER BY microsoft_object_id`
+    )
+  ).rows.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+}
+
+let groupsCache = { at: 0, value: null };
+async function selectableGroups() {
+  if (groupsCache.value && Date.now() - groupsCache.at < 10 * 60 * 1000) return groupsCache.value;
+  const groups = (await graphAll('/groups?$select=id,displayName,mail&$top=999'))
+    .filter((g) => GROUP_PREFIXES.some((prefix) => g.displayName?.startsWith(prefix)))
+    .map((g) => ({ id: g.id, displayName: g.displayName, mail: g.mail || null }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, 'fr'));
+  groupsCache = { at: Date.now(), value: groups };
+  return groups;
+}
+
+// Licences Microsoft du tenant (avec places restantes).
+async function tenantLicenses() {
+  return (
+    await pool.query(
+      `SELECT s.sku_id, s.display_name AS sku_part_number, COALESCE(lt.label, s.display_name) AS label, lt.id AS license_type_id,
               GREATEST(COALESCE(s.enabled_units, 0) - COALESCE(s.consumed_units, 0), 0)::int AS available
+       FROM subscribed_skus s LEFT JOIN license_types lt ON lt.code = s.display_name
+       WHERE s.sku_id IS NOT NULL AND COALESCE(s.enabled_units, 0) > 0
+       ORDER BY label`
+    )
+  ).rows;
+}
+
+async function requestedSkuIds(movementId) {
+  return (
+    await pool.query(
+      `SELECT s.sku_id
        FROM movement_licenses ml
        JOIN license_types lt ON lt.id = ml.license_type_id
        JOIN subscribed_skus s ON s.display_name = lt.code
-       WHERE ml.movement_id = $1 AND COALESCE(ml.status, 'requested') <> 'skipped' AND s.sku_id IS NOT NULL
-       ORDER BY lt.label`,
+       WHERE ml.movement_id = $1 AND COALESCE(ml.status, 'requested') <> 'skipped' AND s.sku_id IS NOT NULL`,
       [movementId]
     )
-  ).rows;
+  ).rows.map((r) => r.sku_id);
 }
 
 async function markActionsDone(movementId, actionTypes) {
@@ -173,39 +264,60 @@ async function markActionsDone(movementId, actionTypes) {
   );
 }
 
-async function audit(req, action, movementId, details) {
-  await pool
-    .query(
-      `INSERT INTO audit_log (actor_name, action, entity_type, entity_id, details) VALUES ($1, $2, 'movement', $3, $4::jsonb)`,
-      [req.session.user.displayName || req.session.user.email || null, action, movementId, JSON.stringify(details)]
-    )
-    .catch((error) => console.error('[Microsoft] Journal d\'audit impossible', error.message || error));
+// Récapitulatif dans la check-list : une ligne cochée avec le détail en note.
+async function addRecap(movementId, label, steps) {
+  const notes = steps.map((s) => `${s.ok ? '✓' : '✗'} ${s.label}${s.error ? ` — ${s.error}` : ''}`).join('\n');
+  await pool.query(
+    `INSERT INTO movement_actions (movement_id, action_type, label, notes, done_at, sort_order)
+     VALUES ($1, 'other', $2, $3, now(), 999)`,
+    [movementId, label, notes]
+  );
 }
 
-// Compte Microsoft du collaborateur qui part : sa fiche, ou une fiche en double
+async function audit(req, action, movementId, details) {
+  await pool
+    .query(`INSERT INTO audit_log (actor_name, action, entity_type, entity_id, details) VALUES ($1, $2, 'movement', $3, $4::jsonb)`, [
+      req.session.user.displayName || req.session.user.email || null,
+      action,
+      movementId,
+      JSON.stringify(details)
+    ])
+    .catch((error) => console.error("[Microsoft] Journal d'audit impossible", error.message || error));
+}
+
+function stepRunner(steps) {
+  return async (label, run) => {
+    try {
+      const detail = await run();
+      steps.push({ label, ok: true, detail: typeof detail === 'string' ? detail : null });
+      return true;
+    } catch (error) {
+      steps.push({ label, ok: false, error: error.message });
+      return false;
+    }
+  };
+}
+
+// Compte Microsoft du collaborateur qui part : sa fiche, une fiche en double
 // de même e-mail / UPN, ou à défaut une recherche par adresse.
 async function resolveDepartingUser(movement) {
+  const select = '$select=id,displayName,userPrincipalName,accountEnabled,assignedLicenses';
   if (movement.microsoft_object_id) {
-    const user = await graphOrNull(
-      `/users/${encodeURIComponent(movement.microsoft_object_id)}?$select=id,displayName,userPrincipalName,accountEnabled,assignedLicenses`
-    );
+    const user = await graphOrNull(`/users/${encodeURIComponent(movement.microsoft_object_id)}?${select}`);
     if (user) return user;
   }
   const emails = [movement.microsoft_upn, movement.employee_email].filter(Boolean).map((e) => e.toLowerCase());
-  if (emails.length) {
-    const twin = (
-      await pool.query(
-        `SELECT microsoft_object_id FROM employees
-         WHERE microsoft_object_id IS NOT NULL
-           AND (lower(btrim(email)) = ANY($1::text[]) OR lower(btrim(microsoft_upn)) = ANY($1::text[]))
-         LIMIT 1`,
-        [emails]
-      )
-    ).rows[0];
-    const id = twin?.microsoft_object_id || emails[0];
-    return graphOrNull(`/users/${encodeURIComponent(id)}?$select=id,displayName,userPrincipalName,accountEnabled,assignedLicenses`);
-  }
-  return null;
+  if (!emails.length) return null;
+  const twin = (
+    await pool.query(
+      `SELECT microsoft_object_id FROM employees
+       WHERE microsoft_object_id IS NOT NULL
+         AND (lower(btrim(email)) = ANY($1::text[]) OR lower(btrim(microsoft_upn)) = ANY($1::text[]))
+       LIMIT 1`,
+      [emails]
+    )
+  ).rows[0];
+  return graphOrNull(`/users/${encodeURIComponent(twin?.microsoft_object_id || emails[0])}?${select}`);
 }
 
 // Groupes modifiables par Graph : groupes Microsoft 365 et groupes de sécurité
@@ -217,21 +329,64 @@ function isManageableGroup(group) {
 }
 
 async function userGroups(userId) {
-  const page = await graph(
-    'GET',
+  const groups = await graphAll(
     `/users/${encodeURIComponent(userId)}/memberOf/microsoft.graph.group?$select=id,displayName,groupTypes,mailEnabled,securityEnabled,onPremisesSyncEnabled&$top=999`
   );
-  return (page?.value || []).map((g) => ({ id: g.id, displayName: g.displayName, manageable: isManageableGroup(g) }));
+  return groups.map((g) => ({ id: g.id, displayName: g.displayName, manageable: isManageableGroup(g) }));
 }
 
 async function skuLabels() {
-  const rows = (
+  return new Map((await tenantLicenses()).map((l) => [String(l.sku_id).toLowerCase(), l.label]));
+}
+
+// ---------------------------------------------------------------------------
+// Mail au manager à la clôture de l'arrivée
+// ---------------------------------------------------------------------------
+export async function notifyManagerOnboardingDone(movementId) {
+  try {
+    const movement = await loadMovement(movementId);
+    if (!movement || movement.type !== 'onboarding' || !movement.manager_email) return;
+    const groups = (
+      await pool.query(`SELECT group_name FROM movement_service_groups WHERE movement_id = $1 ORDER BY group_name`, [movementId])
+    ).rows.map((r) => r.group_name);
+    const licenses = (
+      await pool.query(
+        `SELECT lt.label FROM movement_licenses ml JOIN license_types lt ON lt.id = ml.license_type_id
+         WHERE ml.movement_id = $1 AND ml.status = 'assigned' ORDER BY lt.label`,
+        [movementId]
+      )
+    ).rows.map((r) => r.label);
+    const name = [movement.first_name, movement.last_name].filter(Boolean).join(' ');
+    const arrival = movement.effective_date ? new Date(movement.effective_date).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' }) : null;
+    const list = (items) => (items.length ? `<ul>${items.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul>` : '<p>—</p>');
+
+    await sendMailWithAttachments({
+      to: movement.manager_email,
+      subject: `Arrivée de ${name} : tout est prêt`,
+      html: `<div style="font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.6;color:#32373c">
+        <p>Bonjour ${escapeHtml(movement.manager_name || '')},</p>
+        <p>L'arrivée de <strong>${escapeHtml(name)}</strong>${arrival ? ` (le ${escapeHtml(arrival)})` : ''} est finalisée par le service informatique.</p>
+        ${
+          movement.microsoft_upn
+            ? `<p><strong>Identifiants Microsoft 365</strong><br>
+               Adresse : <strong>${escapeHtml(movement.microsoft_upn)}</strong><br>
+               Mot de passe provisoire : <strong>${escapeHtml(DEFAULT_PASSWORD())}</strong><br>
+               <span style="color:#677082">Il devra être changé à la première connexion.</span></p>`
+            : ''
+        }
+        <p><strong>Accès (groupes)</strong></p>${list(groups)}
+        <p><strong>Licences</strong></p>${list(licenses)}
+        <p>Pour toute question, contactez le service informatique.</p>
+        <p>Cordialement,<br>Service Informatique</p>
+      </div>`
+    });
     await pool.query(
-      `SELECT s.sku_id, s.display_name, lt.label
-       FROM subscribed_skus s LEFT JOIN license_types lt ON lt.code = s.display_name`
-    )
-  ).rows;
-  return new Map(rows.map((r) => [String(r.sku_id).toLowerCase(), r.label || r.display_name]));
+      `INSERT INTO movement_actions (movement_id, action_type, label, done_at, sort_order) VALUES ($1, 'other', $2, now(), 1000)`,
+      [movementId, `Mail de fin d'arrivée envoyé au manager (${movement.manager_email})`]
+    );
+  } catch (error) {
+    console.error("[Microsoft] Mail de fin d'arrivée au manager impossible", error.message || error);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +400,7 @@ export function registerMicrosoftProvisioningRoutes(app) {
       const movement = await loadMovement(req.params.id);
       if (!movement || movement.type !== 'onboarding') return res.status(404).json({ error: 'Arrivée introuvable' });
 
-      const groups = (
+      const requested = (
         await pool.query(
           `SELECT group_id AS id, group_name AS "displayName" FROM movement_service_groups WHERE movement_id = $1 ORDER BY created_at`,
           [movement.id]
@@ -254,12 +409,17 @@ export function registerMicrosoftProvisioningRoutes(app) {
       let threeCx = null;
       if (THREECX_GROUP_ID()) {
         const group = await graphOrNull(`/groups/${encodeURIComponent(THREECX_GROUP_ID())}?$select=id,displayName`);
-        threeCx = group ? { id: group.id, displayName: group.displayName } : { id: THREECX_GROUP_ID(), displayName: 'Groupe 3CX introuvable', missing: true };
+        threeCx = group ? { id: group.id, displayName: group.displayName } : null;
       }
+      const people = await microsoftPeople();
       let manager = null;
       if (movement.manager_email) {
-        const user = await graphOrNull(`/users/${encodeURIComponent(movement.manager_email)}?$select=id,displayName,userPrincipalName`);
-        if (user) manager = { id: user.id, displayName: user.displayName, upn: user.userPrincipalName };
+        const email = movement.manager_email.toLowerCase();
+        manager = people.find((p) => p.upn?.toLowerCase() === email) || null;
+        if (!manager) {
+          const user = await graphOrNull(`/users/${encodeURIComponent(movement.manager_email)}?$select=id,displayName,userPrincipalName`);
+          if (user) manager = { id: user.id, name: user.displayName, upn: user.userPrincipalName };
+        }
       }
 
       res.json({
@@ -269,12 +429,14 @@ export function registerMicrosoftProvisioningRoutes(app) {
         displayName: [movement.first_name, movement.last_name].filter(Boolean).join(' '),
         jobTitle: movement.job_title || movement.employee_job_title || '',
         upn: movement.microsoft_object_id ? movement.microsoft_upn : await suggestUpn(movement.first_name, movement.last_name),
-        domain: DOMAIN(),
+        defaultPassword: DEFAULT_PASSWORD(),
         manager,
-        managerName: movement.manager_name || null,
-        groups,
+        people,
+        requestedGroups: requested,
+        groups: await selectableGroups(),
         threeCx,
-        licenses: await requestedMicrosoftLicenses(movement.id)
+        requestedSkuIds: await requestedSkuIds(movement.id),
+        licenses: await tenantLicenses()
       });
     } catch (error) {
       console.error('[Microsoft] Aperçu création de compte', error);
@@ -286,38 +448,30 @@ export function registerMicrosoftProvisioningRoutes(app) {
   app.post('/api/movements/:id/microsoft-account', async (req, res) => {
     if (!requireIT(req, res)) return;
     const steps = [];
-    const step = async (label, run) => {
-      try {
-        const detail = await run();
-        steps.push({ label, ok: true, detail: detail || null });
-        return true;
-      } catch (error) {
-        steps.push({ label, ok: false, error: error.message });
-        return false;
-      }
-    };
+    const step = stepRunner(steps);
+    let movement = null;
     try {
-      const movement = await loadMovement(req.params.id);
+      movement = await loadMovement(req.params.id);
       if (!movement || movement.type !== 'onboarding') return res.status(404).json({ error: 'Arrivée introuvable' });
-      if (!movement.employee_id) return res.status(400).json({ error: "Aucune fiche collaborateur liée à cette arrivée" });
+      if (!movement.employee_id) return res.status(400).json({ error: 'Aucune fiche collaborateur liée à cette arrivée' });
 
       const body = req.body || {};
-      const groupIds = Array.isArray(body.groupIds) ? body.groupIds.map(String) : [];
+      const groups = (Array.isArray(body.groups) ? body.groups : [])
+        .filter((g) => g?.id)
+        .map((g) => ({ id: String(g.id), displayName: String(g.displayName || g.id) }));
       const skuIds = Array.isArray(body.skuIds) ? body.skuIds.map(String) : [];
       let userId = movement.microsoft_object_id || null;
       let upn = movement.microsoft_upn || null;
-      let password = null;
 
       if (!userId) {
         upn = String(body.upn || '').trim().toLowerCase();
         const givenName = String(body.givenName || '').trim();
         const surname = String(body.surname || '').trim();
         const displayName = String(body.displayName || `${givenName} ${surname}`).trim();
-        if (!isValidUpn(upn)) return res.status(400).json({ error: 'Adresse (UPN) invalide' });
+        if (!isValidUpn(upn)) return res.status(400).json({ error: 'Adresse invalide' });
         if (!displayName) return res.status(400).json({ error: "Nom d'affichage obligatoire" });
         if (await upnTaken(upn)) return res.status(409).json({ error: `L'adresse ${upn} est déjà utilisée dans Microsoft 365` });
 
-        password = temporaryPassword();
         const created = await graph('POST', '/users', {
           accountEnabled: true,
           displayName,
@@ -327,10 +481,10 @@ export function registerMicrosoftProvisioningRoutes(app) {
           mailNickname: upn.split('@')[0].replace(/[^a-z0-9._-]/gi, ''),
           userPrincipalName: upn,
           usageLocation: USAGE_LOCATION(),
-          passwordProfile: { password, forceChangePasswordNextSignIn: true }
+          passwordProfile: { password: DEFAULT_PASSWORD(), forceChangePasswordNextSignIn: true }
         });
         userId = created.id;
-        steps.push({ label: `Compte créé : ${upn}`, ok: true });
+        steps.push({ label: `Compte créé : ${upn} (mot de passe à changer à la première connexion)`, ok: true });
 
         // La fiche de la demande reçoit l'identité Microsoft : la synchro des
         // utilisateurs la retrouve ensuite au lieu de créer un doublon.
@@ -346,29 +500,28 @@ export function registerMicrosoftProvisioningRoutes(app) {
 
       const user = encodeURIComponent(userId);
 
-      if (body.managerId) {
-        await step('Manager renseigné', () =>
-          withRetry(() =>
-            graph('PUT', `/users/${user}/manager/$ref`, { '@odata.id': `https://graph.microsoft.com/v1.0/users/${body.managerId}` })
-          )
+      // Manager : le demandeur par défaut, ou la personne choisie par l'informatique.
+      if (body.manager?.id) {
+        const ok = await step(`Manager : ${body.manager.name || body.manager.upn}`, () =>
+          withRetry(() => graph('PUT', `/users/${user}/manager/$ref`, { '@odata.id': `https://graph.microsoft.com/v1.0/users/${body.manager.id}` }))
         );
+        if (ok && body.manager.upn && body.manager.upn.toLowerCase() !== String(movement.manager_email || '').toLowerCase()) {
+          await pool.query(`UPDATE movements SET manager_name = $1, manager_email = $2, updated_at = now() WHERE id = $3`, [
+            body.manager.name || null,
+            body.manager.upn,
+            movement.id
+          ]);
+        }
       }
 
-      const groupNames = new Map(
-        (await pool.query(`SELECT group_id, group_name FROM movement_service_groups WHERE movement_id = $1`, [movement.id])).rows.map((g) => [
-          g.group_id,
-          g.group_name
-        ])
-      );
       let groupsOk = true;
       let threeCxOk = false;
-      for (const groupId of groupIds) {
-        const is3cx = groupId === THREECX_GROUP_ID();
-        const label = is3cx ? 'Groupe 3CX (création du poste par la synchro 3CX)' : `Groupe ${groupNames.get(groupId) || groupId}`;
-        const ok = await step(label, async () => {
+      for (const group of groups) {
+        const is3cx = group.id === THREECX_GROUP_ID();
+        const ok = await step(is3cx ? `Téléphonie 3CX : ${group.displayName}` : `Groupe ${group.displayName}`, async () => {
           try {
             await withRetry(() =>
-              graph('POST', `/groups/${encodeURIComponent(groupId)}/members/$ref`, {
+              graph('POST', `/groups/${encodeURIComponent(group.id)}/members/$ref`, {
                 '@odata.id': `https://graph.microsoft.com/v1.0/directoryObjects/${userId}`
               })
             );
@@ -380,29 +533,43 @@ export function registerMicrosoftProvisioningRoutes(app) {
         if (is3cx) threeCxOk = ok;
         else groupsOk = groupsOk && ok;
       }
+      // La liste des groupes de l'arrivée reflète ce qui a été validé.
+      const kept = groups.filter((g) => g.id !== THREECX_GROUP_ID());
+      await pool.query(`DELETE FROM movement_service_groups WHERE movement_id = $1 AND NOT (group_id = ANY($2::text[]))`, [
+        movement.id,
+        kept.map((g) => g.id)
+      ]);
+      for (const group of kept) {
+        await pool.query(
+          `INSERT INTO movement_service_groups (movement_id, group_id, group_name)
+           SELECT $1, $2, $3 WHERE NOT EXISTS (SELECT 1 FROM movement_service_groups WHERE movement_id = $1 AND group_id = $2)`,
+          [movement.id, group.id, group.displayName]
+        );
+      }
 
       let licensesOk = true;
-      if (skuIds.length) {
-        const labels = await skuLabels();
-        for (const skuId of skuIds) {
-          const ok = await step(`Licence ${labels.get(skuId.toLowerCase()) || skuId}`, () =>
-            withRetry(() =>
-              graph('POST', `/users/${user}/assignLicense`, { addLicenses: [{ skuId, disabledPlans: [] }], removeLicenses: [] })
-            )
+      const licenses = await tenantLicenses();
+      for (const skuId of skuIds) {
+        const license = licenses.find((l) => String(l.sku_id).toLowerCase() === skuId.toLowerCase());
+        const ok = await step(`Licence ${license?.label || skuId}`, () =>
+          withRetry(() => graph('POST', `/users/${user}/assignLicense`, { addLicenses: [{ skuId, disabledPlans: [] }], removeLicenses: [] }))
+        );
+        licensesOk = licensesOk && ok;
+        if (ok && license?.license_type_id) {
+          const updated = await pool.query(
+            `UPDATE movement_licenses SET status = 'assigned', license_id = NULL WHERE movement_id = $1 AND license_type_id = $2`,
+            [movement.id, license.license_type_id]
           );
-          licensesOk = licensesOk && ok;
-          if (ok) {
-            await pool.query(
-              `UPDATE movement_licenses ml SET status = 'assigned', license_id = NULL
-               FROM license_types lt, subscribed_skus s
-               WHERE ml.movement_id = $1 AND lt.id = ml.license_type_id AND s.display_name = lt.code AND lower(s.sku_id) = lower($2)`,
-              [movement.id, skuId]
-            );
+          if (!updated.rowCount) {
+            await pool.query(`INSERT INTO movement_licenses (movement_id, license_type_id, status) VALUES ($1, $2, 'assigned')`, [
+              movement.id,
+              license.license_type_id
+            ]);
           }
         }
       }
 
-      // Check-list : coche ce qui est fait.
+      // Check-list : coche ce qui est fait et ajoute le récapitulatif.
       const done = ['account', 'creation'];
       if (groupsOk) done.push('groups');
       if (threeCxOk) done.push('telephony');
@@ -414,16 +581,18 @@ export function registerMicrosoftProvisioningRoutes(app) {
       ).rowCount;
       if (licensesOk && !pendingLicenses) done.push('license', 'license_assignment');
       await markActionsDone(movement.id, done);
-      if (movement.status === 'pending' || movement.status === 'envoye') {
+      await addRecap(movement.id, 'Récapitulatif Microsoft : création du compte', steps);
+      if (['pending', 'envoye'].includes(movement.status)) {
         await pool.query(`UPDATE movements SET status = 'in_progress', updated_at = now() WHERE id = $1`, [movement.id]);
       }
 
       await audit(req, 'microsoft_account_create', movement.id, { upn, steps });
-      res.json({ upn, temporaryPassword: password, steps });
+      res.json({ upn, temporaryPassword: DEFAULT_PASSWORD(), steps });
     } catch (error) {
       console.error('[Microsoft] Création de compte', error);
       steps.push({ label: 'Création du compte', ok: false, error: error.message });
-      res.status(error.status === 403 ? 502 : 500).json({ error: error.message, steps });
+      if (movement) await addRecap(movement.id, 'Récapitulatif Microsoft : création du compte (échec)', steps).catch(() => {});
+      res.status(500).json({ error: error.message, steps });
     }
   });
 
@@ -440,10 +609,8 @@ export function registerMicrosoftProvisioningRoutes(app) {
         user: { id: user.id, displayName: user.displayName, upn: user.userPrincipalName, accountEnabled: user.accountEnabled },
         licenses: (user.assignedLicenses || []).map((l) => ({ skuId: l.skuId, label: labels.get(String(l.skuId).toLowerCase()) || l.skuId })),
         groups: await userGroups(user.id),
-        defaultReply:
-          `Bonjour,\n\n${user.displayName} ne fait plus partie d'ELYADE.` +
-          (movement.manager_email ? ` Pour toute demande, merci de contacter ${movement.manager_email}.` : '') +
-          `\n\nCordialement,`
+        people: (await microsoftPeople()).filter((p) => p.id !== user.id),
+        managerUpn: movement.manager_email || null
       });
     } catch (error) {
       console.error('[Microsoft] Aperçu départ', error);
@@ -451,42 +618,56 @@ export function registerMicrosoftProvisioningRoutes(app) {
     }
   });
 
-  // ---- Offboarding : désactivation ----
+  // ---- Offboarding : traitement ----
   app.post('/api/movements/:id/microsoft-offboarding', async (req, res) => {
     if (!requireIT(req, res)) return;
     const steps = [];
-    const step = async (label, run) => {
-      try {
-        await run();
-        steps.push({ label, ok: true });
-        return true;
-      } catch (error) {
-        steps.push({ label, ok: false, error: error.message });
-        return false;
-      }
-    };
+    const step = stepRunner(steps);
+    let movement = null;
     try {
-      const movement = await loadMovement(req.params.id);
+      movement = await loadMovement(req.params.id);
       if (!movement || movement.type !== 'offboarding') return res.status(404).json({ error: 'Départ introuvable' });
       const target = await resolveDepartingUser(movement);
       if (!target) return res.status(404).json({ error: 'Compte Microsoft du collaborateur introuvable' });
       const user = encodeURIComponent(target.id);
+      const upn = target.userPrincipalName;
       const options = req.body || {};
 
-      // La réponse automatique passe en premier : la boîte doit encore avoir sa licence.
+      // 1. Réponse automatique (texte saisi à la validation).
       const replyMessage = String(options.autoReply || '').trim();
       if (replyMessage) {
-        const html = replyMessage
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/\n/g, '<br>');
+        const html = escapeHtml(replyMessage).replace(/\n/g, '<br>');
         await step('Réponse automatique activée', () =>
           graph('PATCH', `/users/${user}/mailboxSettings`, {
             automaticRepliesSetting: { status: 'alwaysEnabled', externalAudience: 'all', internalReplyMessage: html, externalReplyMessage: html }
           })
         );
       }
+
+      // 2. Boîte partagée, puis délégation (accès complet) à la personne désignée.
+      let shared = false;
+      if (options.convertToShared) {
+        shared = await step('Boîte aux lettres convertie en boîte partagée', () => exchange('Set-Mailbox', { Identity: upn, Type: 'Shared' }));
+      }
+      const delegate = options.delegate?.upn ? options.delegate : null;
+      if (delegate) {
+        await step(`Délégation (accès complet) donnée à ${delegate.name || delegate.upn}`, () =>
+          exchange('Add-MailboxPermission', {
+            Identity: upn,
+            User: delegate.upn,
+            AccessRights: ['FullAccess'],
+            InheritanceType: 'All',
+            AutoMapping: true
+          })
+        );
+        if (options.sendAs) {
+          await step(`Envoi « en tant que » la boîte donné à ${delegate.name || delegate.upn}`, () =>
+            exchange('Add-RecipientPermission', { Identity: upn, Trustee: delegate.upn, AccessRights: ['SendAs'], Confirm: false })
+          );
+        }
+      }
+
+      // 3. Blocage et déconnexion.
       if (options.block) {
         const ok = await step('Connexion bloquée', () => graph('PATCH', `/users/${user}`, { accountEnabled: false }));
         if (ok) await pool.query(`UPDATE employees SET account_enabled = false, updated_at = now() WHERE microsoft_object_id = $1`, [target.id]);
@@ -494,25 +675,35 @@ export function registerMicrosoftProvisioningRoutes(app) {
       if (options.revokeSessions) {
         await step('Sessions déconnectées (ordinateurs, téléphones, Teams…)', () => graph('POST', `/users/${user}/revokeSignInSessions`));
       }
+
+      // 4. Groupes.
       if (options.removeGroups) {
         for (const group of (await userGroups(target.id)).filter((g) => g.manageable)) {
-          await step(`Retiré du groupe ${group.displayName}`, () =>
-            graph('DELETE', `/groups/${encodeURIComponent(group.id)}/members/${user}/$ref`)
-          );
+          await step(`Retiré du groupe ${group.displayName}`, () => graph('DELETE', `/groups/${encodeURIComponent(group.id)}/members/${user}/$ref`));
         }
       }
+
+      // 5. Licences : seulement si la boîte est partagée (sinon elle serait supprimée au bout de 30 jours).
       if (options.removeLicenses && (target.assignedLicenses || []).length) {
-        const labels = await skuLabels();
-        const skuIds = target.assignedLicenses.map((l) => l.skuId);
-        await step(`Licences retirées : ${skuIds.map((id) => labels.get(String(id).toLowerCase()) || id).join(', ')}`, () =>
-          graph('POST', `/users/${user}/assignLicense`, { addLicenses: [], removeLicenses: skuIds })
-        );
+        if (options.convertToShared && !shared) {
+          steps.push({ label: 'Licences conservées', ok: false, error: "la conversion en boîte partagée a échoué : la boîte serait supprimée sans licence" });
+        } else {
+          const labels = await skuLabels();
+          const skuIds = target.assignedLicenses.map((l) => l.skuId);
+          const ok = await step(`Licences retirées : ${skuIds.map((id) => labels.get(String(id).toLowerCase()) || id).join(', ')}`, () =>
+            graph('POST', `/users/${user}/assignLicense`, { addLicenses: [], removeLicenses: skuIds })
+          );
+          if (ok) await markActionsDone(movement.id, ['license', 'license_assignment']);
+        }
       }
 
-      await audit(req, 'microsoft_account_offboard', movement.id, { upn: target.userPrincipalName, steps });
-      res.json({ upn: target.userPrincipalName, steps });
+      await addRecap(movement.id, 'Récapitulatif Microsoft : désactivation du compte', steps);
+      await audit(req, 'microsoft_account_offboard', movement.id, { upn, steps });
+      res.json({ upn, steps });
     } catch (error) {
       console.error('[Microsoft] Départ', error);
+      steps.push({ label: 'Traitement du départ', ok: false, error: error.message });
+      if (movement) await addRecap(movement.id, 'Récapitulatif Microsoft : désactivation (échec)', steps).catch(() => {});
       res.status(500).json({ error: error.message, steps });
     }
   });

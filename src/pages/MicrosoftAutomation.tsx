@@ -1,13 +1,15 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { CheckCircle2, Copy, UserMinus, UserPlus, X, XCircle } from 'lucide-react';
 import type { Employee, Movement } from '../lib/supabase';
 
 // Automatisation Microsoft d'une arrivée (création du compte) ou d'un départ
-// (désactivation). Tout passe par un récapitulatif validé par l'informatique.
+// (boîte partagée, désactivation). Tout passe par un récapitulatif validé par
+// l'informatique ; le résultat est aussi noté dans la check-list.
 
 type Step = { label: string; ok: boolean; error?: string; detail?: string | null };
-type Group = { id: string; displayName: string; missing?: boolean; manageable?: boolean };
+type Group = { id: string; displayName: string; manageable?: boolean };
 type License = { sku_id: string; label: string; available: number };
+type Person = { id: string; name: string; upn: string };
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json' } });
@@ -62,6 +64,77 @@ function Check({ checked, onChange, children, disabled }: { checked: boolean; on
   );
 }
 
+// Champ de recherche avec liste de choix.
+function SearchPick<T>({
+  items,
+  label,
+  sub,
+  onPick,
+  placeholder,
+}: {
+  items: T[];
+  label: (item: T) => string;
+  sub?: (item: T) => string;
+  onPick: (item: T) => void;
+  placeholder: string;
+}) {
+  const [q, setQ] = useState('');
+  const [open, setOpen] = useState(false);
+  const matches = useMemo(() => {
+    const query = q.trim().toLowerCase();
+    return items.filter((item) => `${label(item)} ${sub?.(item) || ''}`.toLowerCase().includes(query)).slice(0, 30);
+  }, [items, q, label, sub]);
+  return (
+    <div className="relative">
+      <input
+        className="input text-sm"
+        placeholder={placeholder}
+        value={q}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setOpen(true);
+        }}
+      />
+      {open && (
+        <div className="absolute z-10 mt-1 w-full max-h-60 overflow-auto bg-white border border-ink-200 rounded-lg shadow-elevated">
+          {matches.length === 0 && <p className="text-xs text-ink-400 p-2">Aucun résultat</p>}
+          {matches.map((item, i) => (
+            <button
+              key={i}
+              type="button"
+              className="w-full text-left px-3 py-1.5 hover:bg-elyade-50"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onPick(item);
+                setQ('');
+                setOpen(false);
+              }}
+            >
+              <span className="text-sm">{label(item)}</span>
+              {sub && <span className="block text-xs text-ink-400">{sub(item)}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PersonField({ value, people, onChange, placeholder }: { value: Person | null; people: Person[]; onChange: (p: Person | null) => void; placeholder: string }) {
+  return value ? (
+    <div className="flex items-center gap-2 text-sm p-2 rounded-lg border border-ink-200 bg-white">
+      <span className="flex-1">
+        {value.name} <span className="text-ink-400">({value.upn})</span>
+      </span>
+      <button type="button" className="btn-ghost text-xs" onClick={() => onChange(null)}>Changer</button>
+    </div>
+  ) : (
+    <SearchPick items={people} label={(p) => p.name} sub={(p) => p.upn} onPick={onChange} placeholder={placeholder} />
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Arrivée : création du compte
 // ---------------------------------------------------------------------------
@@ -72,20 +145,23 @@ type Preview = {
   displayName: string;
   jobTitle: string;
   upn: string | null;
-  domain: string;
-  manager: { id: string; displayName: string; upn: string } | null;
-  managerName: string | null;
+  defaultPassword: string;
+  manager: Person | null;
+  people: Person[];
+  requestedGroups: Group[];
   groups: Group[];
   threeCx: Group | null;
+  requestedSkuIds: string[];
   licenses: License[];
 };
 
 function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement; onClose: () => void; onDone: () => void }) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [form, setForm] = useState({ givenName: '', surname: '', displayName: '', jobTitle: '', upn: '' });
-  const [groupIds, setGroupIds] = useState<string[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [with3cx, setWith3cx] = useState(true);
   const [skuIds, setSkuIds] = useState<string[]>([]);
-  const [withManager, setWithManager] = useState(true);
+  const [manager, setManager] = useState<Person | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ upn: string; temporaryPassword: string | null; steps: Step[] } | null>(null);
@@ -96,51 +172,50 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
       .then((p) => {
         setPreview(p);
         setForm({ givenName: p.givenName, surname: p.surname, displayName: p.displayName, jobTitle: p.jobTitle, upn: p.upn || '' });
-        setGroupIds([...p.groups.map((g) => g.id), ...(p.threeCx && !p.threeCx.missing ? [p.threeCx.id] : [])]);
-        setSkuIds(p.licenses.map((l) => l.sku_id));
+        setGroups(p.requestedGroups);
+        setSkuIds(p.requestedSkuIds);
+        setManager(p.manager);
       })
       .catch((err) => setError(err.message));
   }, [movement.id]);
 
-  const toggle = (list: string[], set: (v: string[]) => void, id: string, on: boolean) =>
-    set(on ? [...list, id] : list.filter((x) => x !== id));
+  const addableGroups = (preview?.groups || []).filter((g) => !groups.some((x) => x.id === g.id));
 
   async function submit() {
     setBusy(true);
     setError(null);
     try {
+      const allGroups = [...groups, ...(with3cx && preview?.threeCx ? [preview.threeCx] : [])];
       const res = await call<{ upn: string; temporaryPassword: string | null; steps: Step[] }>(`/api/movements/${movement.id}/microsoft-account`, {
         method: 'POST',
-        body: JSON.stringify({ ...form, groupIds, skuIds, managerId: withManager ? preview?.manager?.id : null }),
+        body: JSON.stringify({ ...form, groups: allGroups, skuIds, manager }),
       });
       setResult(res);
-      onDone();
     } catch (err: any) {
       setError(err.message);
       if (err.steps?.length) setResult({ upn: form.upn, temporaryPassword: null, steps: err.steps });
     } finally {
       setBusy(false);
+      onDone();
     }
   }
 
   if (result) {
+    const credentials = `Adresse : ${result.upn}\nMot de passe provisoire : ${result.temporaryPassword}`;
     return (
       <Modal title="Compte Microsoft" onClose={onClose}>
         <Steps steps={result.steps} />
         {result.temporaryPassword && (
-          <div className="mt-4 p-3 rounded-lg bg-elyade-50 border border-elyade-200">
-            <p className="text-sm text-ink-700 mb-2">
-              Identifiants à transmettre au manager (le mot de passe ne sera <strong>plus affiché</strong> ensuite) :
-            </p>
-            <p className="text-sm">Adresse : <strong>{result.upn}</strong></p>
-            <p className="text-sm flex items-center gap-2">
+          <div className="mt-4 p-3 rounded-lg bg-elyade-50 border border-elyade-200 text-sm">
+            <p>Adresse : <strong>{result.upn}</strong></p>
+            <p className="flex items-center gap-2">
               Mot de passe provisoire : <code className="font-mono bg-white px-2 py-0.5 rounded border">{result.temporaryPassword}</code>
               <button
                 type="button"
                 className="btn-ghost p-1"
-                title="Copier"
+                title="Copier les identifiants"
                 onClick={() => {
-                  void navigator.clipboard.writeText(`Adresse : ${result.upn}\nMot de passe provisoire : ${result.temporaryPassword}`);
+                  void navigator.clipboard.writeText(credentials);
                   setCopied(true);
                 }}
               >
@@ -148,13 +223,11 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
               </button>
               {copied && <span className="text-xs text-green-700">Copié</span>}
             </p>
-            <p className="text-xs text-ink-500 mt-2">Le collaborateur devra choisir son propre mot de passe à la première connexion.</p>
+            <p className="text-xs text-ink-500 mt-1">À changer à la première connexion. Le manager recevra ces identifiants par mail à la clôture de l'arrivée.</p>
           </div>
         )}
         {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
-        <p className="text-xs text-ink-500 mt-3">
-          Une étape en échec peut être relancée : rouvrez « Créer le compte Microsoft », le compte existant est repris.
-        </p>
+        <p className="text-xs text-ink-500 mt-3">Le récapitulatif est ajouté à la check-list. Une étape en échec peut être relancée en rouvrant ce bouton.</p>
         <div className="flex justify-end mt-4">
           <button type="button" className="btn-primary text-sm" onClick={onClose}>Fermer</button>
         </div>
@@ -167,10 +240,10 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
       {!preview && !error && <p className="text-sm text-ink-500">Préparation…</p>}
       {error && !preview && <p className="text-sm text-red-600">{error}</p>}
       {preview && (
-        <div className="space-y-4">
+        <div className="space-y-5">
           {preview.existing ? (
             <p className="text-sm p-2 rounded bg-green-50 border border-green-200">
-              Compte déjà créé : <strong>{preview.existing.upn}</strong>. Seuls les groupes et licences cochés seront (re)appliqués.
+              Compte déjà créé : <strong>{preview.existing.upn}</strong>. Le manager, les groupes et les licences ci-dessous seront appliqués.
             </p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -191,72 +264,76 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
                 <input className="input" value={form.jobTitle} onChange={(e) => setForm({ ...form, jobTitle: e.target.value })} />
               </label>
               <label className="text-sm sm:col-span-2">
-                <span className="label">Adresse (identifiant de connexion)</span>
+                <span className="label">Adresse mail (identifiant)</span>
                 <input className="input font-mono" value={form.upn} onChange={(e) => setForm({ ...form, upn: e.target.value.trim().toLowerCase() })} />
-                <span className="text-xs text-ink-500">Proposée libre dans Microsoft 365 ; modifiable (homonymes, nom composé…).</span>
+                <span className="text-xs text-ink-500">
+                  Format pnom@elyade.com, vérifiée libre. Mot de passe initial : <code>{preview.defaultPassword}</code> (à changer à la première connexion).
+                </span>
               </label>
             </div>
           )}
 
           <div>
             <p className="label">Manager</p>
-            {preview.manager ? (
-              <Check checked={withManager} onChange={setWithManager}>
-                {preview.manager.displayName} <span className="text-ink-400">({preview.manager.upn})</span>
-              </Check>
-            ) : (
-              <p className="text-sm text-ink-500">{preview.managerName ? `${preview.managerName} : compte Microsoft introuvable` : 'Non renseigné'}</p>
-            )}
+            <PersonField value={manager} people={preview.people} onChange={setManager} placeholder="Rechercher le manager…" />
+            <p className="text-xs text-ink-500 mt-1">Par défaut le demandeur ; il reçoit le mail de fin d'arrivée.</p>
           </div>
 
           <div>
-            <p className="label">Groupes</p>
-            <div className="space-y-1">
-              {preview.groups.length === 0 && !preview.threeCx && <p className="text-sm text-ink-500">Aucun groupe demandé.</p>}
-              {preview.groups.map((g) => (
-                <Check key={g.id} checked={groupIds.includes(g.id)} onChange={(on) => toggle(groupIds, setGroupIds, g.id, on)}>
+            <p className="label">Groupes Microsoft</p>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {groups.length === 0 && <span className="text-sm text-ink-400">Aucun groupe.</span>}
+              {groups.map((g) => (
+                <span key={g.id} className="badge bg-ink-100 text-ink-700">
                   {g.displayName}
-                </Check>
+                  <button type="button" className="ml-1 text-ink-400 hover:text-red-600" title="Retirer" onClick={() => setGroups(groups.filter((x) => x.id !== g.id))}>
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
               ))}
-              {preview.threeCx && (
-                <Check
-                  checked={groupIds.includes(preview.threeCx.id)}
-                  disabled={preview.threeCx.missing}
-                  onChange={(on) => toggle(groupIds, setGroupIds, preview.threeCx!.id, on)}
-                >
-                  Téléphonie 3CX : {preview.threeCx.displayName}
-                  <span className="block text-xs text-ink-500">Le poste est créé par la synchronisation Microsoft 365 du 3CX.</span>
-                </Check>
-              )}
-              {!preview.threeCx && (
-                <p className="text-xs text-ink-400">Téléphonie 3CX : groupe non configuré (variable MICROSOFT_3CX_GROUP_ID).</p>
-              )}
             </div>
+            <SearchPick
+              items={addableGroups}
+              label={(g) => g.displayName}
+              onPick={(g) => setGroups([...groups, g])}
+              placeholder="Ajouter un groupe (🏢 service, 🔐 sécurité)…"
+            />
+            {preview.threeCx ? (
+              <div className="mt-2">
+                <Check checked={with3cx} onChange={setWith3cx}>
+                  Téléphonie 3CX ({preview.threeCx.displayName}) : le poste est créé par la synchro Microsoft 365 du 3CX
+                </Check>
+              </div>
+            ) : (
+              <p className="text-xs text-ink-400 mt-2">Téléphonie 3CX : groupe non configuré (MICROSOFT_3CX_GROUP_ID).</p>
+            )}
           </div>
 
           <div>
             <p className="label">Licences Microsoft</p>
             <div className="space-y-1">
-              {preview.licenses.length === 0 && <p className="text-sm text-ink-500">Aucune licence Microsoft demandée.</p>}
               {preview.licenses.map((l) => (
-                <Check key={l.sku_id} checked={skuIds.includes(l.sku_id)} onChange={(on) => toggle(skuIds, setSkuIds, l.sku_id, on)}>
+                <Check
+                  key={l.sku_id}
+                  checked={skuIds.includes(l.sku_id)}
+                  onChange={(on) => setSkuIds(on ? [...skuIds, l.sku_id] : skuIds.filter((id) => id !== l.sku_id))}
+                >
                   {l.label}{' '}
                   <span className={l.available > 0 ? 'text-ink-400' : 'text-red-600'}>
                     ({l.available > 0 ? `${l.available} disponible${l.available > 1 ? 's' : ''}` : 'aucune disponible'})
                   </span>
+                  {preview.requestedSkuIds.includes(l.sku_id) && <span className="badge bg-elyade-50 text-elyade-700 ml-1">demandée</span>}
                 </Check>
               ))}
             </div>
           </div>
 
-          <p className="text-xs text-ink-500">
-            Restent à faire à la main : accès aux boîtes partagées, PaperCut, matériel. Les étapes réussies sont cochées dans la check-list.
-          </p>
+          <p className="text-xs text-ink-500">À faire à la main : boîtes partagées, PaperCut, matériel.</p>
           {error && <p className="text-sm text-red-600">{error}</p>}
           <div className="flex justify-end gap-2">
             <button type="button" className="btn-ghost text-sm" onClick={onClose}>Annuler</button>
             <button type="button" className="btn-primary text-sm" disabled={busy || (!preview.existing && !form.upn)} onClick={() => void submit()}>
-              {busy ? 'Création en cours…' : preview.existing ? 'Appliquer' : 'Créer le compte'}
+              {busy ? 'En cours…' : preview.existing ? 'Appliquer' : 'Créer le compte'}
             </button>
           </div>
         </div>
@@ -266,19 +343,29 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
 }
 
 // ---------------------------------------------------------------------------
-// Départ : désactivation
+// Départ : boîte partagée et désactivation
 // ---------------------------------------------------------------------------
 type OffPreview = {
   user: { id: string; displayName: string; upn: string; accountEnabled: boolean } | null;
   licenses?: { skuId: string; label: string }[];
   groups?: Group[];
-  defaultReply?: string;
+  people?: Person[];
+  managerUpn?: string | null;
 };
 
 function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onClose: () => void; onDone: () => void }) {
   const [preview, setPreview] = useState<OffPreview | null>(null);
-  const [options, setOptions] = useState({ block: true, revokeSessions: true, removeGroups: true, removeLicenses: false, withReply: true });
+  const [options, setOptions] = useState({
+    withReply: true,
+    convertToShared: true,
+    sendAs: false,
+    block: true,
+    revokeSessions: true,
+    removeGroups: true,
+    removeLicenses: true,
+  });
   const [reply, setReply] = useState('');
+  const [delegate, setDelegate] = useState<Person | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<Step[] | null>(null);
@@ -287,45 +374,52 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
     call<OffPreview>(`/api/movements/${movement.id}/microsoft-offboarding`)
       .then((p) => {
         setPreview(p);
-        setReply(p.defaultReply || '');
+        // Délégation proposée au manager, modifiable.
+        const manager = p.people?.find((x) => x.upn?.toLowerCase() === p.managerUpn?.toLowerCase());
+        if (manager) setDelegate(manager);
       })
       .catch((err) => setError(err.message));
   }, [movement.id]);
 
+  const set = (key: keyof typeof options) => (value: boolean) => setOptions({ ...options, [key]: value });
+  const manageable = (preview?.groups || []).filter((g) => g.manageable);
+  const others = (preview?.groups || []).filter((g) => !g.manageable);
+  const missingReply = options.withReply && !reply.trim();
+
   async function submit() {
-    if (!confirm(`Désactiver le compte Microsoft de ${preview?.user?.displayName} ?`)) return;
+    if (!confirm(`Lancer le départ du compte Microsoft de ${preview?.user?.displayName} ?`)) return;
     setBusy(true);
     setError(null);
     try {
       const res = await call<{ steps: Step[] }>(`/api/movements/${movement.id}/microsoft-offboarding`, {
         method: 'POST',
         body: JSON.stringify({
+          autoReply: options.withReply ? reply : '',
+          convertToShared: options.convertToShared,
+          delegate: options.convertToShared ? delegate : null,
+          sendAs: options.sendAs,
           block: options.block,
           revokeSessions: options.revokeSessions,
           removeGroups: options.removeGroups,
-          removeLicenses: options.removeLicenses,
-          autoReply: options.withReply ? reply : '',
+          removeLicenses: options.removeLicenses && options.convertToShared,
         }),
       });
       setSteps(res.steps);
-      onDone();
     } catch (err: any) {
       setError(err.message);
       if (err.steps?.length) setSteps(err.steps);
     } finally {
       setBusy(false);
+      onDone();
     }
   }
 
-  const set = (key: keyof typeof options) => (value: boolean) => setOptions({ ...options, [key]: value });
-  const manageable = (preview?.groups || []).filter((g) => g.manageable);
-  const others = (preview?.groups || []).filter((g) => !g.manageable);
-
   if (steps) {
     return (
-      <Modal title="Désactivation du compte Microsoft" onClose={onClose}>
+      <Modal title="Départ : compte Microsoft" onClose={onClose}>
         <Steps steps={steps} />
         {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
+        <p className="text-xs text-ink-500 mt-3">Le récapitulatif est ajouté à la check-list.</p>
         <div className="flex justify-end mt-4">
           <button type="button" className="btn-primary text-sm" onClick={onClose}>Fermer</button>
         </div>
@@ -334,7 +428,7 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
   }
 
   return (
-    <Modal title="Désactiver le compte Microsoft" onClose={onClose}>
+    <Modal title="Départ : compte Microsoft" onClose={onClose}>
       {!preview && !error && <p className="text-sm text-ink-500">Recherche du compte…</p>}
       {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
       {preview && !preview.user && <p className="text-sm text-amber-700">Aucun compte Microsoft trouvé pour ce collaborateur. Associez-le d'abord.</p>}
@@ -346,31 +440,52 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
           </p>
 
           <div className="space-y-2">
-            <Check checked={options.withReply} onChange={set('withReply')}>Activer une réponse automatique</Check>
-            {options.withReply && <textarea className="input text-sm" rows={5} value={reply} onChange={(e) => setReply(e.target.value)} />}
+            <Check checked={options.withReply} onChange={set('withReply')}>Réponse automatique</Check>
+            {options.withReply && (
+              <textarea
+                className="input text-sm"
+                rows={5}
+                placeholder="Texte de la réponse automatique (obligatoire)"
+                value={reply}
+                onChange={(e) => setReply(e.target.value)}
+              />
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Check checked={options.convertToShared} onChange={set('convertToShared')}>Convertir la boîte mail en boîte partagée</Check>
+            {options.convertToShared && (
+              <div className="pl-6 space-y-2">
+                <p className="text-xs text-ink-500">Personne qui aura la délégation (accès complet à la boîte) :</p>
+                <PersonField value={delegate} people={preview.people || []} onChange={setDelegate} placeholder="Rechercher la personne…" />
+                <Check checked={options.sendAs} onChange={set('sendAs')} disabled={!delegate}>Lui permettre aussi d'envoyer des mails au nom de cette boîte</Check>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
             <Check checked={options.block} onChange={set('block')}>Bloquer la connexion</Check>
             <Check checked={options.revokeSessions} onChange={set('revokeSessions')}>Déconnecter toutes les sessions (ordinateurs, téléphones, Teams…)</Check>
             <Check checked={options.removeGroups} onChange={set('removeGroups')} disabled={manageable.length === 0}>
               Retirer des groupes ({manageable.length})
               {manageable.length > 0 && <span className="block text-xs text-ink-500">{manageable.map((g) => g.displayName).join(', ')}</span>}
-              {others.length > 0 && (
-                <span className="block text-xs text-ink-400">
-                  À retirer dans Exchange / l'AD : {others.map((g) => g.displayName).join(', ')}
-                </span>
-              )}
+              {others.length > 0 && <span className="block text-xs text-ink-400">À retirer dans Exchange / l'AD : {others.map((g) => g.displayName).join(', ')}</span>}
             </Check>
-            <Check checked={options.removeLicenses} onChange={set('removeLicenses')} disabled={!preview.licenses?.length}>
+            <Check checked={options.removeLicenses && options.convertToShared} onChange={set('removeLicenses')} disabled={!preview.licenses?.length || !options.convertToShared}>
               Retirer les licences Microsoft ({preview.licenses?.map((l) => l.label).join(', ') || 'aucune'})
-              <span className="block text-xs text-amber-700">
-                Attention : sans licence, la boîte mail est supprimée au bout de 30 jours. Convertissez-la d'abord en boîte partagée dans Exchange si elle doit être conservée.
+              <span className="block text-xs text-ink-500">
+                {options.convertToShared
+                  ? 'Une boîte partagée n’a pas besoin de licence. Les licences ne sont retirées que si la conversion réussit.'
+                  : 'Impossible sans boîte partagée : la boîte mail serait supprimée au bout de 30 jours.'}
               </span>
             </Check>
           </div>
 
+          {missingReply && <p className="text-xs text-amber-700">Saisissez le texte de la réponse automatique, ou décochez-la.</p>}
           <div className="flex justify-end gap-2">
             <button type="button" className="btn-ghost text-sm" onClick={onClose}>Annuler</button>
-            <button type="button" className="btn-primary text-sm" disabled={busy} onClick={() => void submit()}>
-              {busy ? 'En cours…' : 'Désactiver'}
+            <button type="button" className="btn-primary text-sm" disabled={busy || missingReply} onClick={() => void submit()}>
+              {busy ? 'En cours…' : 'Valider le départ'}
             </button>
           </div>
         </div>
@@ -409,7 +524,7 @@ export default function MicrosoftAutomation({
     return (
       <>
         <button type="button" className="btn-secondary text-sm" onClick={() => setOpen(true)}>
-          <UserMinus className="w-4 h-4" /> Désactiver le compte Microsoft
+          <UserMinus className="w-4 h-4" /> Départ : compte Microsoft
         </button>
         {open && <OffboardModal movement={movement} onClose={() => setOpen(false)} onDone={onDone} />}
       </>

@@ -830,6 +830,8 @@ function ActionChecklist({
               </button>
               <div className="flex-1 min-w-0">
                 <p className={`text-sm ${done ? 'line-through text-ink-400' : 'text-ink-800 font-medium'}`}>{a.label}</p>
+                {/* Récapitulatifs (automatisation Microsoft) : détail des étapes. */}
+                {a.notes && <p className="text-xs text-ink-600 whitespace-pre-line mt-1">{a.notes}</p>}
                 {a.due_date && (
                   <p className={`text-xs flex items-center gap-1 ${overdue ? 'text-red-600' : 'text-ink-500'}`}>
                     <Clock className="w-3 h-3" />

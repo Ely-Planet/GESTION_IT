@@ -23,7 +23,7 @@ import { syncLuccaOffboardings } from './luccaOffboardingSync.mjs';
 import { registerProjectRoutes } from './projects.mjs';
 import { registerGroupProjectRoutes, hasGroupProjectAccess } from './groupProjects.mjs';
 import { registerForecastRoutes } from './forecast.mjs';
-import { registerMicrosoftProvisioningRoutes } from './microsoftProvisioning.mjs';
+import { registerMicrosoftProvisioningRoutes, notifyManagerOnboardingDone } from './microsoftProvisioning.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3427,6 +3427,10 @@ app.patch('/api/movements/:id', async (req, res) => {
       .map((column, index) => `${column} = $${index + 1}`)
       .join(', ');
 
+    const previousStatus = columns.includes('status')
+      ? (await pool.query(`SELECT status FROM movements WHERE id = $1`, [req.params.id])).rows[0]?.status
+      : null;
+
     const result = await pool.query(
       `
       UPDATE movements
@@ -3442,7 +3446,13 @@ app.patch('/api/movements/:id', async (req, res) => {
       return res.status(404).json({ error: 'Mouvement introuvable.' });
     }
 
-    res.json(result.rows[0]);
+    // Clôture d'une arrivée : le manager est prévenu par mail.
+    const updatedMovement = result.rows[0];
+    if (updatedMovement.type === 'onboarding' && updatedMovement.status === 'done' && previousStatus !== 'done') {
+      void notifyManagerOnboardingDone(updatedMovement.id);
+    }
+
+    res.json(updatedMovement);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
