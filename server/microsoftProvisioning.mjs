@@ -364,7 +364,9 @@ async function markActionsDone(movementId, actionTypes) {
 
 // Récapitulatif dans la check-list : une ligne cochée avec le détail en note.
 async function addRecap(movementId, label, steps) {
-  const notes = steps.map((s) => `${s.ok ? '✓' : '✗'} ${s.label}${s.error ? ` — ${s.error}` : ''}`).join('\n');
+  const notes = steps
+    .map((s) => `${s.ok ? '✓' : '✗'} ${s.label}${s.detail ? ` (${s.detail})` : ''}${s.error ? ` — ${s.error}` : ''}`)
+    .join('\n');
   await pool.query(
     `INSERT INTO movement_actions (movement_id, action_type, label, notes, done_at, sort_order)
      VALUES ($1, 'other', $2, $3, now(), 999)`,
@@ -490,7 +492,86 @@ export async function notifyManagerOnboardingDone(movementId) {
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Délégations de boîtes en attente (boîte du nouveau collaborateur pas encore créée)
+// ---------------------------------------------------------------------------
+const delegationSchemaReady = pool
+  .query(
+    `CREATE TABLE IF NOT EXISTS pending_mailbox_delegations (
+       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+       movement_id uuid,
+       user_upn text NOT NULL,
+       mailbox text NOT NULL,
+       mailbox_name text,
+       send_as boolean NOT NULL DEFAULT false,
+       attempts integer NOT NULL DEFAULT 0,
+       last_error text,
+       done_at timestamptz,
+       failed_at timestamptz,
+       created_at timestamptz NOT NULL DEFAULT now()
+     )`
+  )
+  .catch((error) => console.error('[Microsoft] Table des délégations en attente impossible', error.message || error));
+
+const MAX_DELEGATION_ATTEMPTS = 90; // toutes les 2 minutes : 3 heures
+
+async function applyDelegation(mailbox, userUpn, sendAs) {
+  await exchange('Add-MailboxPermission', { Identity: mailbox, User: userUpn, AccessRights: ['FullAccess'], InheritanceType: 'All', AutoMapping: true });
+  if (sendAs) await exchange('Add-RecipientPermission', { Identity: mailbox, Trustee: userUpn, AccessRights: ['SendAs'], Confirm: false });
+}
+
+// « User or group "x@elyade.com" wasn't found » : Exchange ne connaît pas encore le collaborateur.
+function isMailboxNotReady(error, userUpn) {
+  const message = String(error?.message || '');
+  if (/isn't a mailbox user|is not a mailbox user/i.test(message)) return true;
+  return (
+    /wasn't found|was not found|couldn't be found|could not be found|ManagementObjectNotFound|introuvable/i.test(message) &&
+    message.toLowerCase().includes(String(userUpn).toLowerCase())
+  );
+}
+
+async function processPendingDelegations() {
+  await delegationSchemaReady;
+  const pending = (
+    await pool.query(
+      `SELECT * FROM pending_mailbox_delegations WHERE done_at IS NULL AND failed_at IS NULL ORDER BY created_at LIMIT 50`
+    )
+  ).rows;
+  for (const item of pending) {
+    const rights = item.send_as ? 'accès complet + envoi « en tant que »' : 'accès complet';
+    try {
+      await applyDelegation(item.mailbox, item.user_upn, item.send_as);
+      await pool.query(`UPDATE pending_mailbox_delegations SET done_at = now(), attempts = attempts + 1, last_error = NULL WHERE id = $1`, [item.id]);
+      if (item.movement_id) {
+        await pool.query(
+          `INSERT INTO movement_actions (movement_id, action_type, label, done_at, sort_order) VALUES ($1, 'other', $2, now(), 999)`,
+          [item.movement_id, `Délégation appliquée : boîte ${item.mailbox_name || item.mailbox} (${rights})`]
+        );
+      }
+    } catch (error) {
+      const giveUp = !isMailboxNotReady(error, item.user_upn) || item.attempts + 1 >= MAX_DELEGATION_ATTEMPTS;
+      await pool.query(
+        `UPDATE pending_mailbox_delegations SET attempts = attempts + 1, last_error = $2, failed_at = CASE WHEN $3 THEN now() ELSE NULL END WHERE id = $1`,
+        [item.id, error.message, giveUp]
+      );
+      // Échec définitif : ligne non cochée dans la check-list, à traiter à la main.
+      if (giveUp && item.movement_id) {
+        await pool.query(`INSERT INTO movement_actions (movement_id, action_type, label, notes, sort_order) VALUES ($1, 'other', $2, $3, 999)`, [
+          item.movement_id,
+          `Délégation à faire à la main : boîte ${item.mailbox_name || item.mailbox} (${rights})`,
+          error.message
+        ]);
+      }
+    }
+  }
+}
+
 export function registerMicrosoftProvisioningRoutes(app) {
+  const runDelegations = () =>
+    processPendingDelegations().catch((error) => console.error('[Microsoft] Délégations en attente', error.message || error));
+  setTimeout(runDelegations, 30 * 1000).unref();
+  setInterval(runDelegations, 2 * 60 * 1000).unref();
+
   // ---- Onboarding : aperçu ----
   app.get('/api/movements/:id/microsoft-account', async (req, res) => {
     if (!requireIT(req, res)) return;
@@ -633,6 +714,14 @@ export function registerMicrosoftProvisioningRoutes(app) {
             );
           } catch (error) {
             if (error.status === 400 && /already exist/i.test(error.message)) return 'déjà membre';
+            // Groupe protégé : seuls des droits d'administration des rôles Entra
+            // permettent d'en modifier les membres (non accordés à l'application).
+            if (error.status === 403) {
+              const info = await graphOrNull(`/groups/${encodeURIComponent(group.id)}?$select=isAssignableToRole`).catch(() => null);
+              if (info?.isAssignableToRole) {
+                throw new Error("groupe protégé (attribuable à des rôles d'administration Entra) : ajout à faire à la main dans Entra");
+              }
+            }
             throw error;
           }
         });
@@ -675,28 +764,32 @@ export function registerMicrosoftProvisioningRoutes(app) {
         }
       }
 
-      // Boîtes partagées : délégation (accès complet, et envoi « en tant que » au choix).
-      // La boîte du nouveau collaborateur n'existe que quelques minutes après sa licence.
-      const notYet = (error) =>
-        /couldn't be found|could not be found|introuvable|n'a pas été trouvé|isn't a mailbox user/i.test(error.message)
-          ? new Error("la boîte du collaborateur n'est pas encore créée par Microsoft (quelques minutes après la licence) : relancez « Compléter le compte Microsoft » dans 10 minutes")
-          : error;
+      // Boîtes : délégation (accès complet, et envoi « en tant que » au choix).
+      // La boîte du nouveau collaborateur n'existe que quelques minutes après sa
+      // licence : la délégation est alors mise en attente et appliquée
+      // automatiquement dès que la boîte est créée (voir processPendingDelegations).
       const mailboxes = (Array.isArray(body.sharedMailboxes) ? body.sharedMailboxes : []).filter((box) => box?.mail);
       for (const box of mailboxes) {
         const name = box.displayName || box.mail;
-        const ok = await step(`Boîte ${name} : accès complet`, () =>
-          exchange('Add-MailboxPermission', { Identity: box.mail, User: upn, AccessRights: ['FullAccess'], InheritanceType: 'All', AutoMapping: true }).catch(
-            (error) => {
-              throw notYet(error);
-            }
-          )
-        );
-        if (ok && body.sharedSendAs) {
-          await step(`Boîte ${name} : envoi « en tant que »`, () =>
-            exchange('Add-RecipientPermission', { Identity: box.mail, Trustee: upn, AccessRights: ['SendAs'], Confirm: false }).catch((error) => {
-              throw notYet(error);
-            })
+        const rights = body.sharedSendAs ? 'accès complet + envoi « en tant que »' : 'accès complet';
+        try {
+          await applyDelegation(box.mail, upn, Boolean(body.sharedSendAs));
+          steps.push({ label: `Boîte ${name} : ${rights}`, ok: true });
+        } catch (error) {
+          if (!isMailboxNotReady(error, upn)) {
+            steps.push({ label: `Boîte ${name} : ${rights}`, ok: false, error: error.message });
+            continue;
+          }
+          await delegationSchemaReady;
+          await pool.query(
+            `INSERT INTO pending_mailbox_delegations (movement_id, user_upn, mailbox, mailbox_name, send_as) VALUES ($1, $2, $3, $4, $5)`,
+            [movement.id, upn, box.mail, name, Boolean(body.sharedSendAs)]
           );
+          steps.push({
+            label: `Boîte ${name} : ${rights} programmé`,
+            ok: true,
+            detail: 'appliqué automatiquement dès que Microsoft aura créé la boîte du collaborateur, en général sous 15 minutes'
+          });
         }
       }
 
