@@ -11,6 +11,18 @@ type Group = { id: string; displayName: string; manageable?: boolean };
 type License = { sku_id: string; label: string; available: number };
 type Person = { id: string; name: string; upn: string };
 type Missing = { api: string; permission: string };
+type Mailbox = { mail: string; displayName: string; unknown?: boolean };
+
+// Même mise en forme que le serveur : « Jean-Bernard », « DUPONT », « Chef De Projet ».
+const capitalize = (value: string, separators: RegExp) =>
+  value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase('fr-FR')
+    .replace(separators, (_, separator: string, letter: string) => separator + letter.toLocaleUpperCase('fr-FR'));
+const formatFirstName = (value: string) => capitalize(value, /(^|[\s\-'’])(\p{L})/gu);
+const formatLastName = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleUpperCase('fr-FR');
+const formatJobTitle = (value: string) => capitalize(value, /(^|[\s-])(\p{L})/gu);
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json' } });
@@ -176,6 +188,8 @@ type Preview = {
   threeCx: Group | null;
   requestedSkuIds: string[];
   licenses: License[];
+  sharedMailboxes: Mailbox[];
+  requestedSharedMailboxes: Mailbox[];
   missingPermissions?: Missing[];
 };
 
@@ -184,6 +198,8 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
   const [form, setForm] = useState({ givenName: '', surname: '', displayName: '', jobTitle: '', upn: '' });
   const [groups, setGroups] = useState<Group[]>([]);
   const [with3cx, setWith3cx] = useState(true);
+  const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
+  const [sendAs, setSendAs] = useState(true);
   const [skuIds, setSkuIds] = useState<string[]>([]);
   const [manager, setManager] = useState<Person | null>(null);
   const [busy, setBusy] = useState(false);
@@ -200,6 +216,7 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
         setForm({ givenName: p.givenName, surname: p.surname, displayName: p.displayName, jobTitle: p.jobTitle, upn: p.upn || '' });
         setGroups(p.requestedGroups);
         setSkuIds(p.requestedSkuIds);
+        setMailboxes(p.requestedSharedMailboxes.filter((box) => !box.unknown));
         setManager(p.manager);
       })
       .catch((err) => {
@@ -217,7 +234,7 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
       const allGroups = [...groups, ...(with3cx && preview?.threeCx ? [preview.threeCx] : [])];
       const res = await call<{ upn: string; temporaryPassword: string | null; steps: Step[] }>(`/api/movements/${movement.id}/microsoft-account`, {
         method: 'POST',
-        body: JSON.stringify({ ...form, groups: allGroups, skuIds, manager }),
+        body: JSON.stringify({ ...form, groups: allGroups, skuIds, manager, sharedMailboxes: mailboxes, sharedSendAs: sendAs }),
       });
       setResult(res);
     } catch (err: any) {
@@ -281,19 +298,34 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <label className="text-sm">
                 <span className="label">Prénom</span>
-                <input className="input" value={form.givenName} onChange={(e) => setForm({ ...form, givenName: e.target.value })} />
+                <input
+                  className="input"
+                  value={form.givenName}
+                  onChange={(e) => setForm({ ...form, givenName: e.target.value })}
+                  onBlur={() => setForm({ ...form, givenName: formatFirstName(form.givenName) })}
+                />
               </label>
               <label className="text-sm">
                 <span className="label">Nom</span>
-                <input className="input" value={form.surname} onChange={(e) => setForm({ ...form, surname: e.target.value })} />
+                <input
+                  className="input"
+                  value={form.surname}
+                  onChange={(e) => setForm({ ...form, surname: e.target.value })}
+                  onBlur={() => setForm({ ...form, surname: formatLastName(form.surname) })}
+                />
               </label>
-              <label className="text-sm">
+              <div className="text-sm">
                 <span className="label">Nom affiché</span>
-                <input className="input" value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} />
-              </label>
+                <p className="py-2 font-medium">{[formatFirstName(form.givenName), formatLastName(form.surname)].filter(Boolean).join(' ')}</p>
+              </div>
               <label className="text-sm">
-                <span className="label">Fonction</span>
-                <input className="input" value={form.jobTitle} onChange={(e) => setForm({ ...form, jobTitle: e.target.value })} />
+                <span className="label">Poste</span>
+                <input
+                  className="input"
+                  value={form.jobTitle}
+                  onChange={(e) => setForm({ ...form, jobTitle: e.target.value })}
+                  onBlur={() => setForm({ ...form, jobTitle: formatJobTitle(form.jobTitle) })}
+                />
               </label>
               <label className="text-sm sm:col-span-2">
                 <span className="label">Adresse mail (identifiant)</span>
@@ -360,7 +392,43 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
             </div>
           </div>
 
-          <p className="text-xs text-ink-500">À faire à la main : boîtes partagées, PaperCut, matériel.</p>
+          <div>
+            <p className="label">Boîtes partagées (délégation)</p>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {mailboxes.length === 0 && <span className="text-sm text-ink-400">Aucune boîte partagée.</span>}
+              {mailboxes.map((box) => (
+                <span key={box.mail} className="badge bg-ink-100 text-ink-700" title={box.mail}>
+                  {box.displayName}
+                  <button
+                    type="button"
+                    className="ml-1 text-ink-400 hover:text-red-600"
+                    title="Retirer"
+                    onClick={() => setMailboxes(mailboxes.filter((x) => x.mail !== box.mail))}
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+            {preview.requestedSharedMailboxes.some((box) => box.unknown) && (
+              <p className="text-xs text-amber-700 mb-2">
+                Demandées mais introuvables :{' '}
+                {preview.requestedSharedMailboxes.filter((box) => box.unknown).map((box) => box.mail).join(', ')}
+              </p>
+            )}
+            <SearchPick
+              items={preview.sharedMailboxes.filter((box) => !mailboxes.some((x) => x.mail === box.mail))}
+              label={(box) => box.displayName}
+              sub={(box) => box.mail}
+              onPick={(box) => setMailboxes([...mailboxes, box])}
+              placeholder="Ajouter une boîte partagée…"
+            />
+            <div className="mt-2">
+              <Check checked={sendAs} onChange={setSendAs}>Autoriser aussi l'envoi de mails au nom de ces boîtes</Check>
+            </div>
+          </div>
+
+          <p className="text-xs text-ink-500">À faire à la main : PaperCut, matériel.</p>
           {error && <p className="text-sm text-red-600">{error}</p>}
           <div className="flex justify-end gap-2">
             <button type="button" className="btn-ghost text-sm" onClick={onClose}>Annuler</button>

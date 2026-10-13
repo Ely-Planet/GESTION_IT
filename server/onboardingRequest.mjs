@@ -3,6 +3,7 @@ import path from 'path';
 import { sendMailWithAttachments } from './graphMail.mjs';
 import { pool } from './db.mjs';
 import { generateOnboardingPdf } from './onboardingPdf.mjs';
+import { formatFirstName, formatJobTitle, formatLastName } from './nameFormat.mjs';
 
 function cleanString(value) {
   if (typeof value !== 'string') return null;
@@ -52,6 +53,11 @@ export async function createOnboardingRequest(req, res) {
       error: 'Utilisateur non authentifié.'
     });
   }
+
+  // Prénom « Jean-Bernard », nom « DUPONT », poste « Chef De Projet ».
+  req.body.first_name = formatFirstName(req.body.first_name);
+  req.body.last_name = formatLastName(req.body.last_name);
+  req.body.job_title = formatJobTitle(req.body.job_title);
 
 const {
   first_name,

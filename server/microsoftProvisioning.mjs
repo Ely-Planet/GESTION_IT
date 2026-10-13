@@ -24,6 +24,7 @@
 //   MICROSOFT_3CX_GROUP_ID       groupe Microsoft synchronisé par le 3CX
 import { pool } from './db.mjs';
 import { getGraphAppToken, sendMailWithAttachments } from './graphMail.mjs';
+import { formatDisplayName, formatFirstName, formatJobTitle, formatLastName } from './nameFormat.mjs';
 
 const DOMAIN = () => String(process.env.MICROSOFT_USER_DOMAIN || 'elyade.com').toLowerCase();
 const USAGE_LOCATION = () => process.env.MICROSOFT_USAGE_LOCATION || 'FR';
@@ -142,7 +143,7 @@ async function missingPermissions(kind) {
       missing.push({ api: 'Microsoft Graph', permission });
     }
   }
-  if (kind === 'offboarding') {
+  { // Exchange : boîtes partagées (arrivée), boîte du collaborateur qui part (départ).
     let claims = {};
     try {
       claims = tokenClaims(await exchangeToken());
@@ -278,6 +279,24 @@ async function microsoftPeople() {
        ORDER BY microsoft_object_id`
     )
   ).rows.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+}
+
+// Boîtes partagées du tenant (comptes désactivés avec une adresse, comme le formulaire).
+let sharedCache = { at: 0, value: null };
+async function sharedMailboxes() {
+  if (sharedCache.value && Date.now() - sharedCache.at < 10 * 60 * 1000) return sharedCache.value;
+  const boxes = (await graphAll('/users?$select=id,displayName,mail,userPrincipalName,accountEnabled&$top=999'))
+    .filter((u) => u.mail && u.accountEnabled === false && u.userPrincipalName?.toLowerCase().endsWith(`@${DOMAIN()}`))
+    .map((u) => ({ mail: u.mail.toLowerCase(), displayName: u.displayName || u.mail }))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, 'fr'));
+  sharedCache = { at: Date.now(), value: boxes };
+  return boxes;
+}
+
+// Adresses saisies par le demandeur (champ « Boîtes partagées » rangé dans les notes).
+function requestedMailboxAddresses(notes) {
+  const text = String(notes || '').split(/Boîtes partagées demandées\s*:/i)[1] || '';
+  return [...new Set((text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || []).map((m) => m.toLowerCase()))];
 }
 
 let groupsCache = { at: 0, value: null };
@@ -499,12 +518,13 @@ export function registerMicrosoftProvisioningRoutes(app) {
         }
       }
 
+      const allShared = await sharedMailboxes();
       res.json({
         existing: movement.microsoft_object_id ? { id: movement.microsoft_object_id, upn: movement.microsoft_upn } : null,
-        givenName: movement.first_name || '',
-        surname: movement.last_name || '',
-        displayName: [movement.first_name, movement.last_name].filter(Boolean).join(' '),
-        jobTitle: movement.job_title || movement.employee_job_title || '',
+        givenName: formatFirstName(movement.first_name),
+        surname: formatLastName(movement.last_name),
+        displayName: formatDisplayName(movement.first_name, movement.last_name),
+        jobTitle: formatJobTitle(movement.job_title || movement.employee_job_title || ''),
         upn: movement.microsoft_object_id ? movement.microsoft_upn : await suggestUpn(movement.first_name, movement.last_name),
         defaultPassword: DEFAULT_PASSWORD(),
         manager,
@@ -512,6 +532,10 @@ export function registerMicrosoftProvisioningRoutes(app) {
         requestedGroups: requested,
         groups: await selectableGroups(),
         threeCx,
+        sharedMailboxes: allShared,
+        requestedSharedMailboxes: requestedMailboxAddresses(movement.notes).map(
+          (mail) => allShared.find((box) => box.mail === mail) || { mail, displayName: mail, unknown: true }
+        ),
         requestedSkuIds: await requestedSkuIds(movement.id),
         licenses: await onboardingLicenses(),
         missingPermissions: await missingPermissions('onboarding').catch(() => [])
@@ -543,9 +567,9 @@ export function registerMicrosoftProvisioningRoutes(app) {
 
       if (!userId) {
         upn = String(body.upn || '').trim().toLowerCase();
-        const givenName = String(body.givenName || '').trim();
-        const surname = String(body.surname || '').trim();
-        const displayName = String(body.displayName || `${givenName} ${surname}`).trim();
+        const givenName = formatFirstName(body.givenName);
+        const surname = formatLastName(body.surname);
+        const displayName = formatDisplayName(givenName, surname);
         if (!isValidUpn(upn)) return res.status(400).json({ error: 'Adresse invalide' });
         if (!displayName) return res.status(400).json({ error: "Nom d'affichage obligatoire" });
         if (await upnTaken(upn)) return res.status(409).json({ error: `L'adresse ${upn} est déjà utilisée dans Microsoft 365` });
@@ -555,7 +579,7 @@ export function registerMicrosoftProvisioningRoutes(app) {
           displayName,
           givenName: givenName || undefined,
           surname: surname || undefined,
-          jobTitle: String(body.jobTitle || '').trim() || undefined,
+          jobTitle: formatJobTitle(body.jobTitle) || undefined,
           mailNickname: upn.split('@')[0].replace(/[^a-z0-9._-]/gi, ''),
           userPrincipalName: upn,
           usageLocation: USAGE_LOCATION(),
@@ -568,9 +592,11 @@ export function registerMicrosoftProvisioningRoutes(app) {
         // utilisateurs la retrouve ensuite au lieu de créer un doublon.
         await pool.query(
           `UPDATE employees SET microsoft_object_id = $1, microsoft_upn = $2, email = COALESCE(email, $2),
+                  first_name = COALESCE(NULLIF($4, ''), first_name), last_name = COALESCE(NULLIF($5, ''), last_name),
+                  job_title = COALESCE(NULLIF($6, ''), job_title),
                   account_enabled = true, microsoft_synced_at = now(), updated_at = now()
            WHERE id = $3`,
-          [userId, upn, movement.employee_id]
+          [userId, upn, movement.employee_id, givenName, surname, formatJobTitle(body.jobTitle)]
         );
       } else {
         steps.push({ label: `Compte existant repris : ${upn}`, ok: true });
@@ -644,6 +670,31 @@ export function registerMicrosoftProvisioningRoutes(app) {
               license.license_type_id
             ]);
           }
+        }
+      }
+
+      // Boîtes partagées : délégation (accès complet, et envoi « en tant que » au choix).
+      // La boîte du nouveau collaborateur n'existe que quelques minutes après sa licence.
+      const notYet = (error) =>
+        /couldn't be found|could not be found|introuvable|n'a pas été trouvé|isn't a mailbox user/i.test(error.message)
+          ? new Error("la boîte du collaborateur n'est pas encore créée par Microsoft (quelques minutes après la licence) : relancez « Compléter le compte Microsoft » dans 10 minutes")
+          : error;
+      const mailboxes = (Array.isArray(body.sharedMailboxes) ? body.sharedMailboxes : []).filter((box) => box?.mail);
+      for (const box of mailboxes) {
+        const name = box.displayName || box.mail;
+        const ok = await step(`Boîte partagée ${name} : accès complet`, () =>
+          exchange('Add-MailboxPermission', { Identity: box.mail, User: upn, AccessRights: ['FullAccess'], InheritanceType: 'All', AutoMapping: true }).catch(
+            (error) => {
+              throw notYet(error);
+            }
+          )
+        );
+        if (ok && body.sharedSendAs) {
+          await step(`Boîte partagée ${name} : envoi « en tant que »`, () =>
+            exchange('Add-RecipientPermission', { Identity: box.mail, Trustee: upn, AccessRights: ['SendAs'], Confirm: false }).catch((error) => {
+              throw notYet(error);
+            })
+          );
         }
       }
 
