@@ -49,17 +49,28 @@ CREATE INDEX IF NOT EXISTS idx_expenses_invoice_number ON expenses (lower(btrim(
 
 const SUPPLIERS_SEED_FILE = path.join(__dirname, 'data', 'expenseSuppliersSeed.json');
 
-// Fournisseurs de la feuille « Base » du classeur et de l'historique des dépenses.
-async function syncSuppliers() {
-  const names = fs.existsSync(SUPPLIERS_SEED_FILE) ? JSON.parse(fs.readFileSync(SUPPLIERS_SEED_FILE, 'utf8')) : [];
-  for (const name of names) {
-    await pool.query(`INSERT INTO expense_suppliers (name) VALUES ($1) ON CONFLICT DO NOTHING`, [name]);
-  }
-  await pool.query(
-    `INSERT INTO expense_suppliers (name)
-     SELECT DISTINCT ON (lower(btrim(supplier))) btrim(supplier) FROM expenses WHERE btrim(supplier) <> ''
-     ON CONFLICT DO NOTHING`
+// Fournisseurs : liste unique partagée avec l'inventaire (inventory_suppliers).
+async function ensureSupplier(name, db = pool) {
+  const label = String(name || '').trim();
+  if (!label) return;
+  await db.query(
+    `INSERT INTO inventory_suppliers (label, sort_order)
+     SELECT $1, 0 WHERE NOT EXISTS (SELECT 1 FROM inventory_suppliers WHERE lower(btrim(label)) = lower(btrim($1)))`,
+    [label]
   );
+}
+
+// Une seule fois : fournisseurs de la feuille « Base » du classeur et ceux créés
+// avant l'unification (expense_suppliers). À chaque démarrage : ceux de l'historique.
+async function syncSuppliers() {
+  const flag = await pool.query(`INSERT INTO app_flags (key) VALUES ('suppliers_unified') ON CONFLICT DO NOTHING RETURNING key`);
+  if (flag.rowCount) {
+    const names = fs.existsSync(SUPPLIERS_SEED_FILE) ? JSON.parse(fs.readFileSync(SUPPLIERS_SEED_FILE, 'utf8')) : [];
+    const legacy = (await pool.query(`SELECT name FROM expense_suppliers`)).rows.map((r) => r.name);
+    for (const name of [...names, ...legacy]) await ensureSupplier(name);
+  }
+  const history = (await pool.query(`SELECT DISTINCT btrim(supplier) AS name FROM expenses WHERE btrim(supplier) <> ''`)).rows;
+  for (const row of history) await ensureSupplier(row.name);
 }
 
 // Exercice comptable du 1er avril au 31 mars : facture du 15/02/2026 -> 2025-2026, mois 2.
@@ -163,7 +174,7 @@ async function checkAndPrepare(value, exceptId, res) {
     });
     return false;
   }
-  await pool.query(`INSERT INTO expense_suppliers (name) VALUES ($1) ON CONFLICT DO NOTHING`, [value.supplier]);
+  await ensureSupplier(value.supplier);
   return true;
 }
 
@@ -233,7 +244,7 @@ export function registerExpenseRoutes(app) {
   app.get('/api/expense-suppliers', requireITManager, async (req, res) => {
     try {
       await schemaReady;
-      const suppliers = (await pool.query(`SELECT id, name FROM expense_suppliers ORDER BY lower(name)`)).rows;
+      const suppliers = (await pool.query(`SELECT id, label AS name FROM inventory_suppliers ORDER BY lower(label)`)).rows;
       // Combinaisons famille / catégorie / sous-catégorie / structure les plus fréquentes par fournisseur.
       const habits = (
         await pool.query(
@@ -262,13 +273,10 @@ export function registerExpenseRoutes(app) {
       await schemaReady;
       const name = String(req.body?.name || '').trim().replace(/\s+/g, ' ');
       if (!name) return res.status(400).json({ error: 'Nom du fournisseur obligatoire' });
-      const existing = (await pool.query(`SELECT id, name FROM expense_suppliers WHERE lower(btrim(name)) = lower($1)`, [name])).rows[0];
+      const existing = (await pool.query(`SELECT id, label AS name FROM inventory_suppliers WHERE lower(btrim(label)) = lower($1)`, [name])).rows[0];
       if (existing) return res.status(409).json({ error: `Le fournisseur « ${existing.name} » existe déjà`, supplier: existing });
       const created = (
-        await pool.query(`INSERT INTO expense_suppliers (name, created_by) VALUES ($1, $2) RETURNING id, name`, [
-          name,
-          req.session.user.displayName || req.session.user.email || null
-        ])
+        await pool.query(`INSERT INTO inventory_suppliers (label, sort_order) VALUES ($1, 0) RETURNING id, label AS name`, [name])
       ).rows[0];
       res.status(201).json({ ...created, habits: [] });
     } catch (error) {

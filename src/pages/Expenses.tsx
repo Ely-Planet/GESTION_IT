@@ -481,8 +481,9 @@ function ExpenseForm({
             <input className={`input ${duplicate ? 'border-red-400' : ''}`} value={form.invoice_number || ''} onChange={set('invoice_number')} />
           </label>
           <label className="text-sm">
-            <span className="label">Montant (€ TTC, négatif pour un avoir)</span>
+            <span className="label">Montant (€ TTC)</span>
             <input className="input text-right" required inputMode="decimal" value={form.amount} onChange={set('amount')} placeholder="0,00" />
+            <span className="text-xs text-ink-400">Négatif pour un avoir</span>
           </label>
           <label className="text-sm">
             <span className="label">Structure</span>

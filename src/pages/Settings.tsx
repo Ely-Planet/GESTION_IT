@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import OnboardingHardware from './OnboardingHardware';
 import MicrosoftLicenses from './MicrosoftLicenses';
+import SuppliersSettings from './SuppliersSettings';
 
 type Section =
   | 'home'
@@ -900,10 +901,8 @@ function InventorySettings({
           endpoint="/api/inventory-sizes"
         />
 
-        <InventoryList
-          title="Fournisseurs"
-          endpoint="/api/inventory-suppliers"
-        />
+        {/* Fournisseurs : liste commune avec le suivi des dépenses (doublons, fusion). */}
+        <SuppliersSettings />
 
         <InventoryList
           title="Budgets"
