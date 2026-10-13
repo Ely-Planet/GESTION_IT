@@ -237,30 +237,198 @@ function PivotTable({ rows }: { rows: Expense[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Évolution au fil des exercices (famille, catégorie ou sous-catégorie)
+// ---------------------------------------------------------------------------
+type Dimension = 'family' | 'category' | 'subcategory';
+const DIMENSIONS: [Dimension, string][] = [
+  ['family', 'Famille'],
+  ['category', 'Catégorie'],
+  ['subcategory', 'Sous-catégorie'],
+];
+
+function Sparkline({ values }: { values: number[] }) {
+  const max = Math.max(1, ...values);
+  const w = 6;
+  const gap = 3;
+  const h = 24;
+  return (
+    <svg width={values.length * (w + gap)} height={h} aria-hidden="true">
+      {values.map((v, i) => {
+        const bh = Math.max(0, (v / max) * h);
+        return <rect key={i} x={i * (w + gap)} y={h - bh} width={w} height={bh || 0} rx={2} fill={i === values.length - 1 ? '#ca0088' : '#f9a8d4'} />;
+      })}
+    </svg>
+  );
+}
+
+function EvolutionTable({ rows, years, selectedYear }: { rows: Expense[]; years: string[]; selectedYear: string }) {
+  const [dimension, setDimension] = useState<Dimension>('family');
+  const label = (r: Expense) => (dimension === 'family' ? r.family : (dimension === 'category' ? r.category : r.subcategory) || '—');
+  const lines = useMemo(() => {
+    const map = new Map<string, number[]>();
+    for (const r of rows) {
+      const index = years.indexOf(r.fiscal_year);
+      if (index === -1) continue;
+      const values = map.get(label(r)) || years.map(() => 0);
+      values[index] += r.amount;
+      map.set(label(r), values);
+    }
+    const selected = years.indexOf(selectedYear);
+    return [...map.entries()]
+      .map(([name, values]) => ({ name, values, total: values.reduce((a, b) => a + b, 0) }))
+      .sort((a, b) => (b.values[selected] ?? 0) - (a.values[selected] ?? 0) || b.total - a.total);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, years, dimension, selectedYear]);
+  const totals = years.map((_, i) => lines.reduce((s, l) => s + l.values[i], 0));
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <h2 className="font-semibold text-ink-900">Évolution par exercice</h2>
+        <div className="flex gap-1">
+          {DIMENSIONS.map(([key, text]) => (
+            <button
+              key={key}
+              type="button"
+              className={`btn-ghost text-sm ${dimension === key ? 'bg-elyade-50 text-elyade-700' : ''}`}
+              onClick={() => setDimension(key)}
+            >
+              {text}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-xs uppercase tracking-wide text-ink-500 bg-ink-50 border-b border-ink-100">
+              <th className="text-left py-2 px-3 font-semibold">{DIMENSIONS.find(([k]) => k === dimension)?.[1]}</th>
+              {years.map((y) => (
+                <th key={y} className={`text-right py-2 px-3 font-semibold whitespace-nowrap ${y === selectedYear ? 'text-elyade-700' : ''}`}>{y}</th>
+              ))}
+              <th className="py-2 px-3 font-semibold text-left">Tendance</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-100">
+            {lines.map((line) => (
+              <tr key={line.name}>
+                <td className="py-2 px-3">{line.name}</td>
+                {line.values.map((v, i) => (
+                  <td key={i} className={`py-2 px-3 text-right tabular-nums ${years[i] === selectedYear ? 'font-semibold bg-elyade-50/40' : ''}`}>
+                    {v ? euro(v) : ''}
+                  </td>
+                ))}
+                <td className="py-2 px-3" title={years.map((y, i) => `${y} : ${euro(line.values[i])}`).join('\n')}>
+                  <Sparkline values={line.values} />
+                </td>
+              </tr>
+            ))}
+            <tr className="font-semibold border-t-2 border-ink-200">
+              <td className="py-2 px-3">Total</td>
+              {totals.map((v, i) => (
+                <td key={i} className="py-2 px-3 text-right tabular-nums">{euro(v)}</td>
+              ))}
+              <td className="py-2 px-3"><Sparkline values={totals} /></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-ink-500 mt-2">
+        Filtres structure et famille appliqués ; tous les exercices sont affichés. L'exercice en cours est incomplet.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Formulaire d'une dépense
 // ---------------------------------------------------------------------------
+type Supplier = {
+  id: string;
+  name: string;
+  habits: { family: string; category: string | null; subcategory: string | null; structure: string | null; uses: number }[];
+};
 type FormState = Omit<Expense, 'id' | 'amount'> & { id?: string; amount: string };
+
+// Exercice comptable du 1er avril au 31 mars, déduit de la date de facture.
+function fiscalFromDate(isoDate: string) {
+  const [year, month] = isoDate.split('-').map(Number);
+  return { month, fiscal_year: month >= 4 ? `${year}-${year + 1}` : `${year - 1}-${year}` };
+}
+const invoiceKey = (value: string | null) => String(value || '').replace(/\s/g, '').toLowerCase();
 
 function ExpenseForm({
   initial,
-  years,
+  all,
+  suppliers,
   suggestions,
   onClose,
   onSaved,
+  onSupplierCreated,
 }: {
   initial: FormState;
-  years: string[];
-  suggestions: Record<'supplier' | 'family' | 'category' | 'subcategory', string[]>;
+  all: Expense[];
+  suppliers: Supplier[];
+  suggestions: Record<'family' | 'category' | 'subcategory', string[]>;
   onClose: () => void;
   onSaved: () => void;
+  onSupplierCreated: (supplier: Supplier) => void;
 }) {
   const [form, setForm] = useState<FormState>(initial);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [supplierQuery, setSupplierQuery] = useState(initial.supplier);
+  const [supplierOpen, setSupplierOpen] = useState(false);
   const set = (key: keyof FormState) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
+
+  const isLegacy = Boolean(initial.id && !initial.invoice_date);
+  const derived = form.invoice_date ? fiscalFromDate(form.invoice_date) : null;
+  const period = derived || (isLegacy ? { fiscal_year: form.fiscal_year, month: form.month } : null);
+
+  const selectedSupplier = suppliers.find((s) => s.name.toLowerCase() === form.supplier.trim().toLowerCase()) || null;
+  const supplierMatches = suppliers
+    .filter((s) => s.name.toLowerCase().includes(supplierQuery.trim().toLowerCase()))
+    .slice(0, 12);
+  const exactSupplier = suppliers.some((s) => s.name.toLowerCase() === supplierQuery.trim().toLowerCase());
+
+  // Facture déjà saisie (même numéro, hors cette ligne).
+  const duplicate = form.invoice_number?.trim()
+    ? all.find((e) => e.id !== form.id && invoiceKey(e.invoice_number) === invoiceKey(form.invoice_number))
+    : undefined;
+
+  function pickSupplier(supplier: Supplier) {
+    setSupplierQuery(supplier.name);
+    setSupplierOpen(false);
+    const habit = supplier.habits[0];
+    // Classement habituel du fournisseur proposé d'office si rien n'est saisi.
+    setForm((current) => ({
+      ...current,
+      supplier: supplier.name,
+      ...(habit && !current.family
+        ? { family: habit.family, category: habit.category || '', subcategory: habit.subcategory || '', structure: habit.structure || current.structure }
+        : {}),
+    }));
+  }
+
+  async function createSupplier() {
+    const name = supplierQuery.trim();
+    if (!name || !confirm(`Créer le fournisseur « ${name} » ?`)) return;
+    try {
+      const created = await api<Supplier>('/api/expense-suppliers', { method: 'POST', body: JSON.stringify({ name }) });
+      onSupplierCreated(created);
+      pickSupplier(created);
+    } catch (err: any) {
+      setError(err.message);
+    }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (!selectedSupplier) {
+      setError('Choisissez un fournisseur dans la liste, ou créez-le.');
+      return;
+    }
+    if (duplicate) return;
     setSaving(true);
     setError(null);
     try {
@@ -284,33 +452,37 @@ function ExpenseForm({
 
   return (
     <div className="fixed inset-0 z-50 bg-ink-950/40 flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
-      <form className="card w-full max-w-2xl my-8 p-5 space-y-3" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+      <form className="card w-full max-w-2xl my-8 p-5 space-y-4" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <div className="flex items-center justify-between">
           <h3 className="font-semibold text-ink-900">{form.id ? 'Modifier la dépense' : 'Nouvelle dépense'}</h3>
           <button type="button" className="btn-ghost p-1.5" onClick={onClose} aria-label="Fermer"><X className="w-4 h-4" /></button>
         </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <label className="text-sm">
-            <span className="label">Exercice</span>
-            <input className="input" list="exp-years" required value={form.fiscal_year} onChange={set('fiscal_year')} placeholder="2025-2026" />
-            {list('exp-years', years)}
+            <span className="label">Date de facture</span>
+            <input className="input" type="date" required={!isLegacy} value={form.invoice_date || ''} onChange={set('invoice_date')} />
           </label>
+          <div className="text-sm sm:col-span-2">
+            <span className="label">Exercice et trimestre (calculés)</span>
+            <p className="py-2">
+              {period ? (
+                <>
+                  <strong>Exercice {period.fiscal_year}</strong> · Trim {quarterOf(period.month)} ({MONTHS[period.month - 1].toLowerCase()})
+                </>
+              ) : (
+                <span className="text-ink-400">Saisissez la date de facture</span>
+              )}
+            </p>
+          </div>
+
           <label className="text-sm">
-            <span className="label">Mois</span>
-            <select className="input" value={form.month} onChange={(e) => setForm({ ...form, month: Number(e.target.value) })}>
-              {FISCAL_MONTHS.map((m) => (
-                <option key={m} value={m}>{MONTHS[m - 1]} (Trim {quarterOf(m)})</option>
-              ))}
-            </select>
+            <span className="label">N° de facture</span>
+            <input className={`input ${duplicate ? 'border-red-400' : ''}`} value={form.invoice_number || ''} onChange={set('invoice_number')} />
           </label>
           <label className="text-sm">
             <span className="label">Montant (€ TTC, négatif pour un avoir)</span>
             <input className="input text-right" required inputMode="decimal" value={form.amount} onChange={set('amount')} placeholder="0,00" />
-          </label>
-          <label className="text-sm sm:col-span-2">
-            <span className="label">Fournisseur</span>
-            <input className="input" list="exp-suppliers" required value={form.supplier} onChange={set('supplier')} />
-            {list('exp-suppliers', suggestions.supplier)}
           </label>
           <label className="text-sm">
             <span className="label">Structure</span>
@@ -320,6 +492,66 @@ function ExpenseForm({
               ))}
             </select>
           </label>
+          {duplicate && (
+            <p className="sm:col-span-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-2">
+              Facture déjà saisie : {duplicate.supplier}, {euro(duplicate.amount)}
+              {duplicate.invoice_date ? ` du ${new Date(duplicate.invoice_date).toLocaleDateString('fr-FR')}` : ''} (exercice {duplicate.fiscal_year}).
+            </p>
+          )}
+
+          <div className="text-sm sm:col-span-3 relative">
+            <span className="label">Fournisseur</span>
+            <input
+              className="input"
+              value={supplierQuery}
+              placeholder="Rechercher un fournisseur…"
+              onFocus={() => setSupplierOpen(true)}
+              onBlur={() => setTimeout(() => setSupplierOpen(false), 150)}
+              onChange={(e) => {
+                setSupplierQuery(e.target.value);
+                setSupplierOpen(true);
+                setForm({ ...form, supplier: e.target.value });
+              }}
+            />
+            {supplierOpen && (
+              <div className="absolute z-10 mt-1 w-full max-h-64 overflow-auto bg-white border border-ink-200 rounded-lg shadow-elevated">
+                {supplierMatches.map((s) => (
+                  <button key={s.id} type="button" className="w-full text-left px-3 py-1.5 hover:bg-elyade-50" onMouseDown={(e) => e.preventDefault()} onClick={() => pickSupplier(s)}>
+                    {s.name}
+                    {s.habits.length > 0 && <span className="text-xs text-ink-400"> · {s.habits[0].family}</span>}
+                  </button>
+                ))}
+                {supplierQuery.trim() && !exactSupplier && (
+                  <button type="button" className="w-full text-left px-3 py-2 border-t border-ink-100 text-elyade-700 hover:bg-elyade-50" onMouseDown={(e) => e.preventDefault()} onClick={() => void createSupplier()}>
+                    <Plus className="w-3.5 h-3.5 inline mr-1" /> Créer le fournisseur « {supplierQuery.trim()} »
+                  </button>
+                )}
+              </div>
+            )}
+            {selectedSupplier && selectedSupplier.habits.length > 0 && (
+              <div className="mt-2">
+                <p className="text-xs text-ink-500 mb-1">Classements habituels de ce fournisseur :</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {selectedSupplier.habits.map((h, i) => {
+                    const active = form.family === h.family && (form.category || '') === (h.category || '') && (form.subcategory || '') === (h.subcategory || '');
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        className={`badge border ${active ? 'bg-elyade-600 text-white border-elyade-600' : 'bg-white text-ink-700 border-ink-200 hover:border-elyade-400'}`}
+                        onClick={() =>
+                          setForm({ ...form, family: h.family, category: h.category || '', subcategory: h.subcategory || '', structure: h.structure || form.structure })
+                        }
+                      >
+                        {[h.family, h.category, h.subcategory].filter(Boolean).join(' › ')} <span className="opacity-70">({h.uses})</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
           <label className="text-sm">
             <span className="label">Famille</span>
             <input className="input" list="exp-families" required value={form.family} onChange={set('family')} />
@@ -335,14 +567,6 @@ function ExpenseForm({
             <input className="input" list="exp-subcategories" value={form.subcategory || ''} onChange={set('subcategory')} />
             {list('exp-subcategories', suggestions.subcategory)}
           </label>
-          <label className="text-sm">
-            <span className="label">N° de facture</span>
-            <input className="input" value={form.invoice_number || ''} onChange={set('invoice_number')} />
-          </label>
-          <label className="text-sm">
-            <span className="label">Date de facture</span>
-            <input className="input" type="date" value={form.invoice_date || ''} onChange={set('invoice_date')} />
-          </label>
           <label className="text-sm sm:col-span-3">
             <span className="label">Commentaire</span>
             <input className="input" value={form.notes || ''} onChange={set('notes')} />
@@ -351,7 +575,7 @@ function ExpenseForm({
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex justify-end gap-2">
           <button type="button" className="btn-ghost text-sm" onClick={onClose}>Annuler</button>
-          <button className="btn-primary text-sm" disabled={saving}>{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+          <button className="btn-primary text-sm" disabled={saving || Boolean(duplicate)}>{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
         </div>
       </form>
     </div>
@@ -370,10 +594,13 @@ export default function Expenses() {
   const [family, setFamily] = useState('');
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<FormState | null>(null);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
 
   async function load() {
     try {
-      setAll(await api<Expense[]>('/api/expenses'));
+      const [expenses, supplierList] = await Promise.all([api<Expense[]>('/api/expenses'), api<Supplier[]>('/api/expense-suppliers')]);
+      setAll(expenses);
+      setSuppliers(supplierList);
       setError(null);
     } catch (err: any) {
       setError(err.message);
@@ -401,6 +628,9 @@ export default function Expenses() {
   const matchesFilters = (e: Expense) => (!structure || e.structure === structure) && (!family || e.family === family);
   const rows = useMemo(() => all.filter((e) => e.fiscal_year === year && matchesFilters(e)), [all, year, structure, family]);
   const previousRows = useMemo(() => all.filter((e) => e.fiscal_year === previousFiscalYear(year) && matchesFilters(e)), [all, year, structure, family]);
+  // Évolution : tous les exercices, avec les filtres structure et famille.
+  const evolutionRows = useMemo(() => all.filter(matchesFilters), [all, structure, family]);
+  const yearsAsc = useMemo(() => [...years].sort(), [years]);
   const quarterTotals = [1, 2, 3, 4].map((n) => sum(rows.filter((r) => quarterOf(r.month) === n)));
   const previousQuarterTotals = [1, 2, 3, 4].map((n) => sum(previousRows.filter((r) => quarterOf(r.month) === n)));
 
@@ -433,10 +663,9 @@ export default function Expenses() {
   }, [rows, search]);
 
   function newExpense() {
-    const month = new Date().getMonth() + 1;
     setEditing({
-      fiscal_year: year,
-      month: year === currentFiscalYear() ? month : 4,
+      fiscal_year: '',
+      month: 4,
       supplier: '',
       family: family || '',
       category: '',
@@ -562,6 +791,10 @@ export default function Expenses() {
         <PivotTable rows={rows} />
       </div>
 
+      <div className="card p-4">
+        <EvolutionTable rows={evolutionRows} years={yearsAsc} selectedYear={year} />
+      </div>
+
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
         <div className="card p-4">
           <h2 className="font-semibold text-ink-900 mb-3">Fournisseurs</h2>
@@ -652,7 +885,15 @@ export default function Expenses() {
       </div>
 
       {editing && (
-        <ExpenseForm initial={editing} years={years} suggestions={suggestions} onClose={() => setEditing(null)} onSaved={() => void load()} />
+        <ExpenseForm
+          initial={editing}
+          all={all}
+          suppliers={suppliers}
+          suggestions={suggestions}
+          onClose={() => setEditing(null)}
+          onSaved={() => void load()}
+          onSupplierCreated={(supplier) => setSuppliers((current) => [...current, supplier].sort((a, b) => a.name.localeCompare(b.name, 'fr')))}
+        />
       )}
     </div>
   );

@@ -36,7 +36,52 @@ CREATE TABLE IF NOT EXISTS app_flags (
   key text PRIMARY KEY,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+-- Fournisseurs (liste de référence, un nom unique sans tenir compte de la casse).
+CREATE TABLE IF NOT EXISTS expense_suppliers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  created_by text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_suppliers_name ON expense_suppliers (lower(btrim(name)));
+CREATE INDEX IF NOT EXISTS idx_expenses_invoice_number ON expenses (lower(btrim(invoice_number)));
 `;
+
+const SUPPLIERS_SEED_FILE = path.join(__dirname, 'data', 'expenseSuppliersSeed.json');
+
+// Fournisseurs de la feuille « Base » du classeur et de l'historique des dépenses.
+async function syncSuppliers() {
+  const names = fs.existsSync(SUPPLIERS_SEED_FILE) ? JSON.parse(fs.readFileSync(SUPPLIERS_SEED_FILE, 'utf8')) : [];
+  for (const name of names) {
+    await pool.query(`INSERT INTO expense_suppliers (name) VALUES ($1) ON CONFLICT DO NOTHING`, [name]);
+  }
+  await pool.query(
+    `INSERT INTO expense_suppliers (name)
+     SELECT DISTINCT ON (lower(btrim(supplier))) btrim(supplier) FROM expenses WHERE btrim(supplier) <> ''
+     ON CONFLICT DO NOTHING`
+  );
+}
+
+// Exercice comptable du 1er avril au 31 mars : facture du 15/02/2026 -> 2025-2026, mois 2.
+function fiscalFromDate(isoDate) {
+  const [year, month] = isoDate.split('-').map(Number);
+  return { month, fiscal_year: month >= 4 ? `${year}-${year + 1}` : `${year - 1}-${year}` };
+}
+
+// Facture déjà saisie (même numéro, sans tenir compte des espaces ni de la casse).
+async function findDuplicateInvoice(invoiceNumber, exceptId) {
+  if (!invoiceNumber) return null;
+  return (
+    await pool.query(
+      `SELECT id, supplier, amount::float8 AS amount, to_char(invoice_date, 'DD/MM/YYYY') AS invoice_date, fiscal_year
+       FROM expenses
+       WHERE lower(regexp_replace(invoice_number, '\\s', '', 'g')) = lower(regexp_replace($1, '\\s', '', 'g'))
+         AND ($2::uuid IS NULL OR id <> $2)
+       LIMIT 1`,
+      [invoiceNumber, exceptId || null]
+    )
+  ).rows[0] || null;
+}
 
 // Reprise unique du classeur (même si toutes les lignes sont supprimées ensuite).
 async function seedOnce() {
@@ -75,17 +120,23 @@ const isFiscalYear = (value) => {
   return Boolean(match && Number(match[2]) === Number(match[1]) + 1);
 };
 
-// Lit et contrôle une dépense envoyée par la page.
-function readExpense(body) {
+// Lit et contrôle une dépense envoyée par la page. L'exercice et le mois sont
+// déduits de la date de facture (obligatoire pour une nouvelle dépense ; une
+// ligne reprise d'Excel sans date garde son exercice et son mois).
+function readExpense(body, { requireDate }) {
+  const invoiceDate = body.invoice_date ? String(body.invoice_date) : null;
+  if (invoiceDate && !/^\d{4}-\d{2}-\d{2}$/.test(invoiceDate)) return { error: 'Date de facture invalide' };
+  if (requireDate && !invoiceDate) return { error: 'Date de facture obligatoire' };
+  const derived = invoiceDate ? fiscalFromDate(invoiceDate) : null;
   const value = {
-    fiscal_year: String(body.fiscal_year || '').trim(),
-    month: Number(body.month),
+    fiscal_year: derived ? derived.fiscal_year : String(body.fiscal_year || '').trim(),
+    month: derived ? derived.month : Number(body.month),
     supplier: String(body.supplier || '').trim(),
     family: String(body.family || '').trim(),
     category: String(body.category || '').trim() || null,
     subcategory: String(body.subcategory || '').trim() || null,
     invoice_number: String(body.invoice_number || '').trim() || null,
-    invoice_date: body.invoice_date ? String(body.invoice_date) : null,
+    invoice_date: invoiceDate,
     amount: Number(String(body.amount ?? '').replace(/\s/g, '').replace(',', '.')),
     structure: String(body.structure || '').trim() || null,
     notes: String(body.notes || '').trim() || null
@@ -95,8 +146,25 @@ function readExpense(body) {
   if (!value.supplier) return { error: 'Fournisseur obligatoire' };
   if (!value.family) return { error: 'Famille obligatoire' };
   if (!Number.isFinite(value.amount)) return { error: 'Montant invalide' };
-  if (value.invoice_date && !/^\d{4}-\d{2}-\d{2}$/.test(value.invoice_date)) return { error: 'Date de facture invalide' };
   return { value };
+}
+
+// Contrôles communs à la création et à la modification : facture en double,
+// fournisseur ajouté à la liste s'il n'y est pas encore.
+async function checkAndPrepare(value, exceptId, res) {
+  const duplicate = await findDuplicateInvoice(value.invoice_number, exceptId);
+  if (duplicate) {
+    res.status(409).json({
+      error: `La facture ${value.invoice_number} est déjà saisie : ${duplicate.supplier}, ${duplicate.amount.toLocaleString('fr-FR', {
+        style: 'currency',
+        currency: 'EUR'
+      })}${duplicate.invoice_date ? ` du ${duplicate.invoice_date}` : ''} (exercice ${duplicate.fiscal_year}).`,
+      duplicate
+    });
+    return false;
+  }
+  await pool.query(`INSERT INTO expense_suppliers (name) VALUES ($1) ON CONFLICT DO NOTHING`, [value.supplier]);
+  return true;
 }
 
 const SELECT = `SELECT id, fiscal_year, month, supplier, family, category, subcategory, invoice_number,
@@ -108,6 +176,7 @@ export function registerExpenseRoutes(app) {
   const schemaReady = pool
     .query(SCHEMA_SQL)
     .then(seedOnce)
+    .then(syncSuppliers)
     .catch((error) => console.error('[Dépenses] Schéma ou reprise impossible', error.message || error));
 
   app.get('/api/expenses', requireITManager, async (req, res) => {
@@ -123,8 +192,9 @@ export function registerExpenseRoutes(app) {
   app.post('/api/expenses', requireITManager, async (req, res) => {
     try {
       await schemaReady;
-      const { value, error } = readExpense(req.body || {});
+      const { value, error } = readExpense(req.body || {}, { requireDate: true });
       if (error) return res.status(400).json({ error });
+      if (!(await checkAndPrepare(value, null, res))) return;
       const result = await pool.query(
         `INSERT INTO expenses (fiscal_year, month, supplier, family, category, subcategory, invoice_number, invoice_date, amount, structure, notes, created_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
@@ -141,8 +211,9 @@ export function registerExpenseRoutes(app) {
   app.put('/api/expenses/:id', requireITManager, async (req, res) => {
     try {
       await schemaReady;
-      const { value, error } = readExpense(req.body || {});
+      const { value, error } = readExpense(req.body || {}, { requireDate: false });
       if (error) return res.status(400).json({ error });
+      if (!(await checkAndPrepare(value, req.params.id, res))) return;
       const result = await pool.query(
         `UPDATE expenses SET fiscal_year = $1, month = $2, supplier = $3, family = $4, category = $5, subcategory = $6,
                 invoice_number = $7, invoice_date = $8, amount = $9, structure = $10, notes = $11, updated_at = now()
@@ -152,6 +223,54 @@ export function registerExpenseRoutes(app) {
       );
       if (!result.rowCount) return res.status(404).json({ error: 'Dépense introuvable' });
       res.json((await pool.query(`${SELECT} WHERE id = $1`, [req.params.id])).rows[0]);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ---- Fournisseurs : liste, avec leurs classements habituels (historique) ----
+  app.get('/api/expense-suppliers', requireITManager, async (req, res) => {
+    try {
+      await schemaReady;
+      const suppliers = (await pool.query(`SELECT id, name FROM expense_suppliers ORDER BY lower(name)`)).rows;
+      // Combinaisons famille / catégorie / sous-catégorie / structure les plus fréquentes par fournisseur.
+      const habits = (
+        await pool.query(
+          `SELECT lower(btrim(supplier)) AS supplier_key, family, category, subcategory, structure,
+                  COUNT(*)::int AS uses, MAX(created_at) AS last_used
+           FROM expenses
+           GROUP BY 1, family, category, subcategory, structure
+           ORDER BY uses DESC, last_used DESC`
+        )
+      ).rows;
+      const bySupplier = new Map();
+      for (const habit of habits) {
+        const list = bySupplier.get(habit.supplier_key) || [];
+        if (list.length < 5) list.push({ family: habit.family, category: habit.category, subcategory: habit.subcategory, structure: habit.structure, uses: habit.uses });
+        bySupplier.set(habit.supplier_key, list);
+      }
+      res.json(suppliers.map((s) => ({ ...s, habits: bySupplier.get(s.name.trim().toLowerCase()) || [] })));
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post('/api/expense-suppliers', requireITManager, async (req, res) => {
+    try {
+      await schemaReady;
+      const name = String(req.body?.name || '').trim().replace(/\s+/g, ' ');
+      if (!name) return res.status(400).json({ error: 'Nom du fournisseur obligatoire' });
+      const existing = (await pool.query(`SELECT id, name FROM expense_suppliers WHERE lower(btrim(name)) = lower($1)`, [name])).rows[0];
+      if (existing) return res.status(409).json({ error: `Le fournisseur « ${existing.name} » existe déjà`, supplier: existing });
+      const created = (
+        await pool.query(`INSERT INTO expense_suppliers (name, created_by) VALUES ($1, $2) RETURNING id, name`, [
+          name,
+          req.session.user.displayName || req.session.user.email || null
+        ])
+      ).rows[0];
+      res.status(201).json({ ...created, habits: [] });
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: error.message });
