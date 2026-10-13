@@ -29,6 +29,7 @@ import {
   statusLabel,
 } from '../lib/format';
 import type { Movement, MovementAction, MovementItem, MovementLicense } from '../lib/supabase';
+import MicrosoftAutomation from './MicrosoftAutomation';
 
 export default function Movements() {
   const data = useData();
@@ -895,7 +896,7 @@ const filteredUsers =
         Compte Microsoft associé
       </h4>
 
-      {currentEmployee ? (
+      {currentEmployee?.microsoft_upn ? (
         <div className="mb-3 p-2 bg-green-50 rounded border border-green-200">
           <div className="font-medium">
             {currentEmployee.first_name}
@@ -909,9 +910,15 @@ const filteredUsers =
         </div>
       ) : (
         <p className="text-sm text-amber-600 mb-3">
-          Aucun compte Microsoft associé.
+          {currentEmployee
+            ? `${currentEmployee.first_name} ${currentEmployee.last_name} : compte Microsoft pas encore créé.`
+            : 'Aucun compte Microsoft associé.'}
         </p>
       )}
+
+<div className="flex flex-wrap gap-2 mb-2">
+  <MicrosoftAutomation movement={movement} employee={currentEmployee} onDone={data.reload} />
+</div>
 
 <div className="relative">
 
