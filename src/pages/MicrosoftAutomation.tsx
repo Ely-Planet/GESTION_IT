@@ -11,7 +11,7 @@ type Group = { id: string; displayName: string; manageable?: boolean };
 type License = { sku_id: string; label: string; available: number };
 type Person = { id: string; name: string; upn: string };
 type Missing = { api: string; permission: string };
-type Mailbox = { mail: string; displayName: string; unknown?: boolean };
+type Mailbox = { mail: string; displayName: string; kind?: 'shared' | 'user'; unknown?: boolean };
 
 // Même mise en forme que le serveur : « Jean-Bernard », « DUPONT », « Chef De Projet ».
 const capitalize = (value: string, separators: RegExp) =>
@@ -393,12 +393,12 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
           </div>
 
           <div>
-            <p className="label">Boîtes partagées (délégation)</p>
+            <p className="label">Boîtes mail (délégation) : partagées ou utilisateurs</p>
             <div className="flex flex-wrap gap-1.5 mb-2">
-              {mailboxes.length === 0 && <span className="text-sm text-ink-400">Aucune boîte partagée.</span>}
+              {mailboxes.length === 0 && <span className="text-sm text-ink-400">Aucune boîte.</span>}
               {mailboxes.map((box) => (
                 <span key={box.mail} className="badge bg-ink-100 text-ink-700" title={box.mail}>
-                  {box.displayName}
+                  {box.kind === 'user' ? '👤 ' : ''}{box.displayName}
                   <button
                     type="button"
                     className="ml-1 text-ink-400 hover:text-red-600"
@@ -419,12 +419,12 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
             <SearchPick
               items={preview.sharedMailboxes.filter((box) => !mailboxes.some((x) => x.mail === box.mail))}
               label={(box) => box.displayName}
-              sub={(box) => box.mail}
+              sub={(box) => `${box.mail}${box.kind === 'user' ? ' · boîte utilisateur' : ' · boîte partagée'}`}
               onPick={(box) => setMailboxes([...mailboxes, box])}
-              placeholder="Ajouter une boîte partagée…"
+              placeholder="Ajouter une boîte partagée ou utilisateur…"
             />
             <div className="mt-2">
-              <Check checked={sendAs} onChange={setSendAs}>Autoriser aussi l'envoi de mails au nom de ces boîtes</Check>
+              <Check checked={sendAs} onChange={setSendAs}>Autoriser aussi l'envoi de mails au nom de ces boîtes (« en tant que »)</Check>
             </div>
           </div>
 

@@ -281,14 +281,16 @@ async function microsoftPeople() {
   ).rows.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 }
 
-// Boîtes partagées du tenant (comptes désactivés avec une adresse, comme le formulaire).
+// Boîtes pouvant être déléguées : boîtes partagées (comptes désactivés avec une
+// adresse, comme le formulaire) et boîtes des utilisateurs actifs.
 let sharedCache = { at: 0, value: null };
 async function sharedMailboxes() {
   if (sharedCache.value && Date.now() - sharedCache.at < 10 * 60 * 1000) return sharedCache.value;
   const boxes = (await graphAll('/users?$select=id,displayName,mail,userPrincipalName,accountEnabled&$top=999'))
-    .filter((u) => u.mail && u.accountEnabled === false && u.userPrincipalName?.toLowerCase().endsWith(`@${DOMAIN()}`))
-    .map((u) => ({ mail: u.mail.toLowerCase(), displayName: u.displayName || u.mail }))
-    .sort((a, b) => a.displayName.localeCompare(b.displayName, 'fr'));
+    .filter((u) => u.mail && u.userPrincipalName?.toLowerCase().endsWith(`@${DOMAIN()}`))
+    .map((u) => ({ mail: u.mail.toLowerCase(), displayName: u.displayName || u.mail, kind: u.accountEnabled === false ? 'shared' : 'user' }))
+    // Boîtes partagées d'abord, puis boîtes utilisateurs.
+    .sort((a, b) => (a.kind === b.kind ? a.displayName.localeCompare(b.displayName, 'fr') : a.kind === 'shared' ? -1 : 1));
   sharedCache = { at: Date.now(), value: boxes };
   return boxes;
 }
@@ -682,7 +684,7 @@ export function registerMicrosoftProvisioningRoutes(app) {
       const mailboxes = (Array.isArray(body.sharedMailboxes) ? body.sharedMailboxes : []).filter((box) => box?.mail);
       for (const box of mailboxes) {
         const name = box.displayName || box.mail;
-        const ok = await step(`Boîte partagée ${name} : accès complet`, () =>
+        const ok = await step(`Boîte ${name} : accès complet`, () =>
           exchange('Add-MailboxPermission', { Identity: box.mail, User: upn, AccessRights: ['FullAccess'], InheritanceType: 'All', AutoMapping: true }).catch(
             (error) => {
               throw notYet(error);
@@ -690,7 +692,7 @@ export function registerMicrosoftProvisioningRoutes(app) {
           )
         );
         if (ok && body.sharedSendAs) {
-          await step(`Boîte partagée ${name} : envoi « en tant que »`, () =>
+          await step(`Boîte ${name} : envoi « en tant que »`, () =>
             exchange('Add-RecipientPermission', { Identity: box.mail, Trustee: upn, AccessRights: ['SendAs'], Confirm: false }).catch((error) => {
               throw notYet(error);
             })
