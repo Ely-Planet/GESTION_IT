@@ -12,6 +12,7 @@ import {
   FolderKanban,
   Network,
   Wallet,
+  FileText,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -28,7 +29,8 @@ export type PageKey =
   | 'audit'
   | 'projects'
   | 'groupprojects'
-  | 'expenses';
+  | 'expenses'
+  | 'contracts';
 
 const GROUP_ITEM = { key: 'groupprojects' as PageKey, label: 'Projets Groupe', icon: Network };
 
@@ -91,12 +93,15 @@ const withGroup = canSeeGroupProjects(user)
     })()
   : baseNav;
 
-// "Suivi des dépenses" : groupe 🔐 Manager Informatique uniquement, après les licences.
+// "Suivi des dépenses" et "Suivi des contrats" : groupe 🔐 Manager Informatique uniquement, après les licences.
 const navItems = user?.isITManager && !user.projectsOnly
   ? (() => {
-      const item = { key: 'expenses' as PageKey, label: 'Suivi des dépenses', icon: Wallet };
+      const items = [
+        { key: 'expenses' as PageKey, label: 'Suivi des dépenses', icon: Wallet },
+        { key: 'contracts' as PageKey, label: 'Suivi des contrats', icon: FileText },
+      ];
       const index = withGroup.findIndex((entry) => entry.key === 'licenses');
-      return index === -1 ? [...withGroup, item] : [...withGroup.slice(0, index + 1), item, ...withGroup.slice(index + 1)];
+      return index === -1 ? [...withGroup, ...items] : [...withGroup.slice(0, index + 1), ...items, ...withGroup.slice(index + 1)];
     })()
   : withGroup;
 

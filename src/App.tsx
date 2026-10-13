@@ -17,6 +17,7 @@ import Audit from './pages/Audit';
 import Projects from './pages/projects/Projects';
 import GroupProjects from './pages/group/GroupProjects';
 import Expenses from './pages/Expenses';
+import Contracts from './pages/Contracts';
 import { canSeeGroupProjects } from './components/Layout';
 import { Building2 } from 'lucide-react';
 
@@ -155,6 +156,7 @@ if (
 {page === 'audit' && <Audit />}
 {page === 'projects' && <Projects key={openRequest.nonce} initialProjectId={openRequest.projectId} />}
 {page === 'expenses' && user?.isITManager && <Expenses />}
+{page === 'contracts' && user?.isITManager && <Contracts />}
 {page === 'groupprojects' && <GroupProjects key={openGroupRequest.nonce} initialProjectId={openGroupRequest.projectId} onOpenItProject={openProject} />}
 
     </Layout>

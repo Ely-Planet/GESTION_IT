@@ -295,4 +295,6 @@ export function registerExpenseRoutes(app) {
       res.status(500).json({ error: error.message });
     }
   });
+
+  return schemaReady;
 }

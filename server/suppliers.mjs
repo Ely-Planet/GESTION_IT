@@ -72,7 +72,7 @@ function findDuplicates(suppliers) {
       // Nom conservé par défaut : le plus utilisé, puis celui qui n'est pas tout en majuscules.
       const target = [...members].sort(
         (x, y) =>
-          y.hardware_count + y.expense_count - (x.hardware_count + x.expense_count) ||
+          y.hardware_count + y.expense_count + y.contract_count - (x.hardware_count + x.expense_count + x.contract_count) ||
           Number(x.label === x.label.toUpperCase()) - Number(y.label === y.label.toUpperCase()) ||
           y.label.length - x.label.length
       )[0];
@@ -86,7 +86,8 @@ async function listSuppliers(db = pool) {
     await db.query(
       `SELECT s.id, s.label,
               (SELECT COUNT(*) FROM hardware_items h WHERE h.supplier_id = s.id)::int AS hardware_count,
-              (SELECT COUNT(*) FROM expenses e WHERE lower(btrim(e.supplier)) = lower(btrim(s.label)))::int AS expense_count
+              (SELECT COUNT(*) FROM expenses e WHERE lower(btrim(e.supplier)) = lower(btrim(s.label)))::int AS expense_count,
+              (SELECT COUNT(*) FROM contracts c WHERE c.supplier_id = s.id)::int AS contract_count
        FROM inventory_suppliers s
        ORDER BY lower(s.label)`
     )
@@ -113,6 +114,9 @@ async function mergeSuppliers(client, targetId, sourceIds) {
     const source = (await client.query(`SELECT id, label FROM inventory_suppliers WHERE id = $1`, [sourceId])).rows[0];
     if (!source) continue;
     hardware += (await client.query(`UPDATE hardware_items SET supplier_id = $1 WHERE supplier_id = $2`, [target.id, source.id])).rowCount;
+    if ((await client.query(`SELECT to_regclass('public.contracts') IS NOT NULL AS ok`)).rows[0].ok) {
+      await client.query(`UPDATE contracts SET supplier_id = $1 WHERE supplier_id = $2`, [target.id, source.id]);
+    }
     expenses += (
       await client.query(`UPDATE expenses SET supplier = $1, updated_at = now() WHERE lower(btrim(supplier)) = lower(btrim($2))`, [target.label, source.label])
     ).rowCount;
@@ -198,9 +202,9 @@ export function registerSupplierRoutes(app) {
     try {
       const supplier = (await listSuppliers()).find((s) => s.id === req.params.id);
       if (!supplier) return res.status(404).json({ error: 'Fournisseur introuvable' });
-      if (supplier.hardware_count || supplier.expense_count) {
+      if (supplier.hardware_count || supplier.expense_count || supplier.contract_count) {
         return res.status(409).json({
-          error: `« ${supplier.label} » est utilisé (${supplier.hardware_count} matériel(s), ${supplier.expense_count} dépense(s)) : fusionnez-le plutôt dans un autre fournisseur`
+          error: `« ${supplier.label} » est utilisé (${supplier.hardware_count} matériel(s), ${supplier.expense_count} dépense(s), ${supplier.contract_count} contrat(s)) : fusionnez-le plutôt dans un autre fournisseur`
         });
       }
       await pool.query(`DELETE FROM inventory_suppliers WHERE id = $1`, [supplier.id]);

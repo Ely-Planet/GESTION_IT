@@ -26,6 +26,7 @@ import { registerForecastRoutes } from './forecast.mjs';
 import { registerMicrosoftProvisioningRoutes, notifyManagerOnboardingDone } from './microsoftProvisioning.mjs';
 import { registerExpenseRoutes } from './expenses.mjs';
 import { registerSupplierRoutes } from './suppliers.mjs';
+import { registerContractRoutes } from './contracts.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -4662,7 +4663,8 @@ const projectsSchemaReady = registerProjectRoutes(app);
 registerGroupProjectRoutes(app, { afterSchema: projectsSchemaReady });
 registerForecastRoutes(app);
 registerMicrosoftProvisioningRoutes(app);
-registerExpenseRoutes(app);
+const expensesReady = registerExpenseRoutes(app);
+registerContractRoutes(app, { after: expensesReady });
 registerSupplierRoutes(app);
 
 app.use((req, res) => {

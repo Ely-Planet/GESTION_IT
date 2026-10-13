@@ -4,7 +4,7 @@ import { Check, GitMerge, Pencil, Plus, Trash2, X } from 'lucide-react';
 // Fournisseurs (liste unique : inventaire et suivi des dépenses).
 // Ajout, renommage, suppression, fusion et détection automatique des doublons.
 
-type Supplier = { id: string; label: string; hardware_count: number; expense_count: number };
+type Supplier = { id: string; label: string; hardware_count: number; expense_count: number; contract_count: number };
 type DuplicateGroup = { confidence: 'sure' | 'probable'; targetId: string; members: Supplier[] };
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -16,7 +16,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 const usage = (s: Supplier) =>
-  [s.hardware_count ? `${s.hardware_count} matériel${s.hardware_count > 1 ? 's' : ''}` : '', s.expense_count ? `${s.expense_count} dépense${s.expense_count > 1 ? 's' : ''}` : '']
+  [s.hardware_count ? `${s.hardware_count} matériel${s.hardware_count > 1 ? 's' : ''}` : '', s.expense_count ? `${s.expense_count} dépense${s.expense_count > 1 ? 's' : ''}` : '', s.contract_count ? `${s.contract_count} contrat${s.contract_count > 1 ? 's' : ''}` : '']
     .filter(Boolean)
     .join(' · ') || 'non utilisé';
 
@@ -245,8 +245,8 @@ export default function SuppliersSettings() {
                 <button
                   type="button"
                   className="btn-ghost p-1.5 text-ink-400 hover:text-red-600 disabled:opacity-30"
-                  title={s.hardware_count || s.expense_count ? 'Utilisé : fusionnez-le plutôt dans un autre fournisseur' : 'Supprimer'}
-                  disabled={Boolean(s.hardware_count || s.expense_count)}
+                  title={s.hardware_count || s.expense_count || s.contract_count ? 'Utilisé : fusionnez-le plutôt dans un autre fournisseur' : 'Supprimer'}
+                  disabled={Boolean(s.hardware_count || s.expense_count || s.contract_count)}
                   onClick={() => {
                     if (confirm(`Supprimer le fournisseur « ${s.label} » ?`)) void run(() => api(`/api/suppliers-admin/${s.id}`, { method: 'DELETE' }), 'Fournisseur supprimé.');
                   }}
