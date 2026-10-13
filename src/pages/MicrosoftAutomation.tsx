@@ -10,16 +10,39 @@ type Step = { label: string; ok: boolean; error?: string; detail?: string | null
 type Group = { id: string; displayName: string; manageable?: boolean };
 type License = { sku_id: string; label: string; available: number };
 type Person = { id: string; name: string; upn: string };
+type Missing = { api: string; permission: string };
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json' } });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const error = new Error(json.error || 'Erreur') as Error & { steps?: Step[] };
+    const error = new Error(json.error || 'Erreur') as Error & { steps?: Step[]; missingPermissions?: Missing[] };
     error.steps = json.steps;
+    error.missingPermissions = json.missingPermissions;
     throw error;
   }
   return json as T;
+}
+
+// Autorisations que Microsoft n'a pas (encore) accordées à l'application.
+function MissingPermissions({ missing }: { missing?: Missing[] }) {
+  if (!missing?.length) return null;
+  return (
+    <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm">
+      <p className="font-medium text-amber-800">Autorisations manquantes pour l'application GESTION_IT :</p>
+      <ul className="list-disc pl-5 mt-1 text-amber-900">
+        {missing.map((m) => (
+          <li key={`${m.api}-${m.permission}`}>
+            <strong>{m.permission}</strong> <span className="text-amber-700">({m.api})</span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-amber-700 mt-2">
+        Entra → Inscriptions d'applications → GESTION_IT → Autorisations d'API : ajoutez-les en « autorisations d'application », puis
+        « Accorder un consentement d'administrateur ». La prise en compte peut demander quelques minutes.
+      </p>
+    </div>
+  );
 }
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -153,6 +176,7 @@ type Preview = {
   threeCx: Group | null;
   requestedSkuIds: string[];
   licenses: License[];
+  missingPermissions?: Missing[];
 };
 
 function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement; onClose: () => void; onDone: () => void }) {
@@ -166,17 +190,22 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ upn: string; temporaryPassword: string | null; steps: Step[] } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [missing, setMissing] = useState<Missing[] | undefined>();
 
   useEffect(() => {
     call<Preview>(`/api/movements/${movement.id}/microsoft-account`)
       .then((p) => {
         setPreview(p);
+        setMissing(p.missingPermissions);
         setForm({ givenName: p.givenName, surname: p.surname, displayName: p.displayName, jobTitle: p.jobTitle, upn: p.upn || '' });
         setGroups(p.requestedGroups);
         setSkuIds(p.requestedSkuIds);
         setManager(p.manager);
       })
-      .catch((err) => setError(err.message));
+      .catch((err) => {
+        setError(err.message);
+        setMissing(err.missingPermissions);
+      });
   }, [movement.id]);
 
   const addableGroups = (preview?.groups || []).filter((g) => !groups.some((x) => x.id === g.id));
@@ -194,6 +223,7 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
     } catch (err: any) {
       setError(err.message);
       if (err.steps?.length) setResult({ upn: form.upn, temporaryPassword: null, steps: err.steps });
+      setMissing(err.missingPermissions ?? missing);
     } finally {
       setBusy(false);
       onDone();
@@ -204,6 +234,7 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
     const credentials = `Adresse : ${result.upn}\nMot de passe provisoire : ${result.temporaryPassword}`;
     return (
       <Modal title="Compte Microsoft" onClose={onClose}>
+        <MissingPermissions missing={missing} />
         <Steps steps={result.steps} />
         {result.temporaryPassword && (
           <div className="mt-4 p-3 rounded-lg bg-elyade-50 border border-elyade-200 text-sm">
@@ -237,6 +268,7 @@ function CreateAccountModal({ movement, onClose, onDone }: { movement: Movement;
 
   return (
     <Modal title="Créer le compte Microsoft" onClose={onClose}>
+      <MissingPermissions missing={missing} />
       {!preview && !error && <p className="text-sm text-ink-500">Préparation…</p>}
       {error && !preview && <p className="text-sm text-red-600">{error}</p>}
       {preview && (
@@ -351,6 +383,7 @@ type OffPreview = {
   groups?: Group[];
   people?: Person[];
   managerUpn?: string | null;
+  missingPermissions?: Missing[];
 };
 
 function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onClose: () => void; onDone: () => void }) {
@@ -366,6 +399,8 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
   });
   const [reply, setReply] = useState('');
   const [delegate, setDelegate] = useState<Person | null>(null);
+  const [missing, setMissing] = useState<Missing[] | undefined>();
+  const [forward, setForward] = useState<{ on: boolean; person: Person | null; email: string }>({ on: false, person: null, email: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<Step[] | null>(null);
@@ -374,17 +409,22 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
     call<OffPreview>(`/api/movements/${movement.id}/microsoft-offboarding`)
       .then((p) => {
         setPreview(p);
+        setMissing(p.missingPermissions);
         // Délégation proposée au manager, modifiable.
         const manager = p.people?.find((x) => x.upn?.toLowerCase() === p.managerUpn?.toLowerCase());
         if (manager) setDelegate(manager);
       })
-      .catch((err) => setError(err.message));
+      .catch((err) => {
+        setError(err.message);
+        setMissing(err.missingPermissions);
+      });
   }, [movement.id]);
 
   const set = (key: keyof typeof options) => (value: boolean) => setOptions({ ...options, [key]: value });
   const manageable = (preview?.groups || []).filter((g) => g.manageable);
   const others = (preview?.groups || []).filter((g) => !g.manageable);
   const missingReply = options.withReply && !reply.trim();
+  const missingForward = forward.on && !forward.person && !forward.email.trim();
 
   async function submit() {
     if (!confirm(`Lancer le départ du compte Microsoft de ${preview?.user?.displayName} ?`)) return;
@@ -398,6 +438,7 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
           convertToShared: options.convertToShared,
           delegate: options.convertToShared ? delegate : null,
           sendAs: options.sendAs,
+          forwardTo: forward.on ? forward.person?.upn || forward.email.trim() : '',
           block: options.block,
           revokeSessions: options.revokeSessions,
           removeGroups: options.removeGroups,
@@ -408,6 +449,7 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
     } catch (err: any) {
       setError(err.message);
       if (err.steps?.length) setSteps(err.steps);
+      setMissing(err.missingPermissions ?? missing);
     } finally {
       setBusy(false);
       onDone();
@@ -417,6 +459,7 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
   if (steps) {
     return (
       <Modal title="Départ : compte Microsoft" onClose={onClose}>
+        <MissingPermissions missing={missing} />
         <Steps steps={steps} />
         {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
         <p className="text-xs text-ink-500 mt-3">Le récapitulatif est ajouté à la check-list.</p>
@@ -429,6 +472,7 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
 
   return (
     <Modal title="Départ : compte Microsoft" onClose={onClose}>
+      <MissingPermissions missing={missing} />
       {!preview && !error && <p className="text-sm text-ink-500">Recherche du compte…</p>}
       {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
       {preview && !preview.user && <p className="text-sm text-amber-700">Aucun compte Microsoft trouvé pour ce collaborateur. Associez-le d'abord.</p>}
@@ -464,6 +508,30 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
           </div>
 
           <div className="space-y-2">
+            <Check checked={forward.on} onChange={(on) => setForward({ ...forward, on })}>Transférer les mails reçus</Check>
+            {forward.on && (
+              <div className="pl-6 space-y-2">
+                <PersonField
+                  value={forward.person}
+                  people={preview.people || []}
+                  onChange={(person) => setForward({ ...forward, person, email: '' })}
+                  placeholder="Rechercher un collaborateur…"
+                />
+                {!forward.person && (
+                  <input
+                    className="input text-sm"
+                    type="email"
+                    placeholder="…ou saisir une adresse (externe possible)"
+                    value={forward.email}
+                    onChange={(e) => setForward({ ...forward, email: e.target.value })}
+                  />
+                )}
+                <p className="text-xs text-ink-500">Une copie reste dans la boîte. Le transfert vers l'extérieur peut être bloqué par la stratégie anti-spam Microsoft.</p>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
             <Check checked={options.block} onChange={set('block')}>Bloquer la connexion</Check>
             <Check checked={options.revokeSessions} onChange={set('revokeSessions')}>Déconnecter toutes les sessions (ordinateurs, téléphones, Teams…)</Check>
             <Check checked={options.removeGroups} onChange={set('removeGroups')} disabled={manageable.length === 0}>
@@ -484,7 +552,7 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
           {missingReply && <p className="text-xs text-amber-700">Saisissez le texte de la réponse automatique, ou décochez-la.</p>}
           <div className="flex justify-end gap-2">
             <button type="button" className="btn-ghost text-sm" onClick={onClose}>Annuler</button>
-            <button type="button" className="btn-primary text-sm" disabled={busy || missingReply} onClick={() => void submit()}>
+            <button type="button" className="btn-primary text-sm" disabled={busy || missingReply || missingForward} onClick={() => void submit()}>
               {busy ? 'En cours…' : 'Valider le départ'}
             </button>
           </div>

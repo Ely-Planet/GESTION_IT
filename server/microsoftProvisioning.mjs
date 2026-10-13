@@ -99,6 +99,68 @@ async function withRetry(run, attempts = 5) {
 }
 
 // ---------------------------------------------------------------------------
+// Autorisations accordées à l'application (lues dans ses jetons d'accès)
+// ---------------------------------------------------------------------------
+// Autorisation nécessaire -> autorisations plus larges qui la couvrent aussi.
+const GRAPH_PERMISSIONS = {
+  onboarding: {
+    'User.ReadWrite.All': ['Directory.ReadWrite.All'],
+    'Group.Read.All': ['Group.ReadWrite.All', 'Directory.Read.All', 'Directory.ReadWrite.All'],
+    'GroupMember.ReadWrite.All': ['Group.ReadWrite.All', 'Directory.ReadWrite.All'],
+    'LicenseAssignment.ReadWrite.All': ['User.ReadWrite.All', 'Directory.ReadWrite.All']
+  },
+  offboarding: {
+    'User.ReadWrite.All': ['Directory.ReadWrite.All'],
+    'Group.Read.All': ['Group.ReadWrite.All', 'Directory.Read.All', 'Directory.ReadWrite.All'],
+    'GroupMember.ReadWrite.All': ['Group.ReadWrite.All', 'Directory.ReadWrite.All'],
+    'LicenseAssignment.ReadWrite.All': ['User.ReadWrite.All', 'Directory.ReadWrite.All'],
+    'User.RevokeSessions.All': ['User.ReadWrite.All', 'Directory.ReadWrite.All'],
+    'MailboxSettings.ReadWrite': []
+  }
+};
+// Rôles Entra permettant de gérer les boîtes (ID de modèle de rôle).
+const EXCHANGE_ROLES = {
+  '31392ffb-586c-42d1-9346-e59415a2cc4e': 'Exchange Recipient Administrator',
+  '29232cdf-9323-42fd-ade2-1d097af3e4de': 'Exchange Administrator',
+  '62e90394-69f5-4237-9190-012177145e10': 'Global Administrator'
+};
+
+function tokenClaims(token) {
+  try {
+    return JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString('utf8'));
+  } catch {
+    return {};
+  }
+}
+
+// Liste des autorisations manquantes pour l'arrivée ou le départ.
+async function missingPermissions(kind) {
+  const missing = [];
+  const graphRoles = new Set(tokenClaims(await getGraphAppToken()).roles || []);
+  for (const [permission, broader] of Object.entries(GRAPH_PERMISSIONS[kind])) {
+    if (!graphRoles.has(permission) && !broader.some((p) => graphRoles.has(p))) {
+      missing.push({ api: 'Microsoft Graph', permission });
+    }
+  }
+  if (kind === 'offboarding') {
+    let claims = {};
+    try {
+      claims = tokenClaims(await exchangeToken());
+    } catch {
+      // jeton Exchange impossible : signalé ci-dessous
+    }
+    if (!(claims.roles || []).includes('Exchange.ManageAsApp')) {
+      missing.push({ api: 'Office 365 Exchange Online', permission: 'Exchange.ManageAsApp' });
+    }
+    // Le rôle Entra n'apparaît dans le jeton que s'il est déjà attribué.
+    if (Array.isArray(claims.wids) && !claims.wids.some((id) => EXCHANGE_ROLES[id])) {
+      missing.push({ api: 'Rôle Entra', permission: 'Exchange Recipient Administrator (attribué à l’application)' });
+    }
+  }
+  return missing;
+}
+
+// ---------------------------------------------------------------------------
 // Exchange Online (API d'administration utilisée par le module PowerShell)
 // ---------------------------------------------------------------------------
 async function exchangeToken() {
@@ -237,6 +299,21 @@ async function tenantLicenses() {
               GREATEST(COALESCE(s.enabled_units, 0) - COALESCE(s.consumed_units, 0), 0)::int AS available
        FROM subscribed_skus s LEFT JOIN license_types lt ON lt.code = s.display_name
        WHERE s.sku_id IS NOT NULL AND COALESCE(s.enabled_units, 0) > 0
+       ORDER BY label`
+    )
+  ).rows;
+}
+
+// Licences proposées à l'arrivée : celles activées dans Paramètres → Licences Microsoft.
+async function onboardingLicenses() {
+  return (
+    await pool.query(
+      `SELECT s.sku_id, s.display_name AS sku_part_number, COALESCE(lt.label, s.display_name) AS label, lt.id AS license_type_id,
+              GREATEST(COALESCE(s.enabled_units, 0) - COALESCE(s.consumed_units, 0), 0)::int AS available
+       FROM subscribed_skus s
+       JOIN microsoft_license_filters f ON f.sku_part_number = s.display_name AND f.enabled
+       LEFT JOIN license_types lt ON lt.code = s.display_name
+       WHERE s.sku_id IS NOT NULL
        ORDER BY label`
     )
   ).rows;
@@ -436,11 +513,12 @@ export function registerMicrosoftProvisioningRoutes(app) {
         groups: await selectableGroups(),
         threeCx,
         requestedSkuIds: await requestedSkuIds(movement.id),
-        licenses: await tenantLicenses()
+        licenses: await onboardingLicenses(),
+        missingPermissions: await missingPermissions('onboarding').catch(() => [])
       });
     } catch (error) {
       console.error('[Microsoft] Aperçu création de compte', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: error.message, missingPermissions: await missingPermissions('onboarding').catch(() => []) });
     }
   });
 
@@ -592,7 +670,7 @@ export function registerMicrosoftProvisioningRoutes(app) {
       console.error('[Microsoft] Création de compte', error);
       steps.push({ label: 'Création du compte', ok: false, error: error.message });
       if (movement) await addRecap(movement.id, 'Récapitulatif Microsoft : création du compte (échec)', steps).catch(() => {});
-      res.status(500).json({ error: error.message, steps });
+      res.status(500).json({ error: error.message, steps, missingPermissions: await missingPermissions('onboarding').catch(() => []) });
     }
   });
 
@@ -610,11 +688,12 @@ export function registerMicrosoftProvisioningRoutes(app) {
         licenses: (user.assignedLicenses || []).map((l) => ({ skuId: l.skuId, label: labels.get(String(l.skuId).toLowerCase()) || l.skuId })),
         groups: await userGroups(user.id),
         people: (await microsoftPeople()).filter((p) => p.id !== user.id),
-        managerUpn: movement.manager_email || null
+        managerUpn: movement.manager_email || null,
+        missingPermissions: await missingPermissions('offboarding').catch(() => [])
       });
     } catch (error) {
       console.error('[Microsoft] Aperçu départ', error);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: error.message, missingPermissions: await missingPermissions('offboarding').catch(() => []) });
     }
   });
 
@@ -667,6 +746,18 @@ export function registerMicrosoftProvisioningRoutes(app) {
         }
       }
 
+      // Transfert des mails reçus (copie conservée dans la boîte).
+      const forwardTo = String(options.forwardTo || '').trim().toLowerCase();
+      if (forwardTo) {
+        if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(forwardTo)) {
+          steps.push({ label: 'Transfert des mails', ok: false, error: `adresse invalide : ${forwardTo}` });
+        } else {
+          await step(`Mails transférés vers ${forwardTo} (copie conservée dans la boîte)`, () =>
+            exchange('Set-Mailbox', { Identity: upn, ForwardingSmtpAddress: `smtp:${forwardTo}`, DeliverToMailboxAndForward: true })
+          );
+        }
+      }
+
       // 3. Blocage et déconnexion.
       if (options.block) {
         const ok = await step('Connexion bloquée', () => graph('PATCH', `/users/${user}`, { accountEnabled: false }));
@@ -704,7 +795,7 @@ export function registerMicrosoftProvisioningRoutes(app) {
       console.error('[Microsoft] Départ', error);
       steps.push({ label: 'Traitement du départ', ok: false, error: error.message });
       if (movement) await addRecap(movement.id, 'Récapitulatif Microsoft : désactivation (échec)', steps).catch(() => {});
-      res.status(500).json({ error: error.message, steps });
+      res.status(500).json({ error: error.message, steps, missingPermissions: await missingPermissions('offboarding').catch(() => []) });
     }
   });
 }
