@@ -451,6 +451,7 @@ type OffPreview = {
   groups?: Group[];
   people?: Person[];
   managerUpn?: string | null;
+  mailboxes?: Mailbox[];
   missingPermissions?: Missing[];
 };
 
@@ -468,7 +469,7 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
   const [reply, setReply] = useState('');
   const [delegate, setDelegate] = useState<Person | null>(null);
   const [missing, setMissing] = useState<Missing[] | undefined>();
-  const [forward, setForward] = useState<{ on: boolean; person: Person | null; email: string }>({ on: false, person: null, email: '' });
+  const [forward, setForward] = useState<{ on: boolean; box: Mailbox | null; email: string }>({ on: false, box: null, email: '' });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [steps, setSteps] = useState<Step[] | null>(null);
@@ -492,7 +493,7 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
   const manageable = (preview?.groups || []).filter((g) => g.manageable);
   const others = (preview?.groups || []).filter((g) => !g.manageable);
   const missingReply = options.withReply && !reply.trim();
-  const missingForward = forward.on && !forward.person && !forward.email.trim();
+  const missingForward = forward.on && !forward.box && !forward.email.trim();
 
   async function submit() {
     if (!confirm(`Lancer le départ du compte Microsoft de ${preview?.user?.displayName} ?`)) return;
@@ -506,7 +507,7 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
           convertToShared: options.convertToShared,
           delegate: options.convertToShared ? delegate : null,
           sendAs: options.sendAs,
-          forwardTo: forward.on ? forward.person?.upn || forward.email.trim() : '',
+          forwardTo: forward.on ? forward.box?.mail || forward.email.trim() : '',
           block: options.block,
           revokeSessions: options.revokeSessions,
           removeGroups: options.removeGroups,
@@ -579,13 +580,24 @@ function OffboardModal({ movement, onClose, onDone }: { movement: Movement; onCl
             <Check checked={forward.on} onChange={(on) => setForward({ ...forward, on })}>Transférer les mails reçus</Check>
             {forward.on && (
               <div className="pl-6 space-y-2">
-                <PersonField
-                  value={forward.person}
-                  people={preview.people || []}
-                  onChange={(person) => setForward({ ...forward, person, email: '' })}
-                  placeholder="Rechercher un collaborateur…"
-                />
-                {!forward.person && (
+                {forward.box ? (
+                  <div className="flex items-center gap-2 text-sm p-2 rounded-lg border border-ink-200 bg-white">
+                    <span className="flex-1">
+                      {forward.box.kind === 'user' ? '👤 ' : ''}
+                      {forward.box.displayName} <span className="text-ink-400">({forward.box.mail})</span>
+                    </span>
+                    <button type="button" className="btn-ghost text-xs" onClick={() => setForward({ ...forward, box: null })}>Changer</button>
+                  </div>
+                ) : (
+                  <SearchPick
+                    items={preview.mailboxes || []}
+                    label={(box) => box.displayName}
+                    sub={(box) => `${box.mail}${box.kind === 'user' ? ' · collaborateur' : ' · boîte partagée'}`}
+                    onPick={(box) => setForward({ ...forward, box, email: '' })}
+                    placeholder="Rechercher un collaborateur ou une boîte partagée…"
+                  />
+                )}
+                {!forward.box && (
                   <input
                     className="input text-sm"
                     type="email"

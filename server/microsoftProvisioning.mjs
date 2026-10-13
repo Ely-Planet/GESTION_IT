@@ -399,7 +399,7 @@ function stepRunner(steps) {
 // Compte Microsoft du collaborateur qui part : sa fiche, une fiche en double
 // de même e-mail / UPN, ou à défaut une recherche par adresse.
 async function resolveDepartingUser(movement) {
-  const select = '$select=id,displayName,userPrincipalName,accountEnabled,assignedLicenses';
+  const select = '$select=id,displayName,userPrincipalName,accountEnabled,assignedLicenses,mail';
   if (movement.microsoft_object_id) {
     const user = await graphOrNull(`/users/${encodeURIComponent(movement.microsoft_object_id)}?${select}`);
     if (user) return user;
@@ -741,6 +741,8 @@ export function registerMicrosoftProvisioningRoutes(app) {
         licenses: (user.assignedLicenses || []).map((l) => ({ skuId: l.skuId, label: labels.get(String(l.skuId).toLowerCase()) || l.skuId })),
         groups: await userGroups(user.id),
         people: (await microsoftPeople()).filter((p) => p.id !== user.id),
+        // Destinations de transfert : boîtes partagées et collaborateurs.
+        mailboxes: (await sharedMailboxes()).filter((box) => box.mail !== String(user.mail || user.userPrincipalName || '').toLowerCase()),
         managerUpn: movement.manager_email || null,
         missingPermissions: await missingPermissions('offboarding').catch(() => [])
       });
