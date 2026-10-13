@@ -11,6 +11,7 @@ import {
   Settings2,
   FolderKanban,
   Network,
+  Wallet,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -26,7 +27,8 @@ export type PageKey =
   | 'documents'
   | 'audit'
   | 'projects'
-  | 'groupprojects';
+  | 'groupprojects'
+  | 'expenses';
 
 const GROUP_ITEM = { key: 'groupprojects' as PageKey, label: 'Projets Groupe', icon: Network };
 
@@ -82,12 +84,21 @@ const baseNav =
       : NAV_LIMITED.filter((item) => item.key !== 'projects' || user?.hasProjectAccess);
 
 // "Projets Groupe" juste après les projets IT (ou en tête s'il n'y en a pas).
-const navItems = canSeeGroupProjects(user)
+const withGroup = canSeeGroupProjects(user)
   ? (() => {
       const index = baseNav.findIndex((item) => item.key === 'projects');
       return index === -1 ? [GROUP_ITEM, ...baseNav] : [...baseNav.slice(0, index + 1), GROUP_ITEM, ...baseNav.slice(index + 1)];
     })()
   : baseNav;
+
+// "Suivi des dépenses" : groupe 🔐 Manager Informatique uniquement, après les licences.
+const navItems = user?.isITManager && !user.projectsOnly
+  ? (() => {
+      const item = { key: 'expenses' as PageKey, label: 'Suivi des dépenses', icon: Wallet };
+      const index = withGroup.findIndex((entry) => entry.key === 'licenses');
+      return index === -1 ? [...withGroup, item] : [...withGroup.slice(0, index + 1), item, ...withGroup.slice(index + 1)];
+    })()
+  : withGroup;
 
   return (
     <div className="min-h-screen flex bg-ink-50">

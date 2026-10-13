@@ -295,10 +295,35 @@ async function sharedMailboxes() {
   return boxes;
 }
 
-// Adresses saisies par le demandeur (champ « Boîtes partagées » rangé dans les notes).
-function requestedMailboxAddresses(notes) {
+// Boîtes saisies par le demandeur (champ « Boîtes partagées », rangé dans les
+// notes). Chaque ligne est rapprochée d'une boîte existante : adresse complète,
+// adresse sans @domaine (« accueil »), ou nom affiché (« Equipements »).
+const comparable = (value) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9@._-]+/g, '');
+
+function requestedMailboxes(notes, boxes) {
   const text = String(notes || '').split(/Boîtes partagées demandées\s*:/i)[1] || '';
-  return [...new Set((text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || []).map((m) => m.toLowerCase()))];
+  const entries = text
+    .split(/[\n,;]+/)
+    .map((line) => line.replace(/^[\s\-•*]+/, '').trim())
+    .filter((line) => line && line.length <= 80);
+  const result = [];
+  for (const entry of entries) {
+    const email = (entry.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i) || [])[0]?.toLowerCase();
+    const key = comparable(email || entry);
+    const local = key.split('@')[0];
+    const box =
+      boxes.find((b) => b.mail === key) ||
+      boxes.find((b) => b.mail.split('@')[0] === local) ||
+      boxes.find((b) => comparable(b.displayName) === local);
+    const found = box || { mail: email || entry, displayName: entry, unknown: true };
+    if (!result.some((r) => r.mail === found.mail)) result.push(found);
+  }
+  return result;
 }
 
 let groupsCache = { at: 0, value: null };
@@ -616,9 +641,7 @@ export function registerMicrosoftProvisioningRoutes(app) {
         groups: await selectableGroups(),
         threeCx,
         sharedMailboxes: allShared,
-        requestedSharedMailboxes: requestedMailboxAddresses(movement.notes).map(
-          (mail) => allShared.find((box) => box.mail === mail) || { mail, displayName: mail, unknown: true }
-        ),
+        requestedSharedMailboxes: requestedMailboxes(movement.notes, allShared),
         requestedSkuIds: await requestedSkuIds(movement.id),
         licenses: await onboardingLicenses(),
         missingPermissions: await missingPermissions('onboarding').catch(() => [])
