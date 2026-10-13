@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { AlertTriangle, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { AlertTriangle, History, Pencil, Plus, RotateCw, Trash2, X } from 'lucide-react';
 
 // Suivi des contrats informatiques (groupe 🔐 Manager Informatique).
+// Dates de fin, de renouvellement et limite de résiliation calculées à partir
+// du début, de la durée, du mode de reconduction et du préavis (comme le serveur).
+
+type RenewalMode = 'none' | 'same' | 'no_commitment' | 'custom';
+type Billing = 'annual' | 'quarterly' | 'monthly';
 
 type Contract = {
   id: string;
@@ -11,32 +16,45 @@ type Contract = {
   category: string | null;
   start_date: string | null;
   commitment_months: number | null;
-  tacit_renewal: boolean;
   notice_months: number | null;
+  renewal_mode: RenewalMode;
+  renewal_months: number | null;
+  billing_frequency: Billing;
+  billing_amount: number | null;
+  stored_end_date: string | null;
+  status: string;
+  notes: string | null;
+  renewals: { previous_start: string | null; previous_end: string | null; new_start: string; new_months: number; renewed_by: string | null; renewed_at: string }[];
+  end_date: string | null;
   renewal_date: string | null;
   termination_deadline: string | null;
-  end_date: string | null;
-  status: string;
+  cancellable_from: string | null;
+  decision_date: string | null;
+  decision: 'renew' | 'terminate' | null;
+  days_to_decision: number | null;
   annual_cost: number | null;
-  notes: string | null;
-  supplier_spent_fy: number;
-  next_end_date: string | null;
-  next_deadline: string | null;
-  days_to_deadline: number | null;
-  rolled: boolean;
-  inconsistent: boolean;
+  fiscal_cost: number;
+  supplier_spent_fy: number | null;
 };
 type Supplier = { id: string; name: string };
+type Category = { id: string; label: string };
 
-const STATUSES = ['Actif', 'À renouveler', 'En cours de résiliation', 'Résilié'];
-const COMMITMENTS = [0, 12, 24, 36, 48, 60];
+const STATUSES = ['Actif', 'En cours de résiliation', 'Résilié', 'Terminé'];
+const RENEWAL_LABELS: Record<RenewalMode, string> = {
+  none: 'Sans tacite reconduction',
+  same: 'Tacite reconduction, même durée',
+  no_commitment: 'Tacite reconduction, puis sans engagement',
+  custom: 'Tacite reconduction, durée personnalisée',
+};
+const BILLING_LABELS: Record<Billing, string> = { annual: 'Annuelle', quarterly: 'Trimestrielle', monthly: 'Mensuelle' };
+const BILLING_MONTHS: Record<Billing, number> = { annual: 12, quarterly: 3, monthly: 1 };
+const DURATIONS = [0, 12, 24, 36, 48, 60];
 const NOTICES = [0, 1, 2, 3, 6];
 
 const euro = (v: number | null) => (v === null ? '—' : v.toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' }));
 const fr = (iso: string | null) => (iso ? new Date(`${iso}T00:00:00`).toLocaleDateString('fr-FR') : '—');
-const duration = (months: number | null) =>
-  months === null ? '—' : months === 0 ? "Pas d'engagement" : months % 12 === 0 ? `${months / 12} an${months > 12 ? 's' : ''}` : `${months} mois`;
-const notice = (months: number | null) => (months === null ? '—' : months === 0 ? 'Pas de préavis' : `${months} mois`);
+const duration = (m: number | null) => (m === null ? '—' : m === 0 ? "Sans engagement" : m % 12 === 0 ? `${m / 12} an${m > 12 ? 's' : ''}` : `${m} mois`);
+const noticeText = (m: number | null) => (m === null ? '—' : m === 0 ? 'sans préavis' : `préavis ${m} mois`);
 
 function addMonths(iso: string, months: number) {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -47,6 +65,26 @@ function addMonths(iso: string, months: number) {
   d.setUTCDate(Math.min(day, last));
   return d.toISOString().slice(0, 10);
 }
+const todayIso = () => {
+  const n = new Date();
+  return new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())).toISOString().slice(0, 10);
+};
+
+// Même calcul que le serveur (server/contracts.mjs, contractTerms).
+function computeTerms(start: string, months: number, notice: number, mode: RenewalMode, renewalMonths: number) {
+  const today = todayIso();
+  const initialEnd = start && months > 0 ? addMonths(start, months) : null;
+  if (mode === 'none') return { end: initialEnd, renewal: null, deadline: null, cancellable: null };
+  if (mode === 'no_commitment' || (mode === 'same' && months === 0)) {
+    if (initialEnd && initialEnd > today) return { end: null, renewal: initialEnd, deadline: addMonths(initialEnd, -notice), cancellable: null };
+    return { end: null, renewal: null, deadline: null, cancellable: addMonths(today, notice) };
+  }
+  if (!initialEnd) return { end: null, renewal: null, deadline: null, cancellable: null };
+  const period = mode === 'custom' ? renewalMonths || 12 : months || 12;
+  let end = initialEnd;
+  for (let i = 0; end <= today && i < 500; i++) end = addMonths(end, period);
+  return { end: null, renewal: end, deadline: addMonths(end, -notice), cancellable: null };
+}
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { 'Content-Type': 'application/json' } });
@@ -56,14 +94,16 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return json as T;
 }
 
-// Urgence de la date limite de résiliation (libellé + couleur, jamais la couleur seule).
-function DeadlineBadge({ days }: { days: number | null }) {
+function DecisionBadge({ days }: { days: number | null }) {
   if (days === null) return null;
   if (days < 0) return <span className="badge bg-ink-100 text-ink-600">dépassée</span>;
   const cls = days <= 30 ? 'bg-red-50 text-red-700 border border-red-200' : days <= 90 ? 'bg-amber-50 text-amber-800 border border-amber-200' : 'bg-ink-50 text-ink-600';
   return <span className={`badge ${cls}`}>dans {days} j</span>;
 }
 
+// ---------------------------------------------------------------------------
+// Formulaire
+// ---------------------------------------------------------------------------
 type FormState = {
   id?: string;
   label: string;
@@ -71,30 +111,29 @@ type FormState = {
   category: string;
   start_date: string;
   commitment_months: string;
-  tacit_renewal: boolean;
   notice_months: string;
-  renewal_date: string;
-  termination_deadline: string;
-  end_date: string;
+  renewal_mode: RenewalMode;
+  renewal_months: string;
+  billing_frequency: Billing;
+  billing_amount: string;
   status: string;
-  annual_cost: string;
   notes: string;
 };
 
+const num = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v));
 const toForm = (c?: Contract): FormState => ({
   id: c?.id,
   label: c?.label || '',
   supplier_id: c?.supplier_id || '',
   category: c?.category || '',
   start_date: c?.start_date || '',
-  commitment_months: c?.commitment_months === null || c?.commitment_months === undefined ? '' : String(c.commitment_months),
-  tacit_renewal: c ? c.tacit_renewal : true,
-  notice_months: c?.notice_months === null || c?.notice_months === undefined ? '' : String(c.notice_months),
-  renewal_date: c?.renewal_date || '',
-  termination_deadline: c?.termination_deadline || '',
-  end_date: c?.end_date || '',
+  commitment_months: c ? num(c.commitment_months) : '12',
+  notice_months: c ? num(c.notice_months) : '3',
+  renewal_mode: c?.renewal_mode || 'same',
+  renewal_months: num(c?.renewal_months),
+  billing_frequency: c?.billing_frequency || 'annual',
+  billing_amount: c?.billing_amount === null || c?.billing_amount === undefined ? '' : String(c.billing_amount).replace('.', ','),
   status: c?.status || 'Actif',
-  annual_cost: c?.annual_cost === null || c?.annual_cost === undefined ? '' : String(c.annual_cost).replace('.', ','),
   notes: c?.notes || '',
 });
 
@@ -107,21 +146,21 @@ function ContractForm({
 }: {
   initial: FormState;
   suppliers: Supplier[];
-  categories: string[];
+  categories: Category[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [form, setForm] = useState(initial);
+  const [customDuration, setCustomDuration] = useState(initial.commitment_months !== '' && !DURATIONS.includes(Number(initial.commitment_months)));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const set = (key: keyof FormState) => (e: { target: { value: string } }) => setForm({ ...form, [key]: e.target.value });
 
-  // Fin de contrat = 1er engagement + durée ; date limite = fin - préavis.
-  const commitment = form.commitment_months === '' ? null : Number(form.commitment_months);
-  const computedEnd = form.start_date && commitment ? addMonths(form.start_date, commitment) : null;
-  const endForDeadline = form.end_date || computedEnd;
-  const computedDeadline = endForDeadline && form.notice_months !== '' ? addMonths(endForDeadline, -Number(form.notice_months)) : null;
-  const canApply = (computedEnd && computedEnd !== form.end_date) || (computedDeadline && computedDeadline !== form.termination_deadline);
+  const months = Number(form.commitment_months) || 0;
+  const notice = Number(form.notice_months) || 0;
+  const terms = computeTerms(form.start_date, months, notice, form.renewal_mode, Number(form.renewal_months) || 0);
+  const amount = Number(form.billing_amount.replace(/\s/g, '').replace(',', '.'));
+  const annual = Number.isFinite(amount) && form.billing_amount ? amount * (12 / BILLING_MONTHS[form.billing_frequency]) : null;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -145,6 +184,7 @@ function ContractForm({
           <h3 className="font-semibold text-ink-900">{form.id ? 'Modifier le contrat' : 'Nouveau contrat'}</h3>
           <button type="button" className="btn-ghost p-1.5" onClick={onClose} aria-label="Fermer"><X className="w-4 h-4" /></button>
         </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label className="text-sm sm:col-span-2">
             <span className="label">Contrat (prestataire et objet)</span>
@@ -158,73 +198,115 @@ function ContractForm({
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
-            <span className="text-xs text-ink-400">Liste commune (Paramètres → Inventaire → Fournisseurs)</span>
           </label>
           <label className="text-sm">
             <span className="label">Catégorie</span>
-            <input className="input" list="contract-categories" value={form.category} onChange={set('category')} />
-            <datalist id="contract-categories">
+            <select className="input" value={form.category} onChange={set('category')}>
+              <option value="">—</option>
               {categories.map((c) => (
-                <option key={c} value={c} />
+                <option key={c.id} value={c.label}>{c.label}</option>
               ))}
-            </datalist>
+              {form.category && !categories.some((c) => c.label === form.category) && <option value={form.category}>{form.category}</option>}
+            </select>
+            <span className="text-xs text-ink-400">Liste gérée dans Paramètres → Catégories de contrats</span>
           </label>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-ink-100">
           <label className="text-sm">
-            <span className="label">1er engagement</span>
-            <input className="input" type="date" value={form.start_date} onChange={set('start_date')} />
+            <span className="label">Date de début</span>
+            <input className="input" type="date" required value={form.start_date} onChange={set('start_date')} />
           </label>
           <label className="text-sm">
             <span className="label">Durée d'engagement</span>
-            <select className="input" value={form.commitment_months} onChange={set('commitment_months')}>
-              <option value="">—</option>
-              {COMMITMENTS.map((m) => (
-                <option key={m} value={m}>{duration(m)}</option>
-              ))}
-              {form.commitment_months && !COMMITMENTS.includes(Number(form.commitment_months)) && (
-                <option value={form.commitment_months}>{duration(Number(form.commitment_months))}</option>
-              )}
-            </select>
+            {customDuration ? (
+              <div className="flex gap-1">
+                <input className="input" type="number" min={1} value={form.commitment_months} onChange={set('commitment_months')} placeholder="mois" />
+                <button type="button" className="btn-ghost text-xs" onClick={() => setCustomDuration(false)}>Liste</button>
+              </div>
+            ) : (
+              <select
+                className="input"
+                value={form.commitment_months}
+                onChange={(e) => {
+                  if (e.target.value === 'custom') {
+                    setCustomDuration(true);
+                    setForm({ ...form, commitment_months: '' });
+                  } else setForm({ ...form, commitment_months: e.target.value });
+                }}
+              >
+                {DURATIONS.map((m) => (
+                  <option key={m} value={m}>{duration(m)}</option>
+                ))}
+                <option value="custom">Durée personnalisée…</option>
+              </select>
+            )}
           </label>
           <label className="text-sm">
             <span className="label">Préavis</span>
             <select className="input" value={form.notice_months} onChange={set('notice_months')}>
-              <option value="">—</option>
               {NOTICES.map((m) => (
-                <option key={m} value={m}>{notice(m)}</option>
+                <option key={m} value={m}>{m === 0 ? 'Pas de préavis' : `${m} mois`}</option>
               ))}
             </select>
           </label>
-          <label className="text-sm flex items-center gap-2 pt-6">
-            <input type="checkbox" checked={form.tacit_renewal} onChange={(e) => setForm({ ...form, tacit_renewal: e.target.checked })} />
-            Tacite reconduction
+          <label className="text-sm sm:col-span-2">
+            <span className="label">Reconduction</span>
+            <select className="input" value={form.renewal_mode} onChange={(e) => setForm({ ...form, renewal_mode: e.target.value as RenewalMode })}>
+              {(Object.keys(RENEWAL_LABELS) as RenewalMode[]).map((m) => (
+                <option key={m} value={m}>{RENEWAL_LABELS[m]}</option>
+              ))}
+            </select>
           </label>
-          <label className="text-sm">
-            <span className="label">Date de fin de contrat</span>
-            <input className="input" type="date" value={form.end_date} onChange={set('end_date')} />
-          </label>
-          <label className="text-sm">
-            <span className="label">Date limite de résiliation</span>
-            <input className="input" type="date" value={form.termination_deadline} onChange={set('termination_deadline')} />
-          </label>
-          {canApply && (
-            <div className="sm:col-span-2 text-xs p-2 rounded-lg bg-elyade-50 border border-elyade-200 flex flex-wrap items-center gap-2">
-              Calcul : fin {fr(computedEnd || form.end_date || null)}, résiliation avant le {fr(computedDeadline)}
-              <button
-                type="button"
-                className="btn-ghost text-xs"
-                onClick={() => setForm({ ...form, end_date: computedEnd || form.end_date, termination_deadline: computedDeadline || form.termination_deadline })}
-              >
-                Appliquer
-              </button>
-            </div>
+          {form.renewal_mode === 'custom' && (
+            <label className="text-sm">
+              <span className="label">Durée de chaque renouvellement (mois)</span>
+              <input className="input" type="number" min={1} required value={form.renewal_months} onChange={set('renewal_months')} />
+            </label>
           )}
+        </div>
+
+        <div className="text-sm p-3 rounded-lg bg-elyade-50/60 border border-elyade-200 grid grid-cols-1 sm:grid-cols-3 gap-2">
+          {form.renewal_mode === 'none' ? (
+            <div>
+              <p className="text-xs text-ink-500">Date de fin de contrat</p>
+              <p className="font-medium">{fr(terms.end)}</p>
+            </div>
+          ) : terms.cancellable ? (
+            <div className="sm:col-span-2">
+              <p className="text-xs text-ink-500">Sans engagement</p>
+              <p className="font-medium">Résiliable à tout moment, fin au plus tôt le {fr(terms.cancellable)}</p>
+            </div>
+          ) : (
+            <>
+              <div>
+                <p className="text-xs text-ink-500">Date de renouvellement</p>
+                <p className="font-medium">{fr(terms.renewal)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-ink-500">Date limite de résiliation</p>
+                <p className="font-medium">{fr(terms.deadline)}</p>
+              </div>
+            </>
+          )}
+          <div>
+            <p className="text-xs text-ink-500">Coût annuel</p>
+            <p className="font-medium">{euro(annual)}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <label className="text-sm">
-            <span className="label">Date de renouvellement</span>
-            <input className="input" type="date" value={form.renewal_date} onChange={set('renewal_date')} />
+            <span className="label">Facturation</span>
+            <select className="input" value={form.billing_frequency} onChange={(e) => setForm({ ...form, billing_frequency: e.target.value as Billing })}>
+              {(Object.keys(BILLING_LABELS) as Billing[]).map((b) => (
+                <option key={b} value={b}>{BILLING_LABELS[b]}</option>
+              ))}
+            </select>
           </label>
           <label className="text-sm">
-            <span className="label">Coût annuel (€)</span>
-            <input className="input text-right" inputMode="decimal" value={form.annual_cost} onChange={set('annual_cost')} placeholder="0,00" />
+            <span className="label">Montant par facture (€)</span>
+            <input className="input text-right" inputMode="decimal" value={form.billing_amount} onChange={set('billing_amount')} placeholder="0,00" />
           </label>
           <label className="text-sm">
             <span className="label">Statut</span>
@@ -234,7 +316,7 @@ function ContractForm({
               ))}
             </select>
           </label>
-          <label className="text-sm sm:col-span-2">
+          <label className="text-sm sm:col-span-3">
             <span className="label">Notes</span>
             <textarea className="input" rows={2} value={form.notes} onChange={set('notes')} />
           </label>
@@ -249,55 +331,132 @@ function ContractForm({
   );
 }
 
-export default function Contracts() {
-  const [contracts, setContracts] = useState<Contract[]>([]);
-  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [loading, setLoading] = useState(true);
+// ---------------------------------------------------------------------------
+// Renouvellement manuel (sans tacite reconduction)
+// ---------------------------------------------------------------------------
+function RenewForm({ contract, onClose, onSaved }: { contract: Contract; onClose: () => void; onSaved: () => void }) {
+  const [start, setStart] = useState(contract.end_date || todayIso());
+  const [months, setMonths] = useState(String(contract.commitment_months || 12));
+  const [amount, setAmount] = useState(contract.billing_amount === null ? '' : String(contract.billing_amount).replace('.', ','));
   const [error, setError] = useState<string | null>(null);
-  const [category, setCategory] = useState('');
-  const [status, setStatus] = useState('actifs');
-  const [search, setSearch] = useState('');
-  const [editing, setEditing] = useState<FormState | null>(null);
+  const [saving, setSaving] = useState(false);
+  const newEnd = start && Number(months) > 0 ? addMonths(start, Number(months)) : null;
 
-  async function load() {
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
     try {
-      const [list, supplierList] = await Promise.all([api<Contract[]>('/api/contracts'), api<Supplier[]>('/api/expense-suppliers')]);
-      setContracts(list);
-      setSuppliers(supplierList);
-      setError(null);
+      await api(`/api/contracts/${contract.id}/renew`, { method: 'POST', body: JSON.stringify({ start_date: start, months: Number(months), billing_amount: amount }) });
+      onSaved();
+      onClose();
     } catch (err: any) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-ink-950/40 flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
+      <form className="card w-full max-w-lg my-8 p-5 space-y-4" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-ink-900">Renouveler « {contract.label} »</h3>
+          <button type="button" className="btn-ghost p-1.5" onClick={onClose} aria-label="Fermer"><X className="w-4 h-4" /></button>
+        </div>
+        <p className="text-sm text-ink-600">Période actuelle : du {fr(contract.start_date)} au {fr(contract.end_date)}. Elle est conservée dans l'historique.</p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <label className="text-sm">
+            <span className="label">Nouveau début</span>
+            <input className="input" type="date" required value={start} onChange={(e) => setStart(e.target.value)} />
+          </label>
+          <label className="text-sm">
+            <span className="label">Durée (mois)</span>
+            <input className="input" type="number" min={1} required value={months} onChange={(e) => setMonths(e.target.value)} />
+          </label>
+          <label className="text-sm">
+            <span className="label">Montant par facture</span>
+            <input className="input text-right" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          </label>
+        </div>
+        <p className="text-sm">Nouvelle fin de contrat : <strong>{fr(newEnd)}</strong></p>
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-ghost text-sm" onClick={onClose}>Annuler</button>
+          <button className="btn-primary text-sm" disabled={saving}>{saving ? 'Renouvellement…' : 'Renouveler'}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+export default function Contracts() {
+  const [data, setData] = useState<{ fiscalYear: string; currentFiscalYear: string; contracts: Contract[] } | null>(null);
+  const [fy, setFy] = useState<string | null>(null);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [category, setCategory] = useState('');
+  const [status, setStatus] = useState('en_cours');
+  const [search, setSearch] = useState('');
+  const [editing, setEditing] = useState<FormState | null>(null);
+  const [renewing, setRenewing] = useState<Contract | null>(null);
+  const [history, setHistory] = useState<Contract | null>(null);
+
+  async function load(year = fy) {
+    try {
+      const [list, supplierList, categoryList] = await Promise.all([
+        api<{ fiscalYear: string; currentFiscalYear: string; contracts: Contract[] }>(`/api/contracts${year ? `?fy=${year}` : ''}`),
+        api<Supplier[]>('/api/expense-suppliers'),
+        api<Category[]>('/api/contract-categories'),
+      ]);
+      setData(list);
+      setFy(list.fiscalYear);
+      setSuppliers(supplierList);
+      setCategories(categoryList);
+      setError(null);
+    } catch (err: any) {
+      setError(err.message);
     }
   }
 
   useEffect(() => {
-    void load();
+    void load(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const categories = useMemo(() => [...new Set(contracts.map((c) => c.category).filter(Boolean) as string[])].sort((a, b) => a.localeCompare(b, 'fr')), [contracts]);
-  const isOpen = (c: Contract) => c.status !== 'Résilié';
-  const active = contracts.filter(isOpen);
-  const soon = active.filter((c) => c.days_to_deadline !== null && c.days_to_deadline >= 0 && c.days_to_deadline <= 90).sort((a, b) => a.days_to_deadline! - b.days_to_deadline!);
-  const annualTotal = active.reduce((s, c) => s + (c.annual_cost || 0), 0);
-
+  const contracts = data?.contracts || [];
+  const years = useMemo(() => {
+    if (!data) return [];
+    const current = Number(data.currentFiscalYear.slice(0, 4));
+    return Array.from({ length: 6 }, (_, i) => current + 1 - i).map((y) => `${y}-${y + 1}`);
+  }, [data]);
+  const ongoing = (c: Contract) => c.status === 'Actif' || c.status === 'En cours de résiliation';
+  const active = contracts.filter(ongoing);
+  const soon = active
+    .filter((c) => c.days_to_decision !== null && c.days_to_decision >= 0 && c.days_to_decision <= 90)
+    .sort((a, b) => a.days_to_decision! - b.days_to_decision!);
+  const fiscalTotal = contracts.reduce((s, c) => s + c.fiscal_cost, 0);
+  const annualRunRate = active.reduce((s, c) => s + (c.annual_cost || 0), 0);
   const byCategory = useMemo(() => {
     const map = new Map<string, number>();
-    for (const c of active) map.set(c.category || '—', (map.get(c.category || '—') || 0) + (c.annual_cost || 0));
+    for (const c of contracts) if (c.fiscal_cost) map.set(c.category || '—', (map.get(c.category || '—') || 0) + c.fiscal_cost);
     return [...map.entries()].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contracts]);
   const maxCategory = Math.max(1, ...byCategory.map((c) => c.value));
+  const categoryNames = [...new Set(contracts.map((c) => c.category).filter(Boolean) as string[])].sort((a, b) => a.localeCompare(b, 'fr'));
 
   const listed = contracts
-    .filter((c) => (status === 'actifs' ? isOpen(c) : !status || c.status === status))
+    .filter((c) => (status === 'en_cours' ? ongoing(c) : !status || c.status === status))
     .filter((c) => !category || c.category === category)
     .filter((c) => {
       const q = search.trim().toLowerCase();
       return !q || [c.label, c.supplier, c.category, c.notes].some((v) => v?.toLowerCase().includes(q));
     })
-    .sort((a, b) => (a.next_deadline || '9999').localeCompare(b.next_deadline || '9999'));
+    .sort((a, b) => (a.decision_date || '9999').localeCompare(b.decision_date || '9999'));
 
   async function remove(c: Contract) {
     if (!confirm(`Supprimer le contrat « ${c.label} » ?`)) return;
@@ -309,60 +468,74 @@ export default function Contracts() {
     }
   }
 
-  if (loading) return <div className="p-6 text-ink-500">Chargement…</div>;
+  if (!data && !error) return <div className="p-6 text-ink-500">Chargement…</div>;
 
   return (
     <div className="p-6 w-full max-w-[1600px] mx-auto space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-ink-900">Suivi des contrats</h1>
-          <p className="text-sm text-ink-500">Échéances, préavis et coûts des contrats informatiques. Accès réservé au groupe Manager Informatique.</p>
+          <p className="text-sm text-ink-500">Échéances, préavis et coûts sur l'exercice (1er avril - 31 mars). Accès réservé au groupe Manager Informatique.</p>
         </div>
-        <button type="button" className="btn-primary text-sm" onClick={() => setEditing(toForm())}><Plus className="w-4 h-4" /> Nouveau contrat</button>
+        <div className="flex items-center gap-2">
+          <label className="text-sm flex items-center gap-2">
+            Exercice
+            <select className="input py-1.5 w-36" value={fy || ''} onChange={(e) => { setFy(e.target.value); void load(e.target.value); }}>
+              {years.map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="btn-primary text-sm" onClick={() => setEditing(toForm())}><Plus className="w-4 h-4" /> Nouveau contrat</button>
+        </div>
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="card p-4">
+          <p className="text-xs uppercase tracking-wide text-ink-500">Coût sur l'exercice {fy}</p>
+          <p className="text-2xl font-semibold text-ink-900 mt-1 tabular-nums">{euro(fiscalTotal)}</p>
+          <p className="text-xs text-ink-500 mt-1">Échéances de facturation tombant dans l'exercice</p>
+        </div>
+        <div className="card p-4">
           <p className="text-xs uppercase tracking-wide text-ink-500">Coût annuel des contrats en cours</p>
-          <p className="text-2xl font-semibold text-ink-900 mt-1 tabular-nums">{euro(annualTotal)}</p>
-          <p className="text-xs text-ink-500 mt-1">{active.length} contrat{active.length > 1 ? 's' : ''}</p>
+          <p className="text-2xl font-semibold text-ink-900 mt-1 tabular-nums">{euro(annualRunRate)}</p>
+          <p className="text-xs text-ink-500 mt-1">{active.length} contrat{active.length > 1 ? 's' : ''} en cours</p>
         </div>
         <div className="card p-4">
-          <p className="text-xs uppercase tracking-wide text-ink-500">Résiliations à décider sous 90 jours</p>
+          <p className="text-xs uppercase tracking-wide text-ink-500">Décisions à prendre sous 90 jours</p>
           <p className="text-2xl font-semibold text-ink-900 mt-1">{soon.length}</p>
-          <p className="text-xs text-ink-500 mt-1">dont {soon.filter((c) => c.days_to_deadline! <= 30).length} sous 30 jours</p>
-        </div>
-        <div className="card p-4">
-          <p className="text-xs uppercase tracking-wide text-ink-500">Prochaine date limite</p>
-          <p className="text-lg font-semibold text-ink-900 mt-1 truncate">{soon[0] ? fr(soon[0].next_deadline) : '—'}</p>
-          <p className="text-xs text-ink-500 mt-1 truncate">{soon[0]?.label || 'Rien dans les 90 jours'}</p>
+          <p className="text-xs text-ink-500 mt-1 truncate">{soon[0] ? `Prochaine : ${soon[0].label}, le ${fr(soon[0].decision_date)}` : 'Aucune'}</p>
         </div>
       </div>
 
       {soon.length > 0 && (
-        <div className="card p-4 border-amber-200">
+        <div className="card p-4">
           <h2 className="font-semibold text-ink-900 mb-2 flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-amber-600" /> À décider bientôt</h2>
           <div className="space-y-1.5">
             {soon.map((c) => (
               <div key={c.id} className="flex flex-wrap items-center gap-2 text-sm">
-                <DeadlineBadge days={c.days_to_deadline} />
+                <DecisionBadge days={c.days_to_decision} />
                 <span className="font-medium">{c.label}</span>
                 <span className="text-ink-500">
-                  résilier avant le {fr(c.next_deadline)} · échéance {fr(c.next_end_date)}{c.tacit_renewal ? ' (tacite reconduction)' : ''} · {euro(c.annual_cost)} / an
+                  {c.decision === 'renew' ? `fin le ${fr(c.end_date)} : à renouveler` : `à résilier avant le ${fr(c.termination_deadline)}, sinon reconduit le ${fr(c.renewal_date)}`} · {euro(c.annual_cost)} / an
                 </span>
+                {c.decision === 'renew' && (
+                  <button type="button" className="btn-ghost text-xs" onClick={() => setRenewing(c)}><RotateCw className="w-3.5 h-3.5" /> Renouveler</button>
+                )}
               </div>
             ))}
           </div>
-          <p className="text-xs text-ink-500 mt-2">Un mail de rappel est envoyé à 90, 30 puis 7 jours de la date limite.</p>
+          <p className="text-xs text-ink-500 mt-2">Un mail de rappel est envoyé à 90, 30 puis 7 jours de la date de décision.</p>
         </div>
       )}
 
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
         <div className="card p-4">
-          <h2 className="font-semibold text-ink-900 mb-3">Coût annuel par catégorie</h2>
+          <h2 className="font-semibold text-ink-900 mb-3">Coût {fy} par catégorie</h2>
           <div className="space-y-2.5">
+            {byCategory.length === 0 && <p className="text-sm text-ink-400">Aucun coût sur cet exercice.</p>}
             {byCategory.map((row) => (
               <div key={row.label}>
                 <div className="flex justify-between text-xs mb-1">
@@ -379,8 +552,8 @@ export default function Contracts() {
 
         <div className="card p-4 xl:col-span-3">
           <div className="flex flex-wrap items-center gap-2 mb-3">
-            <select className="input py-1.5 w-48" value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="actifs">En cours (hors résiliés)</option>
+            <select className="input py-1.5 w-52" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="en_cours">En cours</option>
               <option value="">Tous les statuts</option>
               {STATUSES.map((s) => (
                 <option key={s} value={s}>{s}</option>
@@ -388,7 +561,7 @@ export default function Contracts() {
             </select>
             <select className="input py-1.5 w-48" value={category} onChange={(e) => setCategory(e.target.value)}>
               <option value="">Toutes catégories</option>
-              {categories.map((c) => (
+              {categoryNames.map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
@@ -401,10 +574,10 @@ export default function Contracts() {
                   <th className="text-left py-2 px-3 font-semibold">Contrat</th>
                   <th className="text-left py-2 px-3 font-semibold">Engagement</th>
                   <th className="text-left py-2 px-3 font-semibold">Échéance</th>
-                  <th className="text-left py-2 px-3 font-semibold">Résilier avant</th>
-                  <th className="text-right py-2 px-3 font-semibold">Coût annuel</th>
-                  <th className="text-right py-2 px-3 font-semibold" title="Dépenses du fournisseur sur l'exercice en cours">Dépensé (exercice)</th>
-                  <th className="text-left py-2 px-3 font-semibold">Statut</th>
+                  <th className="text-left py-2 px-3 font-semibold">Décision</th>
+                  <th className="text-right py-2 px-3 font-semibold">Facturation</th>
+                  <th className="text-right py-2 px-3 font-semibold">Coût {fy}</th>
+                  <th className="text-right py-2 px-3 font-semibold" title="Dépenses du fournisseur sur l'exercice (suivi des dépenses)">Dépensé</th>
                   <th className="py-2 px-3"></th>
                 </tr>
               </thead>
@@ -413,33 +586,41 @@ export default function Contracts() {
                   <tr key={c.id} className="hover:bg-ink-50/60 align-top">
                     <td className="py-2 px-3">
                       <span className="font-medium text-ink-900">{c.label}</span>
-                      <span className="block text-xs text-ink-500">{[c.supplier, c.category].filter(Boolean).join(' · ')}</span>
+                      <span className="block text-xs text-ink-500">{[c.supplier, c.category, c.status !== 'Actif' ? c.status : null].filter(Boolean).join(' · ')}</span>
                     </td>
                     <td className="py-2 px-3 text-xs">
-                      {duration(c.commitment_months)}
-                      <span className="block text-ink-500">préavis {notice(c.notice_months)}</span>
-                      {c.tacit_renewal && <span className="block text-ink-500">tacite reconduction</span>}
+                      {duration(c.commitment_months)} depuis le {fr(c.start_date)}
+                      <span className="block text-ink-500">{RENEWAL_LABELS[c.renewal_mode]}{c.renewal_mode === 'custom' ? ` (${duration(c.renewal_months)})` : ''}</span>
+                      <span className="block text-ink-500">{noticeText(c.notice_months)}</span>
                     </td>
                     <td className="py-2 px-3 text-xs whitespace-nowrap">
-                      {fr(c.next_end_date)}
-                      {c.rolled && (
-                        <span className="flex items-center gap-1 text-ink-500" title={`Fin initiale : ${fr(c.end_date)}`}>
-                          <RefreshCw className="w-3 h-3" /> reconduit
-                        </span>
+                      {c.renewal_mode === 'none' ? (
+                        <>fin {fr(c.end_date)}</>
+                      ) : c.cancellable_from ? (
+                        <span className="text-ink-600">sans engagement</span>
+                      ) : (
+                        <>renouvellement {fr(c.renewal_date)}</>
                       )}
                     </td>
                     <td className="py-2 px-3 text-xs whitespace-nowrap">
-                      {fr(c.next_deadline)} <DeadlineBadge days={c.days_to_deadline} />
-                      {c.inconsistent && (
-                        <span className="flex items-center gap-1 text-amber-700 mt-0.5" title="La date limite de résiliation est après la date de fin : à vérifier">
-                          <AlertTriangle className="w-3 h-3" /> dates à vérifier
-                        </span>
-                      )}
+                      {c.decision === 'terminate' && <>résilier avant le {fr(c.termination_deadline)} </>}
+                      {c.decision === 'renew' && <>renouveler avant le {fr(c.end_date)} </>}
+                      {c.cancellable_from && <>résiliable, fin au plus tôt {fr(c.cancellable_from)}</>}
+                      <DecisionBadge days={c.days_to_decision} />
                     </td>
-                    <td className="py-2 px-3 text-right tabular-nums">{euro(c.annual_cost)}</td>
-                    <td className="py-2 px-3 text-right tabular-nums text-ink-600">{c.supplier ? euro(c.supplier_spent_fy) : '—'}</td>
-                    <td className="py-2 px-3 text-xs">{c.status}</td>
+                    <td className="py-2 px-3 text-right text-xs whitespace-nowrap">
+                      {euro(c.billing_amount)}
+                      <span className="block text-ink-500">{BILLING_LABELS[c.billing_frequency]}</span>
+                    </td>
+                    <td className="py-2 px-3 text-right tabular-nums">{euro(c.fiscal_cost)}</td>
+                    <td className="py-2 px-3 text-right tabular-nums text-ink-600">{c.supplier_spent_fy === null ? '—' : euro(c.supplier_spent_fy)}</td>
                     <td className="py-2 px-3 whitespace-nowrap text-right">
+                      {c.renewal_mode === 'none' && (
+                        <button type="button" className="btn-ghost p-1.5" title="Renouveler" onClick={() => setRenewing(c)}><RotateCw className="w-4 h-4" /></button>
+                      )}
+                      {c.renewals.length > 0 && (
+                        <button type="button" className="btn-ghost p-1.5" title="Historique des renouvellements" onClick={() => setHistory(c)}><History className="w-4 h-4" /></button>
+                      )}
                       <button type="button" className="btn-ghost p-1.5" title="Modifier" onClick={() => setEditing(toForm(c))}><Pencil className="w-4 h-4" /></button>
                       <button type="button" className="btn-ghost p-1.5 text-ink-400 hover:text-red-600" title="Supprimer" onClick={() => void remove(c)}><Trash2 className="w-4 h-4" /></button>
                     </td>
@@ -457,6 +638,27 @@ export default function Contracts() {
       </div>
 
       {editing && <ContractForm initial={editing} suppliers={suppliers} categories={categories} onClose={() => setEditing(null)} onSaved={() => void load()} />}
+      {renewing && <RenewForm contract={renewing} onClose={() => setRenewing(null)} onSaved={() => void load()} />}
+      {history && (
+        <div className="fixed inset-0 z-50 bg-ink-950/40 flex items-start justify-center p-4" onClick={() => setHistory(null)}>
+          <div className="card w-full max-w-lg my-8 p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-ink-900">Renouvellements : {history.label}</h3>
+              <button type="button" className="btn-ghost p-1.5" onClick={() => setHistory(null)} aria-label="Fermer"><X className="w-4 h-4" /></button>
+            </div>
+            <ul className="space-y-2 text-sm">
+              {history.renewals.map((r, i) => (
+                <li key={i} className="p-2 rounded border border-ink-100">
+                  Période du {fr(r.previous_start)} au {fr(r.previous_end)} renouvelée à partir du {fr(r.new_start)} pour {duration(r.new_months)}
+                  <span className="block text-xs text-ink-500">
+                    le {new Date(r.renewed_at).toLocaleDateString('fr-FR')}{r.renewed_by ? ` par ${r.renewed_by}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

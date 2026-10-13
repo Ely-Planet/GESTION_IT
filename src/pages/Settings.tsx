@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import OnboardingHardware from './OnboardingHardware';
 import MicrosoftLicenses from './MicrosoftLicenses';
 import SuppliersSettings from './SuppliersSettings';
+import ContractCategoriesSettings from './ContractCategoriesSettings';
+import { useAuth } from '../context/AuthContext';
 
 type Section =
   | 'home'
@@ -10,11 +12,17 @@ type Section =
   | 'licenses'
   | 'hardware'
   | 'inventory'
-  | 'microsoft';
+  | 'microsoft'
+  | 'contract-categories';
 
 export default function Settings() {
   const [section, setSection] =
     useState<Section>('home');
+  const { user } = useAuth();
+
+  if (section === 'contract-categories') {
+    return <ContractCategoriesSettings onBack={() => setSection('home')} />;
+  }
 
   if (section === 'workflow') {
     return (
@@ -105,7 +113,11 @@ if (section === 'licenses') {
       title: 'Licences Microsoft',
       description:
         'Licences synchronisées depuis Microsoft 365'
-    }
+    },
+    // Suivi des contrats : groupe Manager Informatique uniquement.
+    ...(user?.isITManager
+      ? [{ key: 'contract-categories', title: 'Catégories de contrats', description: 'Catégories proposées dans le suivi des contrats' }]
+      : [])
   ];
 
   return (
@@ -146,6 +158,10 @@ if (card.key === 'inventory') {
 
 if (card.key === 'microsoft') {
     setSection('microsoft');
+  }
+
+  if (card.key === 'contract-categories') {
+    setSection('contract-categories');
   }
 }}
 
