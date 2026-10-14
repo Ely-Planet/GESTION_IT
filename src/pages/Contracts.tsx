@@ -625,7 +625,7 @@ export default function Contracts() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
         <div className="card p-4">
           <h2 className="font-semibold text-ink-900 mb-3">Coût {fy} par catégorie</h2>
           <div className="space-y-2.5">
@@ -644,7 +644,7 @@ export default function Contracts() {
           </div>
         </div>
 
-        <div className="card p-4 xl:col-span-3">
+        <div className="card p-4 xl:col-span-4 min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-3">
             <select className="input py-1.5 w-52" value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="en_cours">En cours</option>
@@ -696,7 +696,7 @@ export default function Contracts() {
                         <>renouvellement {fr(c.renewal_date)}</>
                       )}
                     </td>
-                    <td className="py-2 px-3 text-xs whitespace-nowrap">
+                    <td className="py-2 px-3 text-xs min-w-[170px]">
                       {c.decision === 'terminate' && <>résilier avant le {fr(c.termination_deadline)} </>}
                       {c.decision === 'renew' && <>renouveler avant le {fr(c.end_date)} </>}
                       {c.cancellable_from && <>résiliable, fin au plus tôt {fr(c.cancellable_from)}</>}
@@ -743,7 +743,8 @@ export default function Contracts() {
                     </td>
                     <td className="py-2 px-3 text-right tabular-nums">{euro(c.fiscal_cost)}</td>
                     <td className="py-2 px-3 text-right tabular-nums text-ink-600">{c.supplier_spent_fy === null ? '—' : euro(c.supplier_spent_fy)}</td>
-                    <td className="py-2 px-3 whitespace-nowrap text-right">
+                    <td className="py-2 px-1">
+                      <div className="flex flex-wrap justify-end gap-0.5 w-[68px] ml-auto">
                       {c.renewal_mode === 'none' && (
                         <button type="button" className="btn-ghost p-1.5" title="Renouveler" onClick={() => setRenewing(c)}><RotateCw className="w-4 h-4" /></button>
                       )}
@@ -752,6 +753,7 @@ export default function Contracts() {
                       )}
                       <button type="button" className="btn-ghost p-1.5" title="Modifier" onClick={() => setEditing(toForm(c))}><Pencil className="w-4 h-4" /></button>
                       <button type="button" className="btn-ghost p-1.5 text-ink-400 hover:text-red-600" title="Supprimer" onClick={() => void remove(c)}><Trash2 className="w-4 h-4" /></button>
+                      </div>
                     </td>
                   </tr>
                 ))}
