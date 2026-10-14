@@ -568,7 +568,7 @@ export default function Contracts() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-ink-900">Suivi des contrats</h1>
-          <p className="text-sm text-ink-500">Échéances, préavis et coûts sur l'exercice (1er avril - 31 mars). Accès réservé au groupe Manager Informatique.</p>
+          <p className="text-sm text-ink-500">Échéances, préavis et coûts sur l'exercice (1er avril - 31 mars). Accès réservé au Manager Informatique et à la Direction Générale.</p>
         </div>
         <div className="flex items-center gap-2">
           <label className="text-sm flex items-center gap-2">

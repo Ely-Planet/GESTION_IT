@@ -712,7 +712,7 @@ export default function Expenses() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-ink-900">Suivi des dépenses</h1>
-          <p className="text-sm text-ink-500">Dépenses informatiques par exercice (avril à mars). Accès réservé au groupe Manager Informatique.</p>
+          <p className="text-sm text-ink-500">Dépenses informatiques par exercice (avril à mars). Accès réservé au Manager Informatique et à la Direction Générale.</p>
         </div>
         <div className="flex gap-2">
           <button type="button" className="btn-secondary text-sm" onClick={exportCsv}><Download className="w-4 h-4" /> Exporter (Excel)</button>

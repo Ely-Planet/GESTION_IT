@@ -121,8 +121,10 @@ async function seedOnce() {
   }
 }
 
+// Manager Informatique et Direction Générale.
 function requireITManager(req, res, next) {
-  if (!req.session?.user?.isITManager) return res.status(403).json({ error: 'Réservé au groupe Manager Informatique' });
+  const user = req.session?.user;
+  if (!user?.isITManager && !user?.isDirector) return res.status(403).json({ error: 'Réservé au Manager Informatique et à la Direction Générale' });
   next();
 }
 

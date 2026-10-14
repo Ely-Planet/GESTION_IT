@@ -27,6 +27,7 @@ import { registerMicrosoftProvisioningRoutes, notifyManagerOnboardingDone } from
 import { registerExpenseRoutes } from './expenses.mjs';
 import { registerSupplierRoutes } from './suppliers.mjs';
 import { registerContractRoutes } from './contracts.mjs';
+import { registerTeamPointRoutes } from './teamPoints.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -4665,6 +4666,7 @@ registerForecastRoutes(app);
 registerMicrosoftProvisioningRoutes(app);
 const expensesReady = registerExpenseRoutes(app);
 registerContractRoutes(app, { after: expensesReady });
+registerTeamPointRoutes(app);
 registerSupplierRoutes(app);
 
 app.use((req, res) => {

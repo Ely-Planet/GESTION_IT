@@ -13,6 +13,7 @@ import {
   Network,
   Wallet,
   FileText,
+  MessagesSquare,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -30,7 +31,8 @@ export type PageKey =
   | 'projects'
   | 'groupprojects'
   | 'expenses'
-  | 'contracts';
+  | 'contracts'
+  | 'points';
 
 const GROUP_ITEM = { key: 'groupprojects' as PageKey, label: 'Projets Groupe', icon: Network };
 
@@ -93,13 +95,22 @@ const withGroup = canSeeGroupProjects(user)
     })()
   : baseNav;
 
-// "Suivi des dépenses" et "Suivi des contrats" : groupe 🔐 Manager Informatique uniquement, après les licences.
-const navItems = user?.isITManager && !user.projectsOnly
-  ? (() => {
-      const items = [
+// "Points d'équipe" : équipe informatique. "Suivi des dépenses" et "Suivi des contrats" :
+// 🔐 Manager Informatique et Direction Générale. Placés après les licences.
+const extraItems = [
+  ...((user?.isIT || user?.isITManager) && !user?.projectsOnly
+    ? [{ key: 'points' as PageKey, label: "Points d'équipe", icon: MessagesSquare }]
+    : []),
+  ...((user?.isITManager || user?.isDirector) && !user?.projectsOnly
+    ? [
         { key: 'expenses' as PageKey, label: 'Suivi des dépenses', icon: Wallet },
         { key: 'contracts' as PageKey, label: 'Suivi des contrats', icon: FileText },
-      ];
+      ]
+    : []),
+];
+const navItems = extraItems.length
+  ? (() => {
+      const items = extraItems;
       const index = withGroup.findIndex((entry) => entry.key === 'licenses');
       return index === -1 ? [...withGroup, ...items] : [...withGroup.slice(0, index + 1), ...items, ...withGroup.slice(index + 1)];
     })()
