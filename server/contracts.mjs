@@ -83,6 +83,14 @@ CREATE TABLE IF NOT EXISTS contract_categories (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_categories_label ON contract_categories (lower(btrim(label)));
+-- Décision prise pour l'échéance en cours : les alertes de cette échéance s'arrêtent.
+ALTER TABLE contracts ADD COLUMN IF NOT EXISTS decision_for date;
+ALTER TABLE contracts ADD COLUMN IF NOT EXISTS decision_type text;
+ALTER TABLE contracts ADD COLUMN IF NOT EXISTS decision_note text;
+ALTER TABLE contracts ADD COLUMN IF NOT EXISTS decision_by text;
+ALTER TABLE contracts ADD COLUMN IF NOT EXISTS decision_at timestamptz;
+-- Date d'effet d'une résiliation (ou d'un non-renouvellement).
+ALTER TABLE contracts ADD COLUMN IF NOT EXISTS termination_effective date;
 CREATE TABLE IF NOT EXISTS app_flags (key text PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now());
 `;
 
@@ -201,7 +209,10 @@ export function fiscalYearCost(c, fy) {
   const { from, to } = fiscalBounds(fy);
   const start = toDate(c.start_date);
   const terms = contractTerms(c);
-  const stop = c.renewal_mode === 'none' ? toDate(terms.end_date) : c.status === 'Résilié' || c.status === 'Terminé' ? toDate(c.end_date) || todayUtc() : null;
+  let stop = c.renewal_mode === 'none' ? toDate(terms.end_date) : null;
+  // Résiliation (date d'effet) ou contrat clos : plus de facturation ensuite.
+  const effective = toDate(c.termination_effective) || (c.status === 'Résilié' || c.status === 'Terminé' ? toDate(c.end_date) || todayUtc() : null);
+  if (effective && (!stop || effective < stop)) stop = effective;
   if (!start) return amount * (12 / step); // début inconnu : estimation sur une année pleine
   let total = 0;
   for (let d = start, i = 0; d <= to && i < 1000; d = addMonths(start, step * ++i)) {
@@ -216,6 +227,8 @@ const SELECT = `
          to_char(c.start_date, 'YYYY-MM-DD') AS start_date, c.commitment_months, c.notice_months,
          c.renewal_mode, c.renewal_months, c.billing_frequency, c.billing_amount::float8 AS billing_amount,
          to_char(c.end_date, 'YYYY-MM-DD') AS stored_end_date, c.status, c.notes, c.updated_at,
+         to_char(c.decision_for, 'YYYY-MM-DD') AS decision_for, c.decision_type, c.decision_note, c.decision_by, c.decision_at,
+         to_char(c.termination_effective, 'YYYY-MM-DD') AS termination_effective,
          (SELECT COALESCE(json_agg(json_build_object(
                    'previous_start', to_char(r.previous_start, 'YYYY-MM-DD'), 'previous_end', to_char(r.previous_end, 'YYYY-MM-DD'),
                    'new_start', to_char(r.new_start, 'YYYY-MM-DD'), 'new_months', r.new_months, 'renewed_by', r.renewed_by,
@@ -225,7 +238,9 @@ const SELECT = `
 
 function present(row, fy) {
   const terms = contractTerms({ ...row, end_date: row.stored_end_date });
-  return { ...row, ...terms, fiscal_cost: fiscalYearCost({ ...row, end_date: row.stored_end_date }, fy) };
+  // Décision prise pour l'échéance en cours (ou résiliation en cours) : plus d'alerte.
+  const decided = Boolean(row.decision_for && (row.decision_for === terms.decision_date || !terms.decision_date)) || row.status !== 'Actif';
+  return { ...row, ...terms, decided, fiscal_cost: fiscalYearCost({ ...row, end_date: row.stored_end_date }, fy) };
 }
 
 // Dépenses de chaque fournisseur sur l'exercice (suivi des dépenses).
@@ -289,11 +304,12 @@ const alertLevel = (days) => (days === null || days < 0 ? 0 : days <= 7 ? 3 : da
 
 async function sendDeadlineAlerts() {
   const fy = fiscalYearOf(todayUtc());
-  const rows = (await pool.query(`${SELECT} WHERE c.status IN ('Actif', 'En cours de résiliation')`)).rows.map((r) => present(r, fy));
+  const rows = (await pool.query(`${SELECT} WHERE c.status = 'Actif'`)).rows.map((r) => present(r, fy));
   const due = [];
   for (const row of rows) {
     const level = alertLevel(row.days_to_decision);
     if (!level) continue;
+    if (row.decided) continue; // décision déjà prise pour cette échéance
     const current = (await pool.query(`SELECT alert_level, to_char(alert_for, 'YYYY-MM-DD') AS alert_for FROM contracts WHERE id = $1`, [row.id])).rows[0];
     if (current.alert_for === row.decision_date && current.alert_level >= level) continue;
     due.push({ row, level });
@@ -337,8 +353,15 @@ export function registerContractRoutes(app, { after = Promise.resolve() } = {}) 
     .then(seedOnce)
     .catch((error) => console.error('[Contrats] Schéma ou reprise impossible', error.message || error));
 
+  // Résiliations et non-renouvellements arrivés à leur date d'effet.
+  const closeEnded = () =>
+    pool.query(
+      `UPDATE contracts SET status = CASE WHEN renewal_mode = 'none' THEN 'Terminé' ELSE 'Résilié' END,
+              end_date = termination_effective, updated_at = now()
+       WHERE status = 'En cours de résiliation' AND termination_effective <= current_date`
+    );
   const runAlerts = () =>
-    schemaReady.then(sendDeadlineAlerts).catch((error) => console.error('[Contrats] Alertes impossibles', error.message || error));
+    schemaReady.then(sendDeadlineAlerts).then(closeEnded).catch((error) => console.error('[Contrats] Alertes impossibles', error.message || error));
   setTimeout(runAlerts, 60 * 1000).unref();
   setInterval(runAlerts, 6 * 60 * 60 * 1000).unref();
 
@@ -399,6 +422,63 @@ export function registerContractRoutes(app, { after = Promise.resolve() } = {}) 
     }
   });
 
+  // Décision pour l'échéance en cours (arrête les alertes de cette échéance) :
+  //   keep          tacite : on laisse reconduire
+  //   terminate     tacite : résiliation envoyée -> « En cours de résiliation »,
+  //                 puis « Résilié » à la date d'effet
+  //   renew_planned sans tacite : renouvellement prévu (bouton Renouveler ensuite)
+  //   end           sans tacite : pas de renouvellement -> « Terminé » à la date de fin
+  app.post('/api/contracts/:id/decision', requireITManager, async (req, res) => {
+    try {
+      await schemaReady;
+      const contract = (await pool.query(`${SELECT} WHERE c.id = $1`, [req.params.id])).rows[0];
+      if (!contract) return res.status(404).json({ error: 'Contrat introuvable' });
+      const terms = contractTerms({ ...contract, end_date: contract.stored_end_date });
+      const type = String(req.body?.type || '');
+      const allowed = contract.renewal_mode === 'none' ? ['renew_planned', 'end'] : ['keep', 'terminate'];
+      if (!allowed.includes(type)) return res.status(400).json({ error: 'Décision invalide pour ce contrat' });
+      const note = String(req.body?.note || '').trim() || null;
+      const by = req.session.user.displayName || req.session.user.email || null;
+      let effective = null;
+      if (type === 'terminate') {
+        effective = isIsoDate(req.body?.effective_date) ? req.body.effective_date : terms.renewal_date || terms.cancellable_from;
+        if (!effective) return res.status(400).json({ error: "Date d'effet de la résiliation inconnue : saisissez-la" });
+      }
+      if (type === 'end') effective = terms.end_date;
+      await pool.query(
+        `UPDATE contracts SET decision_for = $1, decision_type = $2, decision_note = $3, decision_by = $4, decision_at = now(),
+                termination_effective = $5,
+                status = CASE WHEN $5::date IS NOT NULL THEN 'En cours de résiliation' ELSE status END,
+                updated_at = now()
+         WHERE id = $6`,
+        [terms.decision_date || toIso(todayUtc()), type, note, by, effective, contract.id]
+      );
+      res.json({ id: contract.id });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Annulation de la décision : le contrat redevient actif et les alertes reprennent.
+  app.delete('/api/contracts/:id/decision', requireITManager, async (req, res) => {
+    try {
+      await schemaReady;
+      await pool.query(
+        `UPDATE contracts SET decision_for = NULL, decision_type = NULL, decision_note = NULL, decision_by = NULL, decision_at = NULL,
+                status = CASE WHEN status = 'En cours de résiliation' THEN 'Actif' ELSE status END,
+                termination_effective = CASE WHEN status = 'En cours de résiliation' THEN NULL ELSE termination_effective END,
+                alert_level = 0, alert_for = NULL, updated_at = now()
+         WHERE id = $1`,
+        [req.params.id]
+      );
+      res.status(204).end();
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Renouvellement manuel (sans tacite reconduction) : nouvelle période à partir
   // de la fin de la précédente ; durée et montant modifiables.
   app.post('/api/contracts/:id/renew', requireITManager, async (req, res) => {
@@ -427,7 +507,8 @@ export function registerContractRoutes(app, { after = Promise.resolve() } = {}) 
       await client.query(
         `UPDATE contracts SET start_date = $1, commitment_months = $2, billing_amount = $3,
                 annual_cost = $3 * (12.0 / CASE billing_frequency WHEN 'monthly' THEN 1 WHEN 'quarterly' THEN 3 ELSE 12 END),
-                end_date = NULL, status = 'Actif', alert_level = 0, alert_for = NULL, updated_at = now()
+                end_date = NULL, status = 'Actif', alert_level = 0, alert_for = NULL,
+                decision_for = NULL, decision_type = NULL, decision_note = NULL, termination_effective = NULL, updated_at = now()
          WHERE id = $4`,
         [newStart, months, amount, contract.id]
       );

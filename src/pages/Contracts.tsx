@@ -35,7 +35,21 @@ type Contract = {
   annual_cost: number | null;
   fiscal_cost: number;
   supplier_spent_fy: number | null;
+  decided: boolean;
+  decision_for: string | null;
+  decision_type: 'keep' | 'terminate' | 'renew_planned' | 'end' | null;
+  decision_note: string | null;
+  decision_by: string | null;
+  decision_at: string | null;
+  termination_effective: string | null;
 };
+
+const DECISION_LABELS = {
+  keep: 'Laissé en reconduction',
+  terminate: 'Résiliation envoyée',
+  renew_planned: 'Renouvellement prévu',
+  end: 'Non renouvelé',
+} as const;
 type Supplier = { id: string; name: string };
 type Category = { id: string; label: string };
 
@@ -391,6 +405,83 @@ function RenewForm({ contract, onClose, onSaved }: { contract: Contract; onClose
 }
 
 // ---------------------------------------------------------------------------
+// Décision pour l'échéance en cours (arrête les alertes de cette échéance)
+// ---------------------------------------------------------------------------
+function DecisionForm({ contract, onClose, onSaved }: { contract: Contract; onClose: () => void; onSaved: () => void }) {
+  const tacit = contract.renewal_mode !== 'none';
+  const [type, setType] = useState<'keep' | 'terminate' | 'renew_planned' | 'end'>(tacit ? 'keep' : 'renew_planned');
+  const [effective, setEffective] = useState(contract.renewal_date || contract.cancellable_from || '');
+  const [note, setNote] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const options: { value: typeof type; title: string; text: string }[] = tacit
+    ? [
+        { value: 'keep', title: 'Laisser reconduire', text: `Le contrat sera reconduit le ${fr(contract.renewal_date)}. Les alertes s'arrêtent jusqu'à l'échéance suivante.` },
+        { value: 'terminate', title: 'Résiliation envoyée', text: "Le contrat passe « En cours de résiliation », puis « Résilié » à la date d'effet. Plus d'alerte." },
+      ]
+    : [
+        { value: 'renew_planned', title: 'Renouvellement prévu', text: 'Les alertes s’arrêtent. Utilisez ensuite « Renouveler » pour enregistrer la nouvelle période.' },
+        { value: 'end', title: 'Ne pas renouveler', text: `Le contrat passera « Terminé » le ${fr(contract.end_date)}. Plus d'alerte.` },
+      ];
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      await api(`/api/contracts/${contract.id}/decision`, {
+        method: 'POST',
+        body: JSON.stringify({ type, note, effective_date: type === 'terminate' ? effective : undefined }),
+      });
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-ink-950/40 flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
+      <form className="card w-full max-w-lg my-8 p-5 space-y-4" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-ink-900">Décision : {contract.label}</h3>
+          <button type="button" className="btn-ghost p-1.5" onClick={onClose} aria-label="Fermer"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="space-y-2">
+          {options.map((o) => (
+            <label key={o.value} className={`flex gap-3 p-3 rounded-lg border cursor-pointer ${type === o.value ? 'border-elyade-400 bg-elyade-50/50' : 'border-ink-200'}`}>
+              <input type="radio" className="mt-1" checked={type === o.value} onChange={() => setType(o.value)} />
+              <span>
+                <span className="font-medium text-sm">{o.title}</span>
+                <span className="block text-xs text-ink-500">{o.text}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {type === 'terminate' && (
+          <label className="text-sm block">
+            <span className="label">Date d'effet de la résiliation</span>
+            <input className="input" type="date" required value={effective} onChange={(e) => setEffective(e.target.value)} />
+          </label>
+        )}
+        <label className="text-sm block">
+          <span className="label">Commentaire (facultatif)</span>
+          <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Ex. courrier recommandé envoyé le 14/10" />
+        </label>
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-ghost text-sm" onClick={onClose}>Annuler</button>
+          <button className="btn-primary text-sm" disabled={saving}>{saving ? 'Enregistrement…' : 'Enregistrer la décision'}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 export default function Contracts() {
@@ -405,6 +496,7 @@ export default function Contracts() {
   const [editing, setEditing] = useState<FormState | null>(null);
   const [renewing, setRenewing] = useState<Contract | null>(null);
   const [history, setHistory] = useState<Contract | null>(null);
+  const [deciding, setDeciding] = useState<Contract | null>(null);
 
   async function load(year = fy) {
     try {
@@ -436,8 +528,9 @@ export default function Contracts() {
   }, [data]);
   const ongoing = (c: Contract) => c.status === 'Actif' || c.status === 'En cours de résiliation';
   const active = contracts.filter(ongoing);
+  // Décisions restant à prendre (une décision enregistrée arrête les alertes de l'échéance).
   const soon = active
-    .filter((c) => c.days_to_decision !== null && c.days_to_decision >= 0 && c.days_to_decision <= 90)
+    .filter((c) => !c.decided && c.days_to_decision !== null && c.days_to_decision >= 0 && c.days_to_decision <= 90)
     .sort((a, b) => a.days_to_decision! - b.days_to_decision!);
   const fiscalTotal = contracts.reduce((s, c) => s + c.fiscal_cost, 0);
   const annualRunRate = active.reduce((s, c) => s + (c.annual_cost || 0), 0);
@@ -521,6 +614,7 @@ export default function Contracts() {
                 <span className="text-ink-500">
                   {c.decision === 'renew' ? `fin le ${fr(c.end_date)} : à renouveler` : `à résilier avant le ${fr(c.termination_deadline)}, sinon reconduit le ${fr(c.renewal_date)}`} · {euro(c.annual_cost)} / an
                 </span>
+                <button type="button" className="btn-secondary text-xs" onClick={() => setDeciding(c)}>Décision…</button>
                 {c.decision === 'renew' && (
                   <button type="button" className="btn-ghost text-xs" onClick={() => setRenewing(c)}><RotateCw className="w-3.5 h-3.5" /> Renouveler</button>
                 )}
@@ -606,7 +700,42 @@ export default function Contracts() {
                       {c.decision === 'terminate' && <>résilier avant le {fr(c.termination_deadline)} </>}
                       {c.decision === 'renew' && <>renouveler avant le {fr(c.end_date)} </>}
                       {c.cancellable_from && <>résiliable, fin au plus tôt {fr(c.cancellable_from)}</>}
-                      <DecisionBadge days={c.days_to_decision} />
+                      {c.decided && c.decision_type ? (
+                        <span className="block mt-1">
+                          <span className="badge bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            ✓ {DECISION_LABELS[c.decision_type]}
+                            {c.termination_effective ? `, effet le ${fr(c.termination_effective)}` : ''}
+                          </span>
+                          <span className="block text-ink-500" title={c.decision_note || undefined}>
+                            {c.decision_by ? `${c.decision_by}, ` : ''}{c.decision_at ? new Date(c.decision_at).toLocaleDateString('fr-FR') : ''}
+                            {c.decision_note ? ` · ${c.decision_note}` : ''}
+                          </span>
+                          <button
+                            type="button"
+                            className="text-ink-400 hover:text-red-600 underline"
+                            onClick={async () => {
+                              if (!confirm('Annuler cette décision ? Les alertes reprendront.')) return;
+                              try {
+                                await api(`/api/contracts/${c.id}/decision`, { method: 'DELETE' });
+                                await load();
+                              } catch (err: any) {
+                                alert(err.message);
+                              }
+                            }}
+                          >
+                            annuler la décision
+                          </button>
+                        </span>
+                      ) : (
+                        <>
+                          <DecisionBadge days={c.days_to_decision} />
+                          {(c.decision_date || c.cancellable_from) && c.status === 'Actif' && (
+                            <button type="button" className="block text-elyade-700 hover:underline mt-1" onClick={() => setDeciding(c)}>
+                              Décision…
+                            </button>
+                          )}
+                        </>
+                      )}
                     </td>
                     <td className="py-2 px-3 text-right text-xs whitespace-nowrap">
                       {euro(c.billing_amount)}
@@ -638,6 +767,7 @@ export default function Contracts() {
       </div>
 
       {editing && <ContractForm initial={editing} suppliers={suppliers} categories={categories} onClose={() => setEditing(null)} onSaved={() => void load()} />}
+      {deciding && <DecisionForm contract={deciding} onClose={() => setDeciding(null)} onSaved={() => void load()} />}
       {renewing && <RenewForm contract={renewing} onClose={() => setRenewing(null)} onSaved={() => void load()} />}
       {history && (
         <div className="fixed inset-0 z-50 bg-ink-950/40 flex items-start justify-center p-4" onClick={() => setHistory(null)}>
