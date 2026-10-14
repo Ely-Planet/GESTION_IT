@@ -118,6 +118,7 @@ if (
   !user.isRH &&
   !user.isManager &&
   !user.isDirector &&
+  !user.isGeneralDirection &&
   page !== 'onboardingrequest' &&
   page !== 'myrequests' &&
   page !== 'projects' &&
@@ -156,8 +157,8 @@ if (
 {page === 'documents' && <SignedDocuments />}
 {page === 'audit' && <Audit />}
 {page === 'projects' && <Projects key={openRequest.nonce} initialProjectId={openRequest.projectId} />}
-{page === 'expenses' && (user?.isITManager || user?.isDirector) && <Expenses />}
-{page === 'contracts' && (user?.isITManager || user?.isDirector) && <Contracts />}
+{page === 'expenses' && (user?.isITManager || user?.isGeneralDirection) && <Expenses />}
+{page === 'contracts' && (user?.isITManager || user?.isGeneralDirection) && <Contracts />}
 {page === 'points' && (user?.isIT || user?.isITManager) && <Points />}
 {page === 'groupprojects' && <GroupProjects key={openGroupRequest.nonce} initialProjectId={openGroupRequest.projectId} onOpenItProject={openProject} />}
 

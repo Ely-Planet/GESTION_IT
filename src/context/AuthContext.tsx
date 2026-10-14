@@ -11,6 +11,7 @@ type MicrosoftUser = {
   isRH: boolean;
   isManager: boolean;
   isDirector: boolean;
+  isGeneralDirection?: boolean; // « 🔐 Direction Generale »
   hasProjectAccess: boolean;
   hasGroupProjectAccess?: boolean;
   projectsOnly: boolean;

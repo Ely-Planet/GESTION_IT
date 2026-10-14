@@ -101,7 +101,7 @@ const extraItems = [
   ...((user?.isIT || user?.isITManager) && !user?.projectsOnly
     ? [{ key: 'points' as PageKey, label: "Points d'équipe", icon: MessagesSquare }]
     : []),
-  ...((user?.isITManager || user?.isDirector) && !user?.projectsOnly
+  ...((user?.isITManager || user?.isGeneralDirection) && !user?.projectsOnly
     ? [
         { key: 'expenses' as PageKey, label: 'Suivi des dépenses', icon: Wallet },
         { key: 'contracts' as PageKey, label: 'Suivi des contrats', icon: FileText },

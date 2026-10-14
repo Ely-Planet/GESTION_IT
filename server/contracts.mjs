@@ -257,7 +257,7 @@ async function supplierSpent(fy) {
 // Manager Informatique et Direction Générale.
 function requireITManager(req, res, next) {
   const user = req.session?.user;
-  if (!user?.isITManager && !user?.isDirector) return res.status(403).json({ error: 'Réservé au Manager Informatique et à la Direction Générale' });
+  if (!user?.isITManager && !user?.isGeneralDirection) return res.status(403).json({ error: 'Réservé au Manager Informatique et à la Direction Générale' });
   next();
 }
 

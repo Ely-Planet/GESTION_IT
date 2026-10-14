@@ -52,6 +52,9 @@ for (const key of requiredEnv) {
   }
 }
 
+// Groupe « 🔐 Direction Generale » (suivi des dépenses et des contrats).
+const GENERAL_DIRECTION_GROUP_ID = process.env.MICROSOFT_GENERAL_DIRECTION_GROUP_ID || 'e8832906-5e4d-4501-8669-a2d598e62258';
+
 const app = express();
 const port = Number(process.env.PORT || 3001);
 const DOCUMENTS_DIR = path.join(process.cwd(), 'storage', 'documents');
@@ -948,7 +951,8 @@ groupIds: [
   process.env.MICROSOFT_RH_GROUP_ID,
   process.env.MICROSOFT_MANAGER_GROUP_ID,
   process.env.MICROSOFT_DIRECTOR_GROUP_ID,
-  process.env.MICROSOFT_IT_MANAGER_GROUP_ID
+  process.env.MICROSOFT_IT_MANAGER_GROUP_ID,
+  GENERAL_DIRECTION_GROUP_ID
 ].filter(Boolean)
 
 
@@ -984,6 +988,9 @@ const isITManager = Boolean(
   process.env.MICROSOFT_IT_MANAGER_GROUP_ID &&
   allowedGroups.includes(process.env.MICROSOFT_IT_MANAGER_GROUP_ID)
 );
+
+// « 🔐 Direction Generale » : suivi des dépenses et des contrats.
+const isGeneralDirection = allowedGroups.includes(GENERAL_DIRECTION_GROUP_ID);
 
 const user = meResponse.data;
 
@@ -1033,6 +1040,7 @@ const hasApplicationAccess =
   isRH ||
   isManager ||
   isDirector ||
+  isGeneralDirection ||
   isITManager ||
   hasProjectAccess ||
   hasGroupAccess;
@@ -1044,6 +1052,7 @@ const projectsOnly =
   !isRH &&
   !isManager &&
   !isDirector &&
+  !isGeneralDirection &&
   !isITManager;
 
 if (!hasApplicationAccess) {
@@ -1080,6 +1089,7 @@ req.session.user = {
   isRH,
   isManager,
   isDirector,
+  isGeneralDirection,
   isITManager,
   hasProjectAccess,
   hasGroupProjectAccess: hasGroupAccess,
