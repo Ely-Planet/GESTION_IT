@@ -38,7 +38,7 @@ type Point = {
 type PointDetail = Point & {
   minutes: { content: string; validated: boolean; updated_by?: string | null; updated_at?: string };
   contributions: { account_id: string; display_name: string; content: string; contributed_at: string | null; updated_at: string }[];
-  previous: { id: string; title: string; start_at: string } | null;
+  previous: { id: string; title: string; start_at: string; minutes: string | null } | null;
 };
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -390,7 +390,7 @@ function PointView({ pointId, me, isManager, onBack, onEdit }: { pointId: string
           )}
         </div>
         {point.previous && (
-          <p className="text-xs text-ink-500 mt-2">Compte rendu et parties repris du point du {formatDateTime(point.previous.start_at)}, à compléter ou modifier.</p>
+          <p className="text-xs text-ink-500 mt-2">Repris du point du {formatDateTime(point.previous.start_at)} : compte rendu et préparations sont à compléter ou modifier.</p>
         )}
       </div>
 
@@ -399,8 +399,21 @@ function PointView({ pointId, me, isManager, onBack, onEdit }: { pointId: string
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <div className="card p-4">
-          <h3 className="font-semibold text-ink-900 mb-1">Préparation des participants</h3>
-          <p className="text-xs text-ink-500 mb-3">Chacun complète sa partie avant le point (rappel 2 jours avant).</p>
+          <h3 className="font-semibold text-ink-900 mb-1">{isManager ? 'Préparation des participants' : 'Ma préparation'}</h3>
+          <p className="text-xs text-ink-500 mb-3">
+            {isManager
+              ? 'Chaque collaborateur prépare sa partie avant le point (rappel 2 jours avant). Elle n’est visible que par lui et par vous.'
+              : 'Visible uniquement par vous et le manager. Elle reprend votre préparation précédente (ou le compte rendu précédent) : mettez-la à jour avant le point.'}
+          </p>
+          {point.previous?.minutes && (
+            <details className="mb-4 rounded-lg border border-ink-100 bg-ink-50/50 p-3">
+              <summary className="text-sm font-medium text-ink-700 cursor-pointer">
+                Compte rendu du point précédent ({formatDateTime(point.previous.start_at)})
+              </summary>
+              <p className="text-sm text-ink-700 whitespace-pre-wrap mt-2">{point.previous.minutes}</p>
+            </details>
+          )}
+          {ordered.length === 0 && <p className="text-sm text-ink-400">Aucune préparation pour ce point.</p>}
           <div className="space-y-4">
             {ordered.map((c) => {
               const editable = c.account_id === me || isManager;
@@ -408,7 +421,7 @@ function PointView({ pointId, me, isManager, onBack, onEdit }: { pointId: string
                 <div key={c.account_id}>
                   <div className="flex items-center justify-between mb-1">
                     <p className="text-sm font-medium text-ink-800">
-                      {c.account_id === me ? 'Ma partie' : c.display_name}
+                      {c.account_id === me ? (isManager ? 'Ma préparation' : 'Votre préparation') : c.display_name}
                     </p>
                     {c.contributed_at ? (
                       <span className="badge bg-emerald-50 text-emerald-700"><CheckCircle2 className="w-3 h-3" /> préparée</span>
@@ -443,7 +456,9 @@ function PointView({ pointId, me, isManager, onBack, onEdit }: { pointId: string
             {point.minutes.validated && <span className="badge bg-emerald-50 text-emerald-700"><CheckCircle2 className="w-3 h-3" /> validé</span>}
           </div>
           <p className="text-xs text-ink-500 mb-3">
-            {isManager ? 'Rédigé par le manager pendant ou après le point.' : 'Rédigé par le manager.'}
+            {isManager
+              ? 'Repris du compte rendu du point précédent tant que vous ne l’avez pas modifié ; complétez-le pendant ou après le point.'
+              : 'Rédigé par le manager.'}
             {point.minutes.updated_by ? ` Dernière mise à jour : ${point.minutes.updated_by}.` : ''}
           </p>
           {isManager ? (

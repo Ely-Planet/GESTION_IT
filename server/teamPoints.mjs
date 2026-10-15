@@ -209,6 +209,68 @@ async function previousPoint(kind, subjectId, beforeIso, exceptId = null) {
 const contributorsOf = (kind, subjectId, attendeeIds, organizerId) =>
   kind === 'individual' ? [subjectId] : [...new Set([...(attendeeIds || []), organizerId].filter(Boolean))];
 
+// Peut préparer ce point : tout membre de l'équipe pour un point d'équipe,
+// le collaborateur concerné pour un point individuel.
+const isEligible = (point, user) => (point.kind === 'team' ? isTeamMember(user) : point.subject_account_id === user.id);
+
+// Contenu de départ d'une préparation : la dernière préparation enregistrée de
+// la personne (même type de point), à défaut le compte rendu du point précédent.
+async function contributionSource(point, accountId, previousMinutes) {
+  const previous = (
+    await pool.query(
+      `SELECT c.content FROM team_point_contributions c JOIN team_points p ON p.id = c.point_id
+       WHERE c.account_id = $1 AND c.contributed_at IS NOT NULL AND p.kind = $2 AND p.status = 'planned'
+         AND ($3::uuid IS NULL OR p.subject_account_id = $3) AND p.id <> $4
+         AND p.start_at < (SELECT start_at FROM team_points WHERE id = $4)
+       ORDER BY p.start_at DESC LIMIT 1`,
+      [accountId, point.kind, point.subject_account_id, point.id]
+    )
+  ).rows[0]?.content;
+  return previous || previousMinutes || CONTRIBUTION_TEMPLATE;
+}
+
+// À l'ouverture d'un point : tant qu'ils n'ont pas été modifiés, le compte rendu
+// reprend le dernier compte rendu du point précédent, et chaque préparation la
+// dernière préparation de la personne. La personne qui ouvre le point reçoit sa
+// préparation si elle n'en a pas encore (participant ajouté après coup).
+async function syncPoint(point, viewer) {
+  const previousId = await previousPoint(point.kind, point.subject_account_id, point.start_at, point.id);
+  const previousMinutes = previousId
+    ? (await pool.query(`SELECT content FROM team_point_minutes WHERE point_id = $1`, [previousId])).rows[0]?.content || null
+    : null;
+
+  const minutes = (await pool.query(`SELECT content, updated_by FROM team_point_minutes WHERE point_id = $1`, [point.id])).rows[0];
+  if (!minutes) {
+    await pool.query(`INSERT INTO team_point_minutes (point_id, content) VALUES ($1, $2) ON CONFLICT (point_id) DO NOTHING`, [
+      point.id,
+      previousMinutes || MINUTES_TEMPLATE
+    ]);
+  } else if (!minutes.updated_by && previousMinutes && minutes.content !== previousMinutes) {
+    await pool.query(`UPDATE team_point_minutes SET content = $1 WHERE point_id = $2 AND updated_by IS NULL`, [previousMinutes, point.id]);
+  }
+
+  if (point.status === 'planned' && isEligible(point, viewer)) {
+    await pool.query(
+      `INSERT INTO team_point_contributions (point_id, account_id, content) VALUES ($1, $2, $3) ON CONFLICT (point_id, account_id) DO NOTHING`,
+      [point.id, viewer.id, await contributionSource(point, viewer.id, previousMinutes)]
+    );
+  }
+  const untouched = (
+    await pool.query(`SELECT account_id, content FROM team_point_contributions WHERE point_id = $1 AND contributed_at IS NULL`, [point.id])
+  ).rows;
+  for (const row of untouched) {
+    const source = await contributionSource(point, row.account_id, previousMinutes);
+    if (source !== row.content) {
+      await pool.query(`UPDATE team_point_contributions SET content = $1 WHERE point_id = $2 AND account_id = $3 AND contributed_at IS NULL`, [
+        source,
+        point.id,
+        row.account_id
+      ]);
+    }
+  }
+  return { previousId, previousMinutes };
+}
+
 async function prepareContents(client, pointId, kind, subjectId, contributors, previousId) {
   const previousMinutes = previousId
     ? (await client.query(`SELECT content FROM team_point_minutes WHERE point_id = $1`, [previousId])).rows[0]?.content
@@ -377,21 +439,30 @@ export function registerTeamPointRoutes(app) {
   app.get('/api/points/:id', requireTeam, async (req, res) => {
     try {
       await schemaReady;
+      const user = req.session.user;
       const point = await loadPoint(req.params.id);
-      if (!point || !canSee(req.session.user, point)) return res.status(404).json({ error: 'Point introuvable' });
+      if (!point || !canSee(user, point)) return res.status(404).json({ error: 'Point introuvable' });
+      const { previousId, previousMinutes } = await syncPoint(point, user);
       const minutes = (
         await pool.query(`SELECT content, validated, updated_by, updated_at FROM team_point_minutes WHERE point_id = $1`, [point.id])
       ).rows[0] || { content: '', validated: false };
+      // Chaque collaborateur ne voit que sa propre préparation ; le manager voit toutes les préparations.
       const contributions = (
         await pool.query(
           `SELECT c.account_id, a.display_name, c.content, c.contributed_at, c.updated_at
            FROM team_point_contributions c JOIN app_accounts a ON a.id = c.account_id
-           WHERE c.point_id = $1 ORDER BY a.display_name`,
-          [point.id]
+           WHERE c.point_id = $1 AND ($2::boolean OR c.account_id = $3)
+           ORDER BY a.display_name`,
+          [point.id, isManager(user), user.id]
         )
       ).rows;
-      const previous = point.previous_point_id ? await loadPoint(point.previous_point_id) : null;
-      res.json({ ...point, minutes, contributions, previous: previous ? { id: previous.id, title: previous.title, start_at: previous.start_at } : null });
+      const previous = previousId ? await loadPoint(previousId) : null;
+      res.json({
+        ...point,
+        minutes,
+        contributions,
+        previous: previous ? { id: previous.id, title: previous.title, start_at: previous.start_at, minutes: previousMinutes } : null
+      });
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: error.message });
@@ -519,7 +590,7 @@ export function registerTeamPointRoutes(app) {
       await pool.query(
         `INSERT INTO team_point_minutes (point_id, content, validated, updated_by, updated_at) VALUES ($1, $2, $3, $4, now())
          ON CONFLICT (point_id) DO UPDATE SET content = EXCLUDED.content, validated = EXCLUDED.validated, updated_by = EXCLUDED.updated_by, updated_at = now()`,
-        [req.params.id, String(req.body?.content || ''), Boolean(req.body?.validated), req.session.user.displayName || null]
+        [req.params.id, String(req.body?.content || ''), Boolean(req.body?.validated), req.session.user.displayName || req.session.user.email || 'Manager']
       );
       res.json({ ok: true });
     } catch (error) {
@@ -536,12 +607,17 @@ export function registerTeamPointRoutes(app) {
       const user = req.session.user;
       if (!point || !canSee(user, point)) return res.status(404).json({ error: 'Point introuvable' });
       const accountId = req.body?.accountId && isManager(user) ? String(req.body.accountId) : user.id;
-      const result = await pool.query(
-        `UPDATE team_point_contributions SET content = $1, contributed_at = COALESCE(contributed_at, now()), updated_at = now()
-         WHERE point_id = $2 AND account_id = $3`,
-        [String(req.body?.content || ''), point.id, accountId]
+      // Sa propre préparation : toute personne concernée par le point (équipe ou collaborateur du point individuel).
+      const exists = (await pool.query(`SELECT 1 FROM team_point_contributions WHERE point_id = $1 AND account_id = $2`, [point.id, accountId])).rowCount;
+      if (!exists && !(accountId === user.id && isEligible(point, user))) {
+        return res.status(403).json({ error: "Vous n'êtes pas participant de ce point" });
+      }
+      await pool.query(
+        `INSERT INTO team_point_contributions (point_id, account_id, content, contributed_at, updated_at) VALUES ($1, $2, $3, now(), now())
+         ON CONFLICT (point_id, account_id) DO UPDATE
+           SET content = EXCLUDED.content, contributed_at = COALESCE(team_point_contributions.contributed_at, now()), updated_at = now()`,
+        [point.id, accountId, String(req.body?.content || '')]
       );
-      if (!result.rowCount) return res.status(403).json({ error: "Vous n'êtes pas participant de ce point" });
       res.json({ ok: true });
     } catch (error) {
       console.error(error);
