@@ -68,7 +68,7 @@ export default function GroupProjects({ initialProjectId = null, onOpenItProject
     }
   }
 
-  if (selectedId) return <GroupProjectDetail projectId={selectedId} onBack={() => setSelectedId(null)} />;
+  if (selectedId) return <GroupProjectDetail projectId={selectedId} onBack={() => setSelectedId(null)} onOpenItProject={onOpenItProject} />;
   if (loading) return <div className="p-6 text-ink-500">Chargement...</div>;
 
   const visible = projects.filter((p) => showClosed || p.status !== 'closed');

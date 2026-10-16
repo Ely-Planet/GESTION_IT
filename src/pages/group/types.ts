@@ -39,6 +39,7 @@ export type GroupProjectDetail = {
   tasks: Task[];
   tauxCompletude: number;
   columns: KanbanColumn[];
+  it_project_id?: string | null; // espace d'échange d'un projet IT
 };
 
 // Colonne du Kanban d'un projet Groupe ; « done » (colonne de fin) compte pour l'avancement.

@@ -1,6 +1,7 @@
 import { pool } from './db.mjs';
 import { sendMailWithAttachments } from './graphMail.mjs';
 import { ensureProjectsSchema } from './projectsSchema.mjs';
+import { ensureItWorkspace } from './groupProjects.mjs';
 import { computeTeamRemaining, computeWorkload, TIME_PARTS_SQL } from './workload.mjs';
 import multer from 'multer';
 import path from 'path';
@@ -1204,7 +1205,7 @@ export function registerProjectRoutes(app) {
     try {
       const result = await pool.query(
         `SELECT n.id, n.type, n.title, n.body, n.project_id, n.task_id, n.read_at, n.created_at,
-                n.group_project_id, COALESCE(p.name, gp.name) AS project_name
+                n.group_project_id, gp.it_project_id, COALESCE(p.name, gp.name) AS project_name
          FROM user_notifications n
          LEFT JOIN projects p ON p.id = n.project_id
          LEFT JOIN group_projects gp ON gp.id = n.group_project_id
@@ -2458,6 +2459,21 @@ export function registerProjectRoutes(app) {
       await removeUploadedFiles(files);
       console.error(error);
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Espace d'échange du projet (réunions, comptes rendus, communications) : moteur
+  // des Projets Groupe ; membres = équipe et clients du projet. Équipe et managers.
+  app.get('/api/projects/:id/workspace', requireAuth, async (req, res) => {
+    try {
+      const user = req.session.user;
+      const role = getModuleRole(user);
+      const allowed = role === 'manager' || (role === 'dev' && (await isAssignedToProject(user.id, req.params.id)));
+      if (!allowed) return res.status(403).json({ error: 'Réservé à l\x27équipe du projet' });
+      res.json({ workspaceId: await ensureItWorkspace(req.params.id, user) });
+    } catch (error) {
+      console.error(error);
+      res.status(error.status || 500).json({ error: error.message });
     }
   });
 

@@ -22,7 +22,7 @@ const TABS: [string, string][] = [
   ['members', 'Membres'],
 ];
 
-export default function GroupProjectDetail({ projectId, onBack }: { projectId: string; onBack: () => void }) {
+export default function GroupProjectDetail({ projectId, onBack, onOpenItProject }: { projectId: string; onBack: () => void; onOpenItProject?: (itProjectId: string) => void }) {
   const [project, setProject] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState('tasks');
@@ -32,7 +32,13 @@ export default function GroupProjectDetail({ projectId, onBack }: { projectId: s
 
   async function load() {
     try {
-      setProject(await groupApi.getProject(projectId));
+      const detail = await groupApi.getProject(projectId);
+      // Espace d'échange d'un projet IT (lien reçu par mail) : on ouvre le projet IT.
+      if (detail?.it_project_id && onOpenItProject) {
+        onOpenItProject(detail.it_project_id);
+        return;
+      }
+      setProject(detail);
     } catch (err: any) {
       setError(err.message || 'Projet inaccessible');
     }

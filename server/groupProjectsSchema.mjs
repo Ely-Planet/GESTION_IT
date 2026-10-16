@@ -187,6 +187,12 @@ ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS group_project_id uuid RE
 -- Le statut d'une tâche est la clé de sa colonne : plus de liste figée.
 ALTER TABLE group_projects ADD COLUMN IF NOT EXISTS kanban_columns jsonb;
 ALTER TABLE group_tasks DROP CONSTRAINT IF EXISTS group_tasks_status_check;
+
+-- Espace d'échange d'un Projet IT (réunions, comptes rendus, communications) :
+-- un projet Groupe masqué, relié au projet IT, dont les membres suivent
+-- l'équipe et les clients du projet IT.
+ALTER TABLE group_projects ADD COLUMN IF NOT EXISTS it_project_id uuid REFERENCES projects(id) ON DELETE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_group_projects_it_project ON group_projects(it_project_id) WHERE it_project_id IS NOT NULL;
 `;
 
 export async function ensureGroupProjectsSchema() {

@@ -150,10 +150,65 @@ async function requireMember(req, res, projectId, { responsable = false } = {}) 
   return role;
 }
 
+// Espace d'échange d'un Projet IT (réunions, comptes rendus, communications) :
+// projet Groupe masqué dont les membres suivent l'équipe du projet IT
+// (chefs de projet = responsables) et ses clients ; un Manager Informatique
+// qui l'ouvre y est ajouté comme responsable. Renvoie l'identifiant de l'espace.
+export async function ensureItWorkspace(itProjectId, user) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const project = (await client.query(`SELECT id, name, description FROM projects WHERE id = $1`, [itProjectId])).rows[0];
+    if (!project) throw Object.assign(new Error('Projet introuvable'), { status: 404 });
+    let workspace = (await client.query(`SELECT id FROM group_projects WHERE it_project_id = $1 FOR UPDATE`, [itProjectId])).rows[0];
+    if (!workspace) {
+      workspace = (
+        await client.query(
+          `INSERT INTO group_projects (name, description, created_by, it_project_id) VALUES ($1, $2, $3, $4) RETURNING id`,
+          [project.name, project.description, user.id, itProjectId]
+        )
+      ).rows[0];
+    } else {
+      await client.query(`UPDATE group_projects SET name = $1, status = 'active' WHERE id = $2 AND (name IS DISTINCT FROM $1 OR status <> 'active')`, [
+        project.name,
+        workspace.id
+      ]);
+    }
+    const desired = new Map();
+    for (const row of (await client.query(`SELECT account_id, project_role FROM project_assignments WHERE project_id = $1`, [itProjectId])).rows) {
+      desired.set(row.account_id, row.project_role === 'chef_de_projet' ? 'responsable' : 'membre');
+    }
+    for (const row of (await client.query(`SELECT account_id FROM project_clients WHERE project_id = $1`, [itProjectId])).rows) {
+      if (!desired.has(row.account_id)) desired.set(row.account_id, 'membre');
+    }
+    if (user.isITManager) desired.set(user.id, 'responsable');
+    for (const [accountId, role] of desired) {
+      await client.query(
+        `INSERT INTO group_project_members (project_id, account_id, role) VALUES ($1, $2, $3)
+         ON CONFLICT (project_id, account_id) DO UPDATE SET role = EXCLUDED.role`,
+        [workspace.id, accountId, role]
+      );
+    }
+    // Retirés de l'équipe ou des clients : retirés de l'espace (les managers informatiques restent).
+    await client.query(
+      `DELETE FROM group_project_members m USING app_accounts a
+       WHERE m.project_id = $1 AND a.id = m.account_id AND NOT a.is_it_manager AND NOT (m.account_id = ANY($2::uuid[]))`,
+      [workspace.id, [...desired.keys()]]
+    );
+    await client.query('COMMIT');
+    return workspace.id;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function hasGroupProjectAccess(accountId) {
   const result = await pool.query(
     `SELECT 1 FROM group_project_members m JOIN group_projects p ON p.id = m.project_id
-     WHERE m.account_id = $1 AND p.status <> 'archive' LIMIT 1`,
+     WHERE m.account_id = $1 AND p.status <> 'archive' AND p.it_project_id IS NULL LIMIT 1`,
     [accountId]
   );
   return result.rowCount > 0;
@@ -218,9 +273,11 @@ const projectRef = (refNumber) => `PG-${String(refNumber ?? 0).padStart(4, '0')}
 
 // Préfixe de l'objet des mails : référence + début du nom du projet.
 async function mailSubjectPrefix(projectId) {
-  const project = (await pool.query(`SELECT name, ref_number FROM group_projects WHERE id = $1`, [projectId])).rows[0];
+  const project = (await pool.query(`SELECT name, ref_number, it_project_id FROM group_projects WHERE id = $1`, [projectId])).rows[0];
   const name = project?.name || '';
   const shortName = name.length > 40 ? `${name.slice(0, 39).trimEnd()}…` : name;
+  // Espace d'échange d'un projet IT : pas de référence PG.
+  if (project?.it_project_id) return `[Projet IT · ${shortName}]`;
   return `[${projectRef(project?.ref_number)} · ${shortName}]`;
 }
 
@@ -840,7 +897,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
   // ---- Salles de réunion (boîtes de ressource Exchange) ----
   app.get('/api/group-projects/rooms', requireAuth, async (req, res) => {
     try {
-      if (!canCreateProjects(req.session.user) && !(await hasGroupProjectAccess(req.session.user.id))) {
+      if (!canCreateProjects(req.session.user) && !req.session.user.isIT && !(await hasGroupProjectAccess(req.session.user.id))) {
         return res.status(403).json({ error: 'Accès refusé' });
       }
       res.json(await listRooms());
@@ -951,7 +1008,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
                  FROM group_meetings g WHERE g.project_id = p.id AND g.status = 'planned' AND g.start_at > now()) AS prochaine_reunion
          FROM group_projects p
          JOIN group_project_members m ON m.project_id = p.id AND m.account_id = $1
-         WHERE p.status <> 'archive'
+         WHERE p.status <> 'archive' AND p.it_project_id IS NULL
          ORDER BY p.status = 'closed', p.updated_at DESC`,
         [req.session.user.id]
       );
@@ -1037,7 +1094,7 @@ export function registerGroupProjectRoutes(app, { afterSchema = Promise.resolve(
       if (!role) return;
       const project = (
         await pool.query(
-          `SELECT p.id, p.name, p.description, p.status, p.created_by, p.ref_number, p.kanban_columns,
+          `SELECT p.id, p.name, p.description, p.status, p.created_by, p.ref_number, p.kanban_columns, p.it_project_id,
                   to_char(p.start_date, 'YYYY-MM-DD') AS start_date, to_char(p.due_date, 'YYYY-MM-DD') AS due_date
            FROM group_projects p WHERE p.id = $1`,
           [req.params.id]

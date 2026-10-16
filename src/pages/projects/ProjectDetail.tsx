@@ -8,6 +8,7 @@ import GanttTab from './tabs/GanttTab';
 import RequestsTab from './tabs/RequestsTab';
 import TeamTab from './tabs/TeamTab';
 import ClientsEditor from './ClientsEditor';
+import ProjectWorkspace, { type WorkspaceTab } from './ProjectWorkspace';
 import type { Account, ProjectDetailData } from './types';
 
 export default function ProjectDetail({ projectId, onBack }: { projectId: string; onBack: () => void }) {
@@ -118,6 +119,9 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
         ['tasks', 'Tâches'],
         ['gantt', 'Gantt'],
         ['requests', 'Demandes clients'],
+        ['meetings', 'Réunions'],
+        ['minutes', 'Comptes rendus'],
+        ['communications', 'Communications'],
         ['team', 'Équipe'],
       ];
 
@@ -283,6 +287,9 @@ export default function ProjectDetail({ projectId, onBack }: { projectId: string
           {tab === 'tasks' && <TasksTab project={project} team={accounts} onChanged={load} readOnly={clientView} />}
           {tab === 'gantt' && <GanttTab project={project} team={accounts} onChanged={load} readOnly={clientView} />}
           {tab === 'requests' && <RequestsTab project={project} team={accounts} onChanged={load} />}
+          {(tab === 'meetings' || tab === 'minutes' || tab === 'communications') && !clientView && (
+            <ProjectWorkspace projectId={project.id} tab={tab as WorkspaceTab} onTabChange={setTab} />
+          )}
           {tab === 'team' && !clientView && (
             <TeamTab project={project} allAccounts={accounts} canManage={canManageTeam} onChanged={load} />
           )}

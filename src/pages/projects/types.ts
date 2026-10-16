@@ -87,6 +87,7 @@ export type AppNotification = {
   task_id: string | null;
   project_name: string | null;
   group_project_id?: string | null;
+  it_project_id?: string | null; // espace d'échange d'un projet IT
   read_at: string | null;
   created_at: string;
 };

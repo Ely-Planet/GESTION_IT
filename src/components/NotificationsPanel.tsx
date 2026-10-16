@@ -31,7 +31,9 @@ export default function NotificationsPanel({ onOpenProject, onOpenGroupProject }
   async function open(notification: AppNotification) {
     await projectsApi.markNotificationRead(notification.id).catch(() => {});
     setNotifications((current) => current.filter((n) => n.id !== notification.id));
-    if (notification.group_project_id) onOpenGroupProject(notification.group_project_id);
+    // Espace d'échange d'un projet IT : on ouvre le projet IT.
+    if (notification.it_project_id) onOpenProject(notification.it_project_id);
+    else if (notification.group_project_id) onOpenGroupProject(notification.group_project_id);
     else if (notification.project_id) onOpenProject(notification.project_id);
   }
 
